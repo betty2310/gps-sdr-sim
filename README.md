@@ -88,8 +88,25 @@ Options:
   -b <iq_bits>     I/Q data format [1/8/16] (default: 16)
   -i               Disable ionospheric delay for spacecraft scenario
   -p [fixed_gain]  Disable path loss and hold power level constant
+  -A <attack_spec> Attack config PRN:method[,PRN:method...]
+                   Methods: normal,jam_drop,jam_noise,spoof_delay,spoof_nav
+                   (Currently implemented: jam_drop,jam_noise)
   -v               Show details about simulated channels
 ```
+
+### Jamming/Spoofing Scenario Input (Experimental)
+
+Use `-A` to set a method per PRN.
+
+```
+> gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,11:jam_drop
+```
+
+In the current implementation, `jam_drop` is applied by setting channel gain to zero for selected PRNs.
+`jam_noise` is applied by replacing selected PRN symbols with deterministic pseudo-random noise-like I/Q samples.
+Other methods (`spoof_delay`, `spoof_nav`) are accepted as placeholders for scenario planning.
+
+See [docs/jamming-spoofing-scenarios.md](docs/jamming-spoofing-scenarios.md) for full scenario catalog.
 
 The user motion can be specified in either dynamic or static mode:
 
