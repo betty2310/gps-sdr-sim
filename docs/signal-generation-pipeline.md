@@ -10,9 +10,9 @@ This document traces the complete pipeline from input parsing through per-channe
 
 ```
 ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────┐
-│ User Position│   │ RINEX Ephemeris   │   │ Channel Alloc.   │   │ I/Q Output   │
-│  (CSV/NMEA/  │──▶│ + Iono/UTC Parse  │──▶│ + Per-Channel    │──▶│ File Write   │
-│  static LLH) │   │ readRinexNavAll() │   │   Signal Gen     │   │ (bin format) │
+│ User Position│   │ RINEX Ephemeris  │   │ Channel Alloc.   │   │ I/Q Output   │
+│  (CSV/NMEA/  │──▶│ + Iono/UTC Parse │──▶│ + Per-Channel    │──▶│ File Write   │
+│  static LLH) │   │ readRinexNavAll()│   │   Signal Gen     │   │ (bin format) │
 └──────────────┘   └──────────────────┘   └──────────────────┘   └──────────────┘
 ```
 

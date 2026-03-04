@@ -19,7 +19,7 @@ Supported method names:
 Current implementation status:
 
 - `jam_drop` is implemented by forcing selected PRN channel gain to zero.
-- `jam_noise` is implemented by replacing selected PRN symbols with deterministic pseudo-random noise-like I/Q values.
+- `jam_noise` is implemented as additive interference on top of the real satellite signal with configurable J/S ratio (see [Noise Generation Model](#noise-generation-model) below).
 - Other methods are placeholders for scenario planning and future implementation.
 
 ## Attack Methods
@@ -28,7 +28,7 @@ Current implementation status:
 |---|---|---|
 | `normal` | No attack on this PRN | none |
 | `jam_drop` | Remove satellite contribution from composite IQ | power/gain |
-| `jam_noise` | Degrade tracking by adding interference-like energy | power/noise/spectral |
+| `jam_noise` | Additive interference that buries satellite signal | power/J/S ratio |
 | `spoof_delay` | Shift pseudorange and Doppler coherently | code phase + carrier |
 | `spoof_nav` | Mislead by navigation message manipulation | nav data + timing |
 
@@ -108,13 +108,75 @@ Current implementation status:
 3. Time-to-alarm and integrity flag triggering.
 4. Recovery time after attack stop.
 
+## Noise Generation Model
+
+### Overview
+
+The `jam_noise` method models a **per-PRN additive interference jammer**. Unlike the previous implementation which replaced the satellite signal with noise, the current model keeps the real satellite signal intact and adds interference on top of it. This simulates a directional or matched-code jammer that selectively degrades targeted PRNs while leaving others unaffected.
+
+### Signal Model
+
+For a normal (unjammed) PRN, each I/Q sample is:
+
+```
+I = dataBit × codeCA × cos(carrier_phase) × gain
+Q = dataBit × codeCA × sin(carrier_phase) × gain
+```
+
+For a `jam_noise` PRN, the interference is added:
+
+```
+I = signal_I + noise_I × (gain × js_linear)
+Q = signal_Q + noise_Q × (gain × js_linear)
+```
+
+Where `js_linear = 10^(J/S_dB / 20)` converts the user-specified J/S ratio from dB to a linear amplitude scale relative to the satellite signal.
+
+### Noise Distribution
+
+The interference samples are generated using an **approximate Gaussian distribution** via the Central Limit Theorem (CLT):
+
+1. **Base PRNG:** A xorshift32 generator (`nextNoiseValue()`) produces uniform integers in [-250, +250]. Each PRN has an independent PRNG state seeded deterministically from the PRN number, ensuring reproducible results.
+
+2. **CLT approximation:** `nextGaussianNoise()` sums 4 independent uniform samples and divides by 4. By the CLT, the sum of independent uniform random variables converges toward a Gaussian distribution. With 4 terms the result has:
+   - Mean: 0
+   - Reduced tail probability compared to uniform (more realistic for thermal/broadband noise)
+   - Output range: [-250, +250] (integer)
+
+3. **Why not true Gaussian?** Box-Muller or Ziggurat methods require floating-point math and `log()`/`sin()` calls per sample at MHz rates. The CLT sum of 4 uniforms is fast (integer-only), deterministic, and sufficient for baseband interference simulation.
+
+### J/S Ratio Parameter
+
+The `-J <dB>` option controls the jammer-to-signal amplitude ratio:
+
+| J/S (dB) | Linear amplitude | Effect |
+|---|---|---|
+| 0 | 1.0 | Noise power equals signal — marginal tracking |
+| 10 | 3.16 | Noise ~10× signal power — likely loss of lock |
+| 20 | 10.0 | Noise ~100× signal power — total denial (default) |
+| 40 | 100.0 | Extreme jamming scenario |
+
+The noise amplitude is scaled relative to each PRN's own `gain` value (which includes path loss and antenna pattern), so the J/S ratio is consistent regardless of satellite elevation or distance.
+
+### Design Rationale
+
+- **Additive, not substitutive:** Real jammers transmit energy; they cannot subtract a satellite signal. The real signal is always present underneath, matching physical reality.
+- **Per-PRN scoping:** Enables partial constellation jamming scenarios (e.g., jam low-elevation PRNs only) without affecting unjammed satellites. This models directional or structured jammers.
+- **Deterministic:** Seeded PRNG ensures identical output for the same parameters, enabling repeatable test campaigns.
+
 ## Example `-A` Inputs
 
 ```bash
-# Two PRNs dropped (implemented today)
+# Two PRNs dropped
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,11:jam_drop
 
-# Mixed catalog (jam_drop + jam_noise active today)
+# Noise jamming on PRN 7 with default J/S = 20 dB
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 7:jam_noise
+
+# Noise jamming with custom J/S = 30 dB
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_noise,7:jam_noise -J 30
+
+# Mixed catalog (jam_drop + jam_noise)
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,7:jam_noise,11:spoof_nav
 ```
 

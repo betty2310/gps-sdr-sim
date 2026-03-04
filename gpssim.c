@@ -123,6 +123,7 @@ typedef enum {
 
 typedef struct {
   attack_method_t method[MAX_SAT];
+  double jam_js_db; // Jammer-to-signal ratio in dB for jam_noise
 } attack_config_t;
 
 void initAttackNoiseState(unsigned int noise_state[MAX_SAT]) {
@@ -149,11 +150,32 @@ int nextNoiseValue(unsigned int *state) {
   return ((int)(x % 501U) - 250);
 }
 
+/*! \brief Generate approximate Gaussian noise via Central Limit Theorem
+ *
+ *  Sums 4 uniform samples from nextNoiseValue() and scales by 0.25.
+ *  Each uniform sample is in [-250, +250], so the sum is in [-1000, +1000].
+ *  After scaling by 0.25 the output is in [-250, +250] with an approximate
+ *  Gaussian distribution (mean 0, reduced variance compared to uniform).
+ *
+ *  \param[in,out] state  Pointer to xorshift PRNG state
+ *  \returns Approximate Gaussian noise sample in [-250, +250]
+ */
+int nextGaussianNoise(unsigned int *state) {
+  int sum;
+
+  sum = nextNoiseValue(state) + nextNoiseValue(state) + nextNoiseValue(state) +
+        nextNoiseValue(state);
+
+  return (sum / 4);
+}
+
 void initAttackConfig(attack_config_t *cfg) {
   int i;
 
   for (i = 0; i < MAX_SAT; i++)
     cfg->method[i] = ATTACK_METHOD_NONE;
+
+  cfg->jam_js_db = 20.0; // Default J/S = 20 dB
 
   return;
 }
@@ -1859,6 +1881,8 @@ void usage(void) {
       "                   Methods: normal, jam_drop, jam_noise, spoof_delay, "
       "spoof_nav\n"
       "                   (Currently implemented: jam_drop, jam_noise)\n"
+      "  -J <js_db>       Jammer-to-signal ratio [dB] for jam_noise (default: "
+      "20)\n"
       "  -v               Show details about simulated channels\n",
       ((double)USER_MOTION_SIZE) / 10.0, STATIC_MAX_DURATION);
 
@@ -1926,6 +1950,7 @@ int main(int argc, char *argv[]) {
   int timeoverwrite = FALSE; // Overwrite the TOC and TOE in the RINEX file
   int attack_enabled = FALSE;
   unsigned int attack_noise_state[MAX_SAT];
+  double jam_js_linear = 10.0; // Default J/S = 20 dB -> 10.0 linear amplitude
 
   ionoutc_t ionoutc;
   attack_config_t attack_cfg;
@@ -1955,7 +1980,7 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
-  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:ipv")) !=
+  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:ipv")) !=
          -1) {
     switch (result) {
     case 'e':
@@ -2084,6 +2109,10 @@ int main(int argc, char *argv[]) {
         exit(1);
       }
       attack_enabled = TRUE;
+      break;
+    case 'J':
+      attack_cfg.jam_js_db = atof(optarg);
+      jam_js_linear = pow(10.0, attack_cfg.jam_js_db / 20.0);
       break;
     case 'v':
       verb = TRUE;
@@ -2445,17 +2474,20 @@ int main(int argc, char *argv[]) {
 #else
           iTable = (chan[i].carr_phase >> 16) & 0x1ff; // 9-bit index
 #endif
+          // Always compute the real satellite signal
+          ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] * gain[i];
+          qp = chan[i].dataBit * chan[i].codeCA * sinTable512[iTable] * gain[i];
+
           if (attack_method == ATTACK_METHOD_JAM_NOISE) {
             unsigned int *state;
+            int noise_amp;
 
             state = &attack_noise_state[chan[i].prn - 1];
-            ip = nextNoiseValue(state) * gain[i];
-            qp = nextNoiseValue(state) * gain[i];
-          } else {
-            ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] *
-                 gain[i];
-            qp = chan[i].dataBit * chan[i].codeCA * sinTable512[iTable] *
-                 gain[i];
+            noise_amp = (int)(gain[i] * jam_js_linear);
+
+            // Add interference on top of real signal
+            ip += nextGaussianNoise(state) * noise_amp;
+            qp += nextGaussianNoise(state) * noise_amp;
           }
 
           // Accumulate for all visible satellites
