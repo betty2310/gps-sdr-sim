@@ -4,9 +4,11 @@
 
 This document defines attack scenario types for GPS-SDR-SIM test campaigns and maps each type to the per-channel parameters that can be controlled.
 
-The `-A` option provides per-PRN method selection in the format:
+Two main interfaces control attack behavior:
 
-`PRN:method[,PRN:method...]`
+1. **`-P <prn_list>`** — Partial constellation mode. Only the listed PRNs are rendered in the IQ output; all other visible satellites are excluded. The attack method for each PRN is controlled separately via `-A`.
+
+2. **`-A <spec>`** — Per-PRN method selection in the format `PRN:method[,PRN:method...]` for fine-grained control.
 
 Supported method names:
 
@@ -16,21 +18,27 @@ Supported method names:
 - `spoof_delay` (planned)
 - `spoof_nav` (planned)
 
+Additional options:
+
+- **`-J <dB>`** — Jammer-to-signal ratio for `jam_noise` (default: 20 dB)
+- **`-G <dB>`** — Power boost for partial-mode PRNs (default: 0 dB)
+
 Current implementation status:
 
 - `jam_drop` is implemented by forcing selected PRN channel gain to zero.
-- `jam_noise` is implemented as additive interference on top of the real satellite signal with configurable J/S ratio (see [Noise Generation Model](#noise-generation-model) below).
+- `jam_noise` is implemented as **matched-code interference** — noise modulated with the target PRN's C/A code and carrier, ensuring interference concentrates on the target correlator while being rejected (~30 dB processing gain) by all other PRNs. See [Noise Generation Model](#noise-generation-model) below.
+- `-P` partial constellation mode is implemented. It filters `allocateChannel()` so only selected PRNs enter the output. Use `-A` to assign an attack method to each.
 - Other methods are placeholders for scenario planning and future implementation.
 
 ## Attack Methods
 
-| Method | Channel Intent | Main Parameter Family |
-|---|---|---|
-| `normal` | No attack on this PRN | none |
-| `jam_drop` | Remove satellite contribution from composite IQ | power/gain |
-| `jam_noise` | Additive interference that buries satellite signal | power/J/S ratio |
-| `spoof_delay` | Shift pseudorange and Doppler coherently | code phase + carrier |
-| `spoof_nav` | Mislead by navigation message manipulation | nav data + timing |
+| Method        | Channel Intent                                              | Main Parameter Family |
+| ------------- | ----------------------------------------------------------- | --------------------- |
+| `normal`      | No attack on this PRN                                       | none                  |
+| `jam_drop`    | Remove satellite contribution from composite IQ             | power/gain            |
+| `jam_noise`   | Matched-code interference targeting specific PRN correlator | power/J/S ratio       |
+| `spoof_delay` | Shift pseudorange and Doppler coherently                    | code phase + carrier  |
+| `spoof_nav`   | Mislead by navigation message manipulation                  | nav data + timing     |
 
 ## All Practical Scenario Classes
 
@@ -108,11 +116,39 @@ Current implementation status:
 3. Time-to-alarm and integrity flag triggering.
 4. Recovery time after attack stop.
 
+## Partial Constellation Mode (`-P`)
+
+### Overview
+
+The `-P` flag enables **targeted OTA jamming** of a subset of the GPS constellation. Only the listed PRNs are rendered in the IQ output file; all other visible satellites are excluded at the channel allocation stage (they consume no channel slots and contribute nothing to the output).
+
+When `-P` is used, only the listed PRNs are rendered. The attack method for each PRN is set separately via `-A`. The intended OTA workflow is:
+
+```
+Real Sky (all satellites) ──────────────────────────► Receiver antenna
+                                                           ▲
+gps-sdr-sim -P 5,14,21 ──► USRP TX (matched-code noise) ──┘
+```
+
+The receiver tracks the remaining constellation normally from the sky, while the targeted PRNs are jammed by the transmitted matched-code interference.
+
+### How It Works
+
+1. **Channel filter:** `allocateChannel()` skips any PRN not in the `-P` list, even if visible. No channel slot is wasted.
+2. **Method via `-A`:** Use `-A` to assign any attack method (e.g., `jam_noise`, `spoof_delay`) to the selected PRNs. Without `-A`, selected PRNs generate normal signals.
+3. **Power boost (`-G`):** Optional dB boost applied to all selected PRNs on top of the natural path-loss/antenna-gain model.
+
+### Why PRN Filtering Is Necessary for OTA
+
+Without `-P`, the IQ output contains valid signals for **all** visible satellites. When transmitted via SDR alongside real sky signals, the receiver sees **double signals** for every non-targeted satellite (one from sky + one from USRP), corrupting tracking across the entire constellation.
+
 ## Noise Generation Model
 
 ### Overview
 
-The `jam_noise` method models a **per-PRN additive interference jammer**. Unlike the previous implementation which replaced the satellite signal with noise, the current model keeps the real satellite signal intact and adds interference on top of it. This simulates a directional or matched-code jammer that selectively degrades targeted PRNs while leaving others unaffected.
+The `jam_noise` method models a **per-PRN matched-code interference jammer**. The noise is modulated with the target PRN's C/A code and carrier phase, so that after despreading in the receiver the interference concentrates on the target PRN's correlator while being rejected by all other PRNs (~30 dB processing gain from the 1023-chip C/A code).
+
+No valid navigation data is transmitted — only noise-modulated spreading code. This denies the target PRN without providing any usable signal the receiver could track.
 
 ### Signal Model
 
@@ -123,14 +159,25 @@ I = dataBit × codeCA × cos(carrier_phase) × gain
 Q = dataBit × codeCA × sin(carrier_phase) × gain
 ```
 
-For a `jam_noise` PRN, the interference is added:
+For a `jam_noise` PRN, the output is **replaced** with matched-code noise (no valid signal component):
 
 ```
-I = signal_I + noise_I × (gain × js_linear)
-Q = signal_Q + noise_Q × (gain × js_linear)
+I = gaussianNoise × codeCA × cos(carrier_phase) × noise_amp
+Q = gaussianNoise × codeCA × sin(carrier_phase) × noise_amp
 ```
 
-Where `js_linear = 10^(J/S_dB / 20)` converts the user-specified J/S ratio from dB to a linear amplitude scale relative to the satellite signal.
+Where `noise_amp = gain × js_linear` and `js_linear = 10^(J/S_dB / 20)`.
+
+### Why Matched-Code, Not Broadband
+
+GPS receivers despread incoming signals by correlating with each PRN's known C/A code. This provides ~30 dB of processing gain (10 × log10(1023)):
+
+| Noise Type                         | Effect on target PRN               | Effect on other PRNs                                   |
+| ---------------------------------- | ---------------------------------- | ------------------------------------------------------ |
+| **Broadband** (old implementation) | Attenuated ~30 dB by despreading   | Attenuated ~30 dB equally — jams everything or nothing |
+| **Matched-code** (current)         | Full noise power after despreading | Attenuated ~30 dB — effectively invisible              |
+
+Matched-code noise is the only way to achieve **selective** jamming when transmitting OTA alongside real sky signals.
 
 ### Noise Distribution
 
@@ -149,35 +196,51 @@ The interference samples are generated using an **approximate Gaussian distribut
 
 The `-J <dB>` option controls the jammer-to-signal amplitude ratio:
 
-| J/S (dB) | Linear amplitude | Effect |
-|---|---|---|
-| 0 | 1.0 | Noise power equals signal — marginal tracking |
-| 10 | 3.16 | Noise ~10× signal power — likely loss of lock |
-| 20 | 10.0 | Noise ~100× signal power — total denial (default) |
-| 40 | 100.0 | Extreme jamming scenario |
+| J/S (dB) | Linear amplitude | Effect                                            |
+| -------- | ---------------- | ------------------------------------------------- |
+| 0        | 1.0              | Noise power equals signal — marginal tracking     |
+| 10       | 3.16             | Noise ~10× signal power — likely loss of lock     |
+| 20       | 10.0             | Noise ~100× signal power — total denial (default) |
+| 40       | 100.0            | Extreme jamming scenario                          |
 
 The noise amplitude is scaled relative to each PRN's own `gain` value (which includes path loss and antenna pattern), so the J/S ratio is consistent regardless of satellite elevation or distance.
 
 ### Design Rationale
 
-- **Additive, not substitutive:** Real jammers transmit energy; they cannot subtract a satellite signal. The real signal is always present underneath, matching physical reality.
-- **Per-PRN scoping:** Enables partial constellation jamming scenarios (e.g., jam low-elevation PRNs only) without affecting unjammed satellites. This models directional or structured jammers.
+- **Matched-code, not broadband:** Noise is modulated with the target C/A code and carrier, concentrating interference on the target correlator after despreading. This enables selective jamming of individual PRNs when transmitting OTA.
+- **No valid signal component:** Only noise is transmitted for jammed PRNs. Including a valid signal would help the receiver track (counterproductive for jamming).
+- **Per-PRN scoping:** Enables partial constellation jamming scenarios (e.g., jam low-elevation PRNs only) without affecting unjammed satellites.
 - **Deterministic:** Seeded PRNG ensures identical output for the same parameters, enabling repeatable test campaigns.
 
-## Example `-A` Inputs
+## Examples
+
+### Partial Constellation Targeted Jamming (`-P` + `-A`)
 
 ```bash
-# Two PRNs dropped
+# Render only PRNs 5 and 14 with matched-code noise jamming
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14 -A 5:jam_noise,14:jam_nois2.2.66e
+
+# Same with custom J/S = 30 dB
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 30
+
+# With +5 dB power boost to ensure jamming overcomes real sky signal
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -G 5
+
+# Render only selected PRNs with normal signal (no attack) — useful for future spoofing
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21
+```
+
+### Per-PRN Attack Config (`-A`)
+
+```bash
+# Two PRNs dropped (gain zeroed — for offline/simulation use)
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,11:jam_drop
 
-# Noise jamming on PRN 7 with default J/S = 20 dB
+# Matched-code noise jamming on PRN 7 with default J/S = 20 dB
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 7:jam_noise
 
-# Noise jamming with custom J/S = 30 dB
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_noise,7:jam_noise -J 30
-
 # Mixed catalog (jam_drop + jam_noise)
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,7:jam_noise,11:spoof_nav
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,7:jam_noise
 ```
 
 ## Recommended Next Implementation Order

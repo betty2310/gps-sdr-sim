@@ -123,7 +123,10 @@ typedef enum {
 
 typedef struct {
   attack_method_t method[MAX_SAT];
-  double jam_js_db; // Jammer-to-signal ratio in dB for jam_noise
+  double jam_js_db;          // Jammer-to-signal ratio in dB for jam_noise
+  int prn_select[MAX_SAT];   // 1 = render this PRN, 0 = suppress
+  int partial_mode;           // 1 = only render selected PRNs
+  double gain_boost_db;       // Power boost in dB for partial-mode PRNs
 } attack_config_t;
 
 void initAttackNoiseState(unsigned int noise_state[MAX_SAT]) {
@@ -172,10 +175,14 @@ int nextGaussianNoise(unsigned int *state) {
 void initAttackConfig(attack_config_t *cfg) {
   int i;
 
-  for (i = 0; i < MAX_SAT; i++)
+  for (i = 0; i < MAX_SAT; i++) {
     cfg->method[i] = ATTACK_METHOD_NONE;
+    cfg->prn_select[i] = 1; // Default: render all PRNs
+  }
 
   cfg->jam_js_db = 20.0; // Default J/S = 20 dB
+  cfg->partial_mode = FALSE;
+  cfg->gain_boost_db = 0.0;
 
   return;
 }
@@ -244,6 +251,36 @@ int parseAttackConfig(attack_config_t *cfg, const char *spec) {
     cfg->method[prn - 1] = method;
     token = strtok(NULL, ",");
   }
+
+  return (TRUE);
+}
+
+int parsePartialPrns(attack_config_t *cfg, const char *spec) {
+  char buf[1024];
+  char *token;
+  int i;
+
+  if (strlen(spec) >= sizeof(buf))
+    return (FALSE);
+
+  // Clear all PRNs first — only listed ones will be rendered
+  for (i = 0; i < MAX_SAT; i++)
+    cfg->prn_select[i] = 0;
+
+  strcpy(buf, spec);
+
+  token = strtok(buf, ",");
+  while (token != NULL) {
+    int prn = atoi(token);
+
+    if (prn < 1 || prn > MAX_SAT)
+      return (FALSE);
+
+    cfg->prn_select[prn - 1] = 1;
+    token = strtok(NULL, ",");
+  }
+
+  cfg->partial_mode = TRUE;
 
   return (TRUE);
 }
@@ -1777,7 +1814,8 @@ int checkSatVisibility(ephem_t eph, gpstime_t g, double *xyz, double elvMask,
 }
 
 int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
-                    gpstime_t grx, double *xyz, double elvMask) {
+                    gpstime_t grx, double *xyz, double elvMask,
+                    const attack_config_t *acfg) {
   int nsat = 0;
   int i, sv;
   double azel[2];
@@ -1789,6 +1827,15 @@ int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
 
   for (sv = 0; sv < MAX_SAT; sv++) {
     if (checkSatVisibility(eph[sv], grx, xyz, 0.0, azel) == 1) {
+      // Partial mode: skip PRNs not in the selection list
+      if (acfg->partial_mode && !acfg->prn_select[sv]) {
+        if (allocatedSat[sv] >= 0) {
+          chan[allocatedSat[sv]].prn = 0;
+          allocatedSat[sv] = -1;
+        }
+        continue;
+      }
+
       nsat++; // Number of visible satellites
 
       if (allocatedSat[sv] == -1) // Visible but not allocated
@@ -1883,6 +1930,10 @@ void usage(void) {
       "                   (Currently implemented: jam_drop, jam_noise)\n"
       "  -J <js_db>       Jammer-to-signal ratio [dB] for jam_noise (default: "
       "20)\n"
+      "  -P <prn_list>    Partial constellation mode: only render listed PRNs\n"
+      "                   e.g. -P 5,14,21\n"
+      "  -G <boost_db>    Power boost [dB] for partial-mode PRNs (default: "
+      "0)\n"
       "  -v               Show details about simulated channels\n",
       ((double)USER_MOTION_SIZE) / 10.0, STATIC_MAX_DURATION);
 
@@ -1980,7 +2031,7 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
-  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:ipv")) !=
+  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:ipv")) !=
          -1) {
     switch (result) {
     case 'e':
@@ -2113,6 +2164,16 @@ int main(int argc, char *argv[]) {
     case 'J':
       attack_cfg.jam_js_db = atof(optarg);
       jam_js_linear = pow(10.0, attack_cfg.jam_js_db / 20.0);
+      break;
+    case 'P':
+      if (parsePartialPrns(&attack_cfg, optarg) == FALSE) {
+        fprintf(stderr, "ERROR: Invalid PRN list. Use -P PRN[,PRN...] e.g. "
+                        "-P 5,14,21\n");
+        exit(1);
+      }
+      break;
+    case 'G':
+      attack_cfg.gain_boost_db = atof(optarg);
       break;
     case 'v':
       verb = TRUE;
@@ -2313,6 +2374,17 @@ int main(int argc, char *argv[]) {
                       "not applied yet (implemented: jam_drop, jam_noise).\n");
   }
 
+  if (attack_cfg.partial_mode == TRUE) {
+    fprintf(stderr, "Partial constellation mode: rendering only PRNs");
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      if (attack_cfg.prn_select[sv])
+        fprintf(stderr, " %d", sv + 1);
+    }
+    fprintf(stderr, "\n");
+    if (attack_cfg.gain_boost_db != 0.0)
+      fprintf(stderr, "  Power boost: +%.1f dB\n", attack_cfg.gain_boost_db);
+  }
+
   // Select the current set of ephemerides
   ieph = -1;
 
@@ -2391,7 +2463,7 @@ int main(int argc, char *argv[]) {
   grx = incGpsTime(g0, 0.0);
 
   // Allocate visible satellites
-  allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask);
+  allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask, &attack_cfg);
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)
@@ -2454,6 +2526,10 @@ int main(int argc, char *argv[]) {
 
         if (attack_enabled == TRUE)
           applyGainAttack(&attack_cfg, chan[i].prn, &gain[i]);
+
+        // Apply power boost for partial constellation mode
+        if (attack_cfg.partial_mode && attack_cfg.gain_boost_db != 0.0)
+          gain[i] = (int)(gain[i] * pow(10.0, attack_cfg.gain_boost_db / 20.0));
       }
     }
 
@@ -2474,20 +2550,24 @@ int main(int argc, char *argv[]) {
 #else
           iTable = (chan[i].carr_phase >> 16) & 0x1ff; // 9-bit index
 #endif
-          // Always compute the real satellite signal
-          ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] * gain[i];
-          qp = chan[i].dataBit * chan[i].codeCA * sinTable512[iTable] * gain[i];
-
           if (attack_method == ATTACK_METHOD_JAM_NOISE) {
+            // Matched-code noise: noise modulated with target PRN's C/A code
+            // and carrier so interference concentrates on this PRN's correlator
+            // while appearing as spread noise to all other PRNs (~30 dB reject)
             unsigned int *state;
             int noise_amp;
 
             state = &attack_noise_state[chan[i].prn - 1];
             noise_amp = (int)(gain[i] * jam_js_linear);
 
-            // Add interference on top of real signal
-            ip += nextGaussianNoise(state) * noise_amp;
-            qp += nextGaussianNoise(state) * noise_amp;
+            ip = nextGaussianNoise(state) * chan[i].codeCA *
+                 cosTable512[iTable] * noise_amp;
+            qp = nextGaussianNoise(state) * chan[i].codeCA *
+                 sinTable512[iTable] * noise_amp;
+          } else {
+            // Normal satellite signal
+            ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] * gain[i];
+            qp = chan[i].dataBit * chan[i].codeCA * sinTable512[iTable] * gain[i];
           }
 
           // Accumulate for all visible satellites
@@ -2610,9 +2690,11 @@ int main(int argc, char *argv[]) {
 
       // Update channel allocation
       if (!staticLocationMode)
-        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[iumd], elvmask);
+        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[iumd], elvmask,
+                        &attack_cfg);
       else
-        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask);
+        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask,
+                        &attack_cfg);
 
       // Show details about simulated channels
       if (verb == TRUE) {

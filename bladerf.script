@@ -1,9 +1,7 @@
-set frequency 1575.42M
-set samplerate 2.6M
-set bandwidth 2.5M
-set txvga1 -25
-cal lms
-cal dc tx
-tx config file=gpssim.bin format=bin
+set frequency tx1 1575420000
+set samplerate tx1 4000000
+set bandwidth tx1 4000000
+set gain tx1 30
+tx config file=gpssim.bin format=bin repeat=0
 tx start
-tx wait 
+tx wait
