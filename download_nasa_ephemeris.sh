@@ -2,13 +2,7 @@
 
 set -euo pipefail
 
-cookie="${NASA_AUTH_COOKIE:-${1:-}}"
-
-if [[ -z "$cookie" ]]; then
-  echo "Usage: NASA_AUTH_COOKIE='urs_guid_ops=...; ProxyAuth=...' $0"
-  echo "   or: $0 'urs_guid_ops=...; ProxyAuth=...'"
-  exit 1
-fi
+cookie="$1"
 
 year="$(date +%Y)"
 yy="$(date +%y)"
@@ -20,8 +14,8 @@ url="https://cddis.nasa.gov/archive/gnss/data/daily/${year}/${doy}/${yy}n/${gz_f
 
 echo "Downloading URL: ${url}"
 
-curl --fail --location "$url" \
-  --cookie "$cookie" \
+curl "$url" \
+  -b "ProxyAuth=${cookie}" \
   --output "$gz_file"
 
 gzip -df "$gz_file"
