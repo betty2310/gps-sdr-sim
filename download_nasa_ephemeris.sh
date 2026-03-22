@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cookie="${NASA_AUTH_COOKIE:-${1:-}}"
+
+if [[ -z "$cookie" ]]; then
+  echo "Usage: NASA_AUTH_COOKIE='urs_guid_ops=...; ProxyAuth=...' $0"
+  echo "   or: $0 'urs_guid_ops=...; ProxyAuth=...'"
+  exit 1
+fi
+
+year="$(date +%Y)"
+yy="$(date +%y)"
+doy="$(date +%j)"
+
+base_name="brdc${doy}0.${yy}n"
+gz_file="${base_name}.gz"
+url="https://cddis.nasa.gov/archive/gnss/data/daily/${year}/${doy}/${yy}n/${gz_file}"
+
+echo "Downloading URL: ${url}"
+
+curl --fail --location "$url" \
+  --cookie "$cookie" \
+  --output "$gz_file"
+
+gzip -df "$gz_file"
+
+echo "Saved ephemeris file: ${base_name}"
