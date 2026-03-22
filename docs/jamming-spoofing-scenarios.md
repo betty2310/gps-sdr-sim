@@ -216,12 +216,14 @@ The noise amplitude is scaled relative to each PRN's own `gain` value (which inc
 
 ### Partial Constellation Targeted Jamming (`-P` + `-A`)
 
+Start low jammer strength and ramp slowly (-J 0 -> 3 -> 6 -> 10 -> 15 -> 20).
+
 ```bash
 # Render only PRNs 5 and 14 with matched-code noise jamming
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14 -A 5:jam_noise,14:jam_nois2.2.66e
 
 # Same with custom J/S = 30 dB
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 30
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 3
 
 # With +5 dB power boost to ensure jamming overcomes real sky signal
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -G 5

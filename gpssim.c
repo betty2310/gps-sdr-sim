@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_DEPRECATE
 
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,6 +129,26 @@ typedef struct {
   int partial_mode;           // 1 = only render selected PRNs
   double gain_boost_db;       // Power boost in dB for partial-mode PRNs
 } attack_config_t;
+
+// RMS of nextGaussianNoise() output (CLT average of 4 samples in [-250, 250]).
+// We normalize jammer noise by this constant so -J maps to expected J/S.
+#define JAM_NOISE_RMS_SCALE 72.31
+
+short clipInt16(int x) {
+  if (x > SHRT_MAX)
+    return (SHRT_MAX);
+  if (x < SHRT_MIN)
+    return (SHRT_MIN);
+  return ((short)x);
+}
+
+int clipInt32FromDouble(double x) {
+  if (x > (double)INT_MAX)
+    return (INT_MAX);
+  if (x < (double)INT_MIN)
+    return (INT_MIN);
+  return ((int)round(x));
+}
 
 void initAttackNoiseState(unsigned int noise_state[MAX_SAT]) {
   int sv;
@@ -2555,15 +2576,19 @@ int main(int argc, char *argv[]) {
             // and carrier so interference concentrates on this PRN's correlator
             // while appearing as spread noise to all other PRNs (~30 dB reject)
             unsigned int *state;
-            int noise_amp;
+            double noise_amp;
+            double ni, nq;
 
             state = &attack_noise_state[chan[i].prn - 1];
-            noise_amp = (int)(gain[i] * jam_js_linear);
+            noise_amp = (double)gain[i] * jam_js_linear;
 
-            ip = nextGaussianNoise(state) * chan[i].codeCA *
-                 cosTable512[iTable] * noise_amp;
-            qp = nextGaussianNoise(state) * chan[i].codeCA *
-                 sinTable512[iTable] * noise_amp;
+            ni = (double)nextGaussianNoise(state) / JAM_NOISE_RMS_SCALE;
+            nq = (double)nextGaussianNoise(state) / JAM_NOISE_RMS_SCALE;
+
+            ip = clipInt32FromDouble(ni * chan[i].codeCA * cosTable512[iTable] *
+                                     noise_amp);
+            qp = clipInt32FromDouble(nq * chan[i].codeCA * sinTable512[iTable] *
+                                     noise_amp);
           } else {
             // Normal satellite signal
             ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] * gain[i];
@@ -2629,8 +2654,8 @@ int main(int argc, char *argv[]) {
       q_acc = (q_acc + 64) >> 7;
 
       // Store I/Q samples into buffer
-      iq_buff[isamp * 2] = (short)i_acc;
-      iq_buff[isamp * 2 + 1] = (short)q_acc;
+      iq_buff[isamp * 2] = clipInt16(i_acc);
+      iq_buff[isamp * 2 + 1] = clipInt16(q_acc);
     }
 
     if (data_format == SC01) {
