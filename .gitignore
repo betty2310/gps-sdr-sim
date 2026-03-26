@@ -44,3 +44,6 @@ nbproject/*
 
 # Last used USER_MOTION_SIZE variable
 .user-motion-size
+*.nav
+*.obs
+*.26n

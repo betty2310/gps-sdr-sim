@@ -114,6 +114,11 @@ int allocatedSat[MAX_SAT];
 
 double xyz[USER_MOTION_SIZE][3];
 
+// Forward declarations for functions used by synthetic satellite code
+void xyz2llh(const double *xyz, double *llh);
+void ltcmat(const double *llh, double t[3][3]);
+double normVect(const double *x);
+
 typedef enum {
   ATTACK_METHOD_NONE = 0,
   ATTACK_METHOD_JAM_DROP,
@@ -335,6 +340,258 @@ void applyGainAttack(const attack_config_t *cfg, int prn, int *gain) {
   method = cfg->method[prn - 1];
   if (method == ATTACK_METHOD_JAM_DROP)
     *gain = 0;
+
+  return;
+}
+
+// Synthetic satellite configuration
+
+#define GPS_ORBIT_RADIUS 26559700.0    // GPS semi-major axis (meters)
+#define GPS_INCLINATION  0.9599310886  // ~55 degrees in radians
+#define D2R (PI / 180.0)
+
+void initSynthConfig(synth_config_t *cfg) {
+  int i;
+
+  for (i = 0; i < MAX_SAT; i++) {
+    cfg->mode[i] = SYNTH_NONE;
+    cfg->azimuth[i] = 0.0;
+    cfg->elevation[i] = 0.0;
+  }
+
+  cfg->enabled = FALSE;
+
+  return;
+}
+
+int parseSynthConfig(synth_config_t *cfg, const char *spec) {
+  char buf[1024];
+  char *token;
+
+  if (strlen(spec) >= sizeof(buf))
+    return (FALSE);
+
+  strcpy(buf, spec);
+
+  token = strtok(buf, ",");
+  while (token != NULL) {
+    char *colon;
+    int prn;
+
+    colon = strchr(token, ':');
+    if (colon == NULL)
+      return (FALSE);
+
+    *colon = '\0';
+    {
+      char *endptr;
+
+      prn = (int)strtol(token, &endptr, 10);
+      if (*endptr != '\0' || prn < 1 || prn > MAX_SAT)
+        return (FALSE);
+    }
+
+    if (strcmp(colon + 1, "force") == 0) {
+      cfg->mode[prn - 1] = SYNTH_FORCE;
+    } else if (strcmp(colon + 1, "overhead") == 0) {
+      cfg->mode[prn - 1] = SYNTH_OVERHEAD;
+    } else {
+      // Try to parse as az/el (two floats separated by '/')
+      double az_deg, el_deg;
+      char *rest = colon + 1;
+      char *sep = strchr(rest, '/');
+      char *endptr;
+
+      if (sep == NULL)
+        return (FALSE);
+
+      *sep = '\0';
+      az_deg = strtod(rest, &endptr);
+      if (*endptr != '\0')
+        return (FALSE);
+
+      el_deg = strtod(sep + 1, &endptr);
+      if (*endptr != '\0')
+        return (FALSE);
+
+      if (az_deg < 0.0 || az_deg >= 360.0) {
+        fprintf(stderr,
+                "ERROR: Synthetic azimuth must be in [0, 360) degrees.\n");
+        return (FALSE);
+      }
+
+      if (el_deg < -5.0 || el_deg > 90.0) {
+        fprintf(stderr,
+                "ERROR: Synthetic elevation must be in [-5, 90] degrees.\n");
+        return (FALSE);
+      }
+
+      cfg->mode[prn - 1] = SYNTH_AZEL;
+      cfg->azimuth[prn - 1] = az_deg * D2R;
+      cfg->elevation[prn - 1] = el_deg * D2R;
+    }
+
+    cfg->enabled = TRUE;
+    token = strtok(NULL, ",");
+  }
+
+  return (TRUE);
+}
+
+/*! \brief Convert az/el from receiver to satellite ECEF at GPS orbit altitude
+ *  \param[in] rx_xyz  Receiver position in ECEF (meters)
+ *  \param[in] az      Azimuth (radians, from North)
+ *  \param[in] el      Elevation (radians, from horizon)
+ *  \param[out] sat_ecef  Satellite ECEF position (meters)
+ */
+void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef) {
+  double llh[3];
+  double tmat[3][3];
+  double neu[3], ecef_dir[3];
+  double r_rx, disc, slant;
+
+  // NEU unit vector for desired az/el
+  neu[0] = cos(el) * cos(az);  // North
+  neu[1] = cos(el) * sin(az);  // East
+  neu[2] = sin(el);            // Up
+
+  // Get receiver LLH and local tangent matrix
+  xyz2llh(rx_xyz, llh);
+  ltcmat(llh, tmat);
+
+  // NEU -> ECEF: transpose of ltcmat (orthogonal matrix)
+  ecef_dir[0] = tmat[0][0] * neu[0] + tmat[1][0] * neu[1] + tmat[2][0] * neu[2];
+  ecef_dir[1] = tmat[0][1] * neu[0] + tmat[1][1] * neu[1] + tmat[2][1] * neu[2];
+  ecef_dir[2] = tmat[0][2] * neu[0] + tmat[1][2] * neu[1] + tmat[2][2] * neu[2];
+
+  // Slant range via law of cosines:
+  // R_sat^2 = R_rx^2 + d^2 + 2*R_rx*d*sin(el)
+  // d^2 + 2*R_rx*sin(el)*d + (R_rx^2 - R_sat^2) = 0
+  r_rx = normVect(rx_xyz);
+  disc = GPS_ORBIT_RADIUS * GPS_ORBIT_RADIUS - r_rx * r_rx * cos(el) * cos(el);
+
+  if (disc < 0.0) {
+    // Ray misses the orbit sphere — place at zenith as fallback
+    slant = GPS_ORBIT_RADIUS - r_rx;
+    ecef_dir[0] = rx_xyz[0] / r_rx;
+    ecef_dir[1] = rx_xyz[1] / r_rx;
+    ecef_dir[2] = rx_xyz[2] / r_rx;
+  } else {
+    slant = -r_rx * sin(el) + sqrt(disc);
+  }
+
+  sat_ecef[0] = rx_xyz[0] + slant * ecef_dir[0];
+  sat_ecef[1] = rx_xyz[1] + slant * ecef_dir[1];
+  sat_ecef[2] = rx_xyz[2] + slant * ecef_dir[2];
+
+  return;
+}
+
+/*! \brief Synthesize ephemeris for a satellite at desired sky position
+ *  \param[out] eph     Output ephemeris struct (fully populated)
+ *  \param[in] rx_xyz   Receiver position in ECEF (meters)
+ *  \param[in] az       Desired azimuth (radians)
+ *  \param[in] el       Desired elevation (radians)
+ *  \param[in] toe      Time of ephemeris (GPS time)
+ *  \param[in] toc      Time of clock (GPS time)
+ */
+void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
+                    gpstime_t toe, gpstime_t toc) {
+  double sat_ecef[3];
+  double xpk, ypk, ok, uk;
+
+  memset(eph, 0, sizeof(ephem_t));
+
+  // Compute satellite ECEF from desired az/el
+  azel2satpos(rx_xyz, az, el, sat_ecef);
+
+  // Derive orbital elements from ECEF position
+  // For circular orbit (ecc=0, aop=0) at t=toe:
+  //   pos[0] = xpk * cos(ok) - ypk * cos(inc0) * sin(ok)
+  //   pos[1] = xpk * sin(ok) + ypk * cos(inc0) * cos(ok)
+  //   pos[2] = ypk * sin(inc0)
+  // where xpk = A*cos(uk), ypk = A*sin(uk), uk = m0 (since ecc=0, aop=0)
+
+  // From Z: ypk = Z / sin(inc0)
+  // Clamp to valid range: |ypk| <= A (orbit radius)
+  // Can exceed range for receivers at latitude > GPS inclination (~55 deg)
+  ypk = sat_ecef[2] / sin(GPS_INCLINATION);
+  {
+    double max_ypk = GPS_ORBIT_RADIUS * 0.9999;
+
+    if (ypk > max_ypk)
+      ypk = max_ypk;
+    else if (ypk < -max_ypk)
+      ypk = -max_ypk;
+  }
+  xpk = sqrt(GPS_ORBIT_RADIUS * GPS_ORBIT_RADIUS - ypk * ypk);
+
+  // Check sign of xpk using X and Y
+  {
+    double cik = cos(GPS_INCLINATION);
+    double ypk_ci = ypk * cik;
+    double test_x_pos = xpk * sat_ecef[0] + ypk_ci * sat_ecef[1];
+
+    if (test_x_pos < 0.0)
+      xpk = -xpk;
+  }
+
+  uk = atan2(ypk, xpk);
+
+  // Solve for ok from X,Y:
+  // X = xpk*cos(ok) - ypk*cos(inc)*sin(ok)
+  // Y = xpk*sin(ok) + ypk*cos(inc)*cos(ok)
+  {
+    double cik = cos(GPS_INCLINATION);
+    double ypk_ci = ypk * cik;
+
+    // X = xpk*cos(ok) - ypk_ci*sin(ok)
+    // Y = xpk*sin(ok) + ypk_ci*cos(ok)
+    // ok = atan2(Y*xpk - X*ypk_ci, X*xpk + Y*ypk_ci)
+    ok = atan2(sat_ecef[1] * xpk - sat_ecef[0] * ypk_ci,
+               sat_ecef[0] * xpk + sat_ecef[1] * ypk_ci);
+  }
+
+  // Fill ephemeris
+  eph->vflg = 1;
+  eph->toe = toe;
+  eph->toc = toc;
+
+  eph->sqrta = sqrt(GPS_ORBIT_RADIUS);
+  eph->ecc = 0.0;
+  eph->inc0 = GPS_INCLINATION;
+  eph->m0 = uk;          // mean anomaly = argument of latitude for circular orbit
+  eph->aop = 0.0;
+  eph->omg0 = ok + OMEGA_EARTH * toe.sec;  // invert Earth rotation from satpos()
+  eph->omgdot = -8.0e-9; // approximate GPS RAAN rate
+  eph->idot = 0.0;
+  eph->deltan = 0.0;
+
+  // Zero all perturbation terms
+  eph->cuc = 0.0;
+  eph->cus = 0.0;
+  eph->cic = 0.0;
+  eph->cis = 0.0;
+  eph->crc = 0.0;
+  eph->crs = 0.0;
+
+  // Clock and group delay
+  eph->af0 = 0.0;
+  eph->af1 = 0.0;
+  eph->af2 = 0.0;
+  eph->tgd = 0.0;
+
+  // Satellite health and codes
+  eph->svhlth = 0;  // healthy
+  eph->codeL2 = 1;
+  eph->iode = 1;
+  eph->iodc = 1;
+
+  // Compute working variables (same as readRinexNavAll post-processing)
+  eph->A = eph->sqrta * eph->sqrta;
+  eph->n = sqrt(GM_EARTH / (eph->A * eph->A * eph->A)) + eph->deltan;
+  eph->sq1e2 = 1.0;  // sqrt(1 - 0^2)
+  eph->omgkdot = eph->omgdot - OMEGA_EARTH;
 
   return;
 }
@@ -1836,9 +2093,11 @@ int checkSatVisibility(ephem_t eph, gpstime_t g, double *xyz, double elvMask,
 
 int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
                     gpstime_t grx, double *xyz, double elvMask,
-                    const attack_config_t *acfg) {
+                    const attack_config_t *acfg,
+                    const synth_config_t *scfg) {
   int nsat = 0;
   int i, sv;
+  int vis;
   double azel[2];
 
   range_t rho;
@@ -1847,7 +2106,19 @@ int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
   double phase_ini;
 
   for (sv = 0; sv < MAX_SAT; sv++) {
-    if (checkSatVisibility(eph[sv], grx, xyz, 0.0, azel) == 1) {
+    if (scfg->enabled && scfg->mode[sv] != SYNTH_NONE) {
+      // Synthetic/forced: bypass elevation check
+      if (eph[sv].vflg != 1) {
+        vis = -1;
+      } else {
+        checkSatVisibility(eph[sv], grx, xyz, -90.0, azel);
+        vis = 1;
+      }
+    } else {
+      vis = checkSatVisibility(eph[sv], grx, xyz, 0.0, azel);
+    }
+
+    if (vis == 1) {
       // Partial mode: skip PRNs not in the selection list
       if (acfg->partial_mode && !acfg->prn_select[sv]) {
         if (allocatedSat[sv] >= 0) {
@@ -1955,6 +2226,14 @@ void usage(void) {
       "                   e.g. -P 5,14,21\n"
       "  -G <boost_db>    Power boost [dB] for partial-mode PRNs (default: "
       "0)\n"
+      "  -S <synth_spec>  Synthetic satellite: PRN:force, PRN:overhead, "
+      "PRN:az/el\n"
+      "                   force = bypass elevation (needs ephemeris in "
+      "RINEX)\n"
+      "                   overhead = synthesize at zenith\n"
+      "                   az/el = synthesize at azimuth/elevation in "
+      "degrees\n"
+      "                   e.g. -S 17:force,25:overhead,30:180.0/45.0\n"
       "  -v               Show details about simulated channels\n",
       ((double)USER_MOTION_SIZE) / 10.0, STATIC_MAX_DURATION);
 
@@ -2026,6 +2305,7 @@ int main(int argc, char *argv[]) {
 
   ionoutc_t ionoutc;
   attack_config_t attack_cfg;
+  synth_config_t synth_cfg;
   int path_loss_enable = TRUE;
 
   ////////////////////////////////////////////////////////////
@@ -2046,13 +2326,14 @@ int main(int argc, char *argv[]) {
   ionoutc.leapen = FALSE;
   initAttackConfig(&attack_cfg);
   initAttackNoiseState(attack_noise_state);
+  initSynthConfig(&synth_cfg);
 
   if (argc < 3) {
     usage();
     exit(1);
   }
 
-  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:ipv")) !=
+  while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:ipv")) !=
          -1) {
     switch (result) {
     case 'e':
@@ -2195,6 +2476,16 @@ int main(int argc, char *argv[]) {
       break;
     case 'G':
       attack_cfg.gain_boost_db = atof(optarg);
+      break;
+    case 'S':
+      if (parseSynthConfig(&synth_cfg, optarg) == FALSE) {
+        fprintf(stderr,
+                "ERROR: Invalid synthetic spec. Use PRN:force, PRN:overhead, "
+                "or PRN:az/el\n");
+        fprintf(stderr,
+                "       e.g. -S 17:force,25:overhead,30:180.0/45.0\n");
+        exit(1);
+      }
       break;
     case 'v':
       verb = TRUE;
@@ -2430,6 +2721,93 @@ int main(int argc, char *argv[]) {
   }
 
   ////////////////////////////////////////////////////////////
+  // Inject synthetic satellite ephemerides
+  ////////////////////////////////////////////////////////////
+
+  if (synth_cfg.enabled) {
+    gpstime_t ref_toe, ref_toc;
+    int found_ref = FALSE;
+
+    // Find a reference toe/toc from any valid ephemeris
+    for (sv = 0; sv < MAX_SAT && !found_ref; sv++) {
+      if (eph[ieph][sv].vflg == 1) {
+        ref_toe = eph[ieph][sv].toe;
+        ref_toc = eph[ieph][sv].toc;
+        found_ref = TRUE;
+      }
+    }
+
+    if (!found_ref) {
+      fprintf(stderr, "ERROR: No valid ephemeris found as reference for "
+                      "synthetic satellites.\n");
+      exit(1);
+    }
+
+    {
+      for (sv = 0; sv < MAX_SAT; sv++) {
+        if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
+            synth_cfg.mode[sv] == SYNTH_AZEL) {
+          double az, el;
+
+          if (synth_cfg.mode[sv] == SYNTH_OVERHEAD) {
+            az = 0.0;
+            el = PI / 2.0;
+          } else {
+            az = synth_cfg.azimuth[sv];
+            el = synth_cfg.elevation[sv];
+          }
+
+          // Check if requested position exceeds GPS inclination band
+          {
+            double max_z = GPS_ORBIT_RADIUS * sin(GPS_INCLINATION) * 0.9999;
+            double test_sat[3];
+
+            azel2satpos(xyz[0], az, el, test_sat);
+            if (fabs(test_sat[2]) > max_z)
+              fprintf(stderr,
+                      "WARNING: PRN %d requested position exceeds GPS "
+                      "inclination band (~55 deg), clamped.\n",
+                      sv + 1);
+          }
+
+          // Inject into all ephemeris sets
+          for (i = 0; i < neph; i++) {
+            gpstime_t ie_toe = ref_toe, ie_toc = ref_toc;
+
+            // Use set-specific toe/toc if available from any valid SV
+            {
+              int sv2;
+              for (sv2 = 0; sv2 < MAX_SAT; sv2++) {
+                if (eph[i][sv2].vflg == 1) {
+                  ie_toe = eph[i][sv2].toe;
+                  ie_toc = eph[i][sv2].toc;
+                  break;
+                }
+              }
+            }
+
+            synthEphemeris(&eph[i][sv], xyz[0], az, el, ie_toe, ie_toc);
+          }
+
+          fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n",
+                  sv + 1, az * R2D, el * R2D);
+        } else if (synth_cfg.mode[sv] == SYNTH_FORCE) {
+          if (eph[ieph][sv].vflg != 1) {
+            fprintf(stderr,
+                    "WARNING: PRN %d forced but has no ephemeris in RINEX. "
+                    "Skipping.\n",
+                    sv + 1);
+            synth_cfg.mode[sv] = SYNTH_NONE;
+          } else {
+            fprintf(stderr, "Forced PRN %02d (below-horizon bypass)\n",
+                    sv + 1);
+          }
+        }
+      }
+    }
+  }
+
+  ////////////////////////////////////////////////////////////
   // Baseband signal buffer and output file
   ////////////////////////////////////////////////////////////
 
@@ -2484,7 +2862,8 @@ int main(int argc, char *argv[]) {
   grx = incGpsTime(g0, 0.0);
 
   // Allocate visible satellites
-  allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask, &attack_cfg);
+  allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask, &attack_cfg,
+                  &synth_cfg);
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)
@@ -2716,10 +3095,10 @@ int main(int argc, char *argv[]) {
       // Update channel allocation
       if (!staticLocationMode)
         allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[iumd], elvmask,
-                        &attack_cfg);
+                        &attack_cfg, &synth_cfg);
       else
         allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask,
-                        &attack_cfg);
+                        &attack_cfg, &synth_cfg);
 
       // Show details about simulated channels
       if (verb == TRUE) {

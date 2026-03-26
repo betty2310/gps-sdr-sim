@@ -184,4 +184,20 @@ typedef struct
 	range_t rho0;
 } channel_t;
 
+/*! \brief Synthetic satellite mode */
+typedef enum {
+	SYNTH_NONE = 0,
+	SYNTH_FORCE,      /*!< Bypass elevation check (requires ephemeris in RINEX) */
+	SYNTH_OVERHEAD,   /*!< Synthesize circular orbit placing satellite at zenith */
+	SYNTH_AZEL        /*!< Synthesize circular orbit at specified azimuth/elevation */
+} synth_mode_t;
+
+/*! \brief Configuration for synthetic satellite generation */
+typedef struct {
+	synth_mode_t mode[MAX_SAT];
+	double azimuth[MAX_SAT];    /*!< Target azimuth in radians (SYNTH_AZEL) */
+	double elevation[MAX_SAT];  /*!< Target elevation in radians (SYNTH_AZEL) */
+	int enabled;                /*!< 1 if any synthetic satellite is configured */
+} synth_config_t;
+
 #endif

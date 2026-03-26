@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(make clean:*)",
+      "Bash(make)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 5:force -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 25:overhead -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 30:180.0/45.0 -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 5:force,25:overhead,30:180.0/45.0 -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 25:overhead -P 8,25 -A 8:jam_noise -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -v -S 32:force -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -S abc:overhead -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -S 25:400.0/45.0 -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 35.681298,139.766247,10 -d 1 -S 25:180.0/95.0 -o /dev/null)",
+      "Bash(./gps-sdr-sim -e brdc0820.26n -l 70.0,139.766247,10 -d 1 -v -S 25:overhead -o /dev/null)"
+    ]
+  }
+}
