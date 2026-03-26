@@ -350,6 +350,16 @@ void applyGainAttack(const attack_config_t *cfg, int prn, int *gain) {
 #define GPS_INCLINATION  0.9599310886  // ~55 degrees in radians
 #define D2R (PI / 180.0)
 
+double wrapToPi(double angle) {
+  while (angle >= PI)
+    angle -= 2.0 * PI;
+
+  while (angle < -PI)
+    angle += 2.0 * PI;
+
+  return (angle);
+}
+
 void initSynthConfig(synth_config_t *cfg) {
   int i;
 
@@ -560,9 +570,9 @@ void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
   eph->sqrta = sqrt(GPS_ORBIT_RADIUS);
   eph->ecc = 0.0;
   eph->inc0 = GPS_INCLINATION;
-  eph->m0 = uk;          // mean anomaly = argument of latitude for circular orbit
+  eph->m0 = wrapToPi(uk); // mean anomaly = argument of latitude for circular orbit
   eph->aop = 0.0;
-  eph->omg0 = ok + OMEGA_EARTH * toe.sec;  // invert Earth rotation from satpos()
+  eph->omg0 = wrapToPi(ok + OMEGA_EARTH * toe.sec); // invert Earth rotation from satpos()
   eph->omgdot = -8.0e-9; // approximate GPS RAAN rate
   eph->idot = 0.0;
   eph->deltan = 0.0;
@@ -2725,23 +2735,12 @@ int main(int argc, char *argv[]) {
   ////////////////////////////////////////////////////////////
 
   if (synth_cfg.enabled) {
-    gpstime_t ref_toe, ref_toc;
-    int found_ref = FALSE;
+    gpstime_t synth_ref;
 
-    // Find a reference toe/toc from any valid ephemeris
-    for (sv = 0; sv < MAX_SAT && !found_ref; sv++) {
-      if (eph[ieph][sv].vflg == 1) {
-        ref_toe = eph[ieph][sv].toe;
-        ref_toc = eph[ieph][sv].toc;
-        found_ref = TRUE;
-      }
-    }
-
-    if (!found_ref) {
-      fprintf(stderr, "ERROR: No valid ephemeris found as reference for "
-                      "synthetic satellites.\n");
-      exit(1);
-    }
+    // Keep synthetic ephemeris stable across hourly set refresh.
+    // Align to the 16-second broadcast resolution used for TOE/TOC fields.
+    synth_ref = g0;
+    synth_ref.sec = floor(synth_ref.sec / 16.0) * 16.0;
 
     {
       for (sv = 0; sv < MAX_SAT; sv++) {
@@ -2772,21 +2771,7 @@ int main(int argc, char *argv[]) {
 
           // Inject into all ephemeris sets
           for (i = 0; i < neph; i++) {
-            gpstime_t ie_toe = ref_toe, ie_toc = ref_toc;
-
-            // Use set-specific toe/toc if available from any valid SV
-            {
-              int sv2;
-              for (sv2 = 0; sv2 < MAX_SAT; sv2++) {
-                if (eph[i][sv2].vflg == 1) {
-                  ie_toe = eph[i][sv2].toe;
-                  ie_toc = eph[i][sv2].toc;
-                  break;
-                }
-              }
-            }
-
-            synthEphemeris(&eph[i][sv], xyz[0], az, el, ie_toe, ie_toc);
+            synthEphemeris(&eph[i][sv], xyz[0], az, el, synth_ref, synth_ref);
           }
 
           fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n",

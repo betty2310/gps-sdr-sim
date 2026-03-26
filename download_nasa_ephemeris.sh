@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-cookie="$1"
-
 year="$(date +%Y)"
 yy="$(date +%y)"
 doy="$(date +%j)"
@@ -14,9 +12,7 @@ url="https://cddis.nasa.gov/archive/gnss/data/daily/${year}/${doy}/${yy}n/${gz_f
 
 echo "Downloading URL: ${url}"
 
-curl "$url" \
-  -b "ProxyAuth=${cookie}" \
-  --output "$gz_file"
+wget "$url"
 
 gzip -df "$gz_file"
 
