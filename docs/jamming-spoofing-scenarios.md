@@ -194,14 +194,15 @@ The interference samples are generated using an **approximate Gaussian distribut
 
 ### J/S Ratio Parameter
 
-The `-J <dB>` option controls the jammer-to-signal amplitude ratio:
+The `-J <dB>` option sets the jammer-to-signal **power** ratio in dB. Internally, amplitude-domain samples are scaled by `10^(J/S_dB / 20)`:
 
-| J/S (dB) | Linear amplitude | Effect                                            |
-| -------- | ---------------- | ------------------------------------------------- |
-| 0        | 1.0              | Noise power equals signal — marginal tracking     |
-| 10       | 3.16             | Noise ~10× signal power — likely loss of lock     |
-| 20       | 10.0             | Noise ~100× signal power — total denial (default) |
-| 40       | 100.0            | Extreme jamming scenario                          |
+| J/S (dB) | Amplitude scale | Power ratio | Effect                                            |
+| -------- | --------------- | ----------- | ------------------------------------------------- |
+| 0        | ×1.0            | 1×          | Noise power equals signal — marginal tracking     |
+| 10       | ×3.16           | 10×         | Likely loss of lock                               |
+| 20       | ×10.0           | 100×        | Total denial (default)                            |
+| 30       | ×31.6           | 1000×       | Very strong jamming                               |
+| 40       | ×100.0          | 10 000×     | Extreme jamming scenario                          |
 
 The noise amplitude is scaled relative to each PRN's own `gain` value (which includes path loss and antenna pattern), so the J/S ratio is consistent regardless of satellite elevation or distance.
 
@@ -220,10 +221,10 @@ Start low jammer strength and ramp slowly (-J 0 -> 3 -> 6 -> 10 -> 15 -> 20).
 
 ```bash
 # Render only PRNs 5 and 14 with matched-code noise jamming
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14 -A 5:jam_noise,14:jam_nois2.2.66e
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14 -A 5:jam_noise,14:jam_noise
 
 # Same with custom J/S = 30 dB
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 3
+./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 30
 
 # With +5 dB power boost to ensure jamming overcomes real sky signal
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -G 5
@@ -231,6 +232,8 @@ Start low jammer strength and ramp slowly (-J 0 -> 3 -> 6 -> 10 -> 15 -> 20).
 # Render only selected PRNs with normal signal (no attack) — useful for future spoofing
 ./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21
 ```
+
+When validating a `-P` file in GNSS-SDR, use a stricter acquisition false-alarm setting (for example `Acquisition_1C.pfa=0.000001`). With loose thresholds (such as `0.01`), cross-correlation sidelobes can create false acquisitions on non-transmitted PRNs even though gps-sdr-sim rendered only the selected satellites.
 
 ### Per-PRN Attack Config (`-A`)
 
