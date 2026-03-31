@@ -118,6 +118,7 @@ double xyz[USER_MOTION_SIZE][3];
 void xyz2llh(const double *xyz, double *llh);
 void ltcmat(const double *llh, double t[3][3]);
 double normVect(const double *x);
+double subGpsTime(gpstime_t g1, gpstime_t g0);
 
 typedef enum {
   ATTACK_METHOD_NONE = 0,
@@ -370,6 +371,44 @@ void initSynthConfig(synth_config_t *cfg) {
   }
 
   cfg->enabled = FALSE;
+
+  return;
+}
+
+void initSynthEphemStore(synth_ephem_store_t *store) {
+  memset(store, 0, sizeof(*store));
+
+  return;
+}
+
+int getSetReferenceToc(const ephem_t *eph_set, gpstime_t *toc) {
+  int sv;
+
+  for (sv = 0; sv < MAX_SAT; sv++) {
+    if (eph_set[sv].vflg == 1) {
+      *toc = eph_set[sv].toc;
+      return (TRUE);
+    }
+  }
+
+  return (FALSE);
+}
+
+void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
+                                  const synth_config_t *cfg,
+                                  const synth_ephem_store_t *store) {
+  int sv;
+
+  memcpy(dst, real_set, sizeof(ephem_t) * MAX_SAT);
+
+  if (cfg->enabled == FALSE)
+    return;
+
+  for (sv = 0; sv < MAX_SAT; sv++) {
+    if ((cfg->mode[sv] == SYNTH_OVERHEAD || cfg->mode[sv] == SYNTH_AZEL) &&
+        store->valid[sv] == TRUE)
+      dst[sv] = store->eph[sv];
+  }
 
   return;
 }
@@ -1285,6 +1324,14 @@ double subGpsTime(gpstime_t g1, gpstime_t g0) {
   dt += (double)(g1.week - g0.week) * SECONDS_IN_WEEK;
 
   return (dt);
+}
+
+int shouldAdvanceEphSet(gpstime_t next_toc, gpstime_t grx) {
+  double dt;
+
+  dt = subGpsTime(next_toc, grx);
+
+  return (dt >= -SECONDS_IN_HOUR && dt < SECONDS_IN_HOUR);
 }
 
 gpstime_t incGpsTime(gpstime_t g0, double dt) {
@@ -2258,6 +2305,8 @@ int main(int argc, char *argv[]) {
   int sv;
   int neph, ieph;
   ephem_t eph[EPHEM_ARRAY_SIZE][MAX_SAT];
+  ephem_t active_eph[MAX_SAT];
+  synth_ephem_store_t synth_eph;
   gpstime_t g0;
 
   double llh[3];
@@ -2301,7 +2350,6 @@ int main(int argc, char *argv[]) {
 
   datetime_t t0, tmin, tmax;
   gpstime_t gmin, gmax;
-  double dt;
   int igrx;
 
   double duration;
@@ -2337,6 +2385,7 @@ int main(int argc, char *argv[]) {
   initAttackConfig(&attack_cfg);
   initAttackNoiseState(attack_noise_state);
   initSynthConfig(&synth_cfg);
+  initSynthEphemStore(&synth_eph);
 
   if (argc < 3) {
     usage();
@@ -2711,18 +2760,13 @@ int main(int argc, char *argv[]) {
   ieph = -1;
 
   for (i = 0; i < neph; i++) {
-    for (sv = 0; sv < MAX_SAT; sv++) {
-      if (eph[i][sv].vflg == 1) {
-        dt = subGpsTime(g0, eph[i][sv].toc);
-        if (dt >= -SECONDS_IN_HOUR && dt < SECONDS_IN_HOUR) {
-          ieph = i;
-          break;
-        }
-      }
-    }
+    gpstime_t ref_toc;
 
-    if (ieph >= 0) // ieph has been set
+    if (getSetReferenceToc(eph[i], &ref_toc) == TRUE &&
+        shouldAdvanceEphSet(ref_toc, g0) == TRUE) {
+      ieph = i;
       break;
+    }
   }
 
   if (ieph == -1) {
@@ -2731,7 +2775,7 @@ int main(int argc, char *argv[]) {
   }
 
   ////////////////////////////////////////////////////////////
-  // Inject synthetic satellite ephemerides
+  // Build synthetic satellite overlay ephemerides
   ////////////////////////////////////////////////////////////
 
   if (synth_cfg.enabled) {
@@ -2769,10 +2813,9 @@ int main(int argc, char *argv[]) {
                       sv + 1);
           }
 
-          // Inject into all ephemeris sets
-          for (i = 0; i < neph; i++) {
-            synthEphemeris(&eph[i][sv], xyz[0], az, el, synth_ref, synth_ref);
-          }
+          synthEphemeris(&synth_eph.eph[sv], xyz[0], az, el, synth_ref,
+                         synth_ref);
+          synth_eph.valid[sv] = TRUE;
 
           fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n",
                   sv + 1, az * R2D, el * R2D);
@@ -2791,6 +2834,8 @@ int main(int argc, char *argv[]) {
       }
     }
   }
+
+  overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
 
   ////////////////////////////////////////////////////////////
   // Baseband signal buffer and output file
@@ -2847,7 +2892,7 @@ int main(int argc, char *argv[]) {
   grx = incGpsTime(g0, 0.0);
 
   // Allocate visible satellites
-  allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask, &attack_cfg,
+  allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
                   &synth_cfg);
 
   for (i = 0; i < MAX_CHAN; i++) {
@@ -2882,9 +2927,9 @@ int main(int argc, char *argv[]) {
 
         // Current pseudorange
         if (!staticLocationMode)
-          computeRange(&rho, eph[ieph][sv], &ionoutc, grx, xyz[iumd]);
+          computeRange(&rho, active_eph[sv], &ionoutc, grx, xyz[iumd]);
         else
-          computeRange(&rho, eph[ieph][sv], &ionoutc, grx, xyz[0]);
+          computeRange(&rho, active_eph[sv], &ionoutc, grx, xyz[0]);
 
         chan[i].azel[0] = rho.azel[0];
         chan[i].azel[1] = rho.azel[1];
@@ -3060,29 +3105,29 @@ int main(int argc, char *argv[]) {
 
       // Refresh ephemeris and subframes
       // Quick and dirty fix. Need more elegant way.
-      for (sv = 0; sv < MAX_SAT; sv++) {
-        if (eph[ieph + 1][sv].vflg == 1) {
-          dt = subGpsTime(eph[ieph + 1][sv].toc, grx);
-          if (dt < SECONDS_IN_HOUR) {
-            ieph++;
+      if (ieph + 1 < neph) {
+        gpstime_t next_toc;
 
-            for (i = 0; i < MAX_CHAN; i++) {
-              // Generate new subframes if allocated
-              if (chan[i].prn != 0)
-                eph2sbf(eph[ieph][chan[i].prn - 1], ionoutc, chan[i].sbf);
-            }
+        if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
+            shouldAdvanceEphSet(next_toc, grx) == TRUE) {
+          ieph++;
+          overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
+                                       &synth_eph);
+
+          for (i = 0; i < MAX_CHAN; i++) {
+            // Generate new subframes if allocated
+            if (chan[i].prn != 0)
+              eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
           }
-
-          break;
         }
       }
 
       // Update channel allocation
       if (!staticLocationMode)
-        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[iumd], elvmask,
+        allocateChannel(chan, active_eph, ionoutc, grx, xyz[iumd], elvmask,
                         &attack_cfg, &synth_cfg);
       else
-        allocateChannel(chan, eph[ieph], ionoutc, grx, xyz[0], elvmask,
+        allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
                         &attack_cfg, &synth_cfg);
 
       // Show details about simulated channels

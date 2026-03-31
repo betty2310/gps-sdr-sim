@@ -200,4 +200,10 @@ typedef struct {
 	int enabled;                /*!< 1 if any synthetic satellite is configured */
 } synth_config_t;
 
+/*! \brief Synthesized ephemerides kept separate from real RINEX sets */
+typedef struct {
+	int valid[MAX_SAT];
+	ephem_t eph[MAX_SAT];
+} synth_ephem_store_t;
+
 #endif

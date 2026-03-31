@@ -49,7 +49,7 @@ Forced PRN 05 (below-horizon bypass)
 
 ### Case B — Synthesized (`PRN:overhead` / `PRN:az/el`)
 
-The satellite **has no ephemeris in the RINEX file** (or you want to place a signal at an exact sky position regardless of the real orbit). A complete `ephem_t` struct is synthesized from scratch and injected into the ephemeris array before simulation begins. The full downstream pipeline — `satpos()`, `computeRange()`, `eph2sbf()`, `generateNavMsg()` — runs unmodified on the synthetic ephemeris.
+The satellite **has no ephemeris in the RINEX file** (or you want to place a signal at an exact sky position regardless of the real orbit). A complete `ephem_t` struct is synthesized from scratch and stored in a separate synthetic-ephemeris table before simulation begins. At runtime, the active ephemeris set is built by overlaying those synthetic entries onto the current real set, so the full downstream pipeline — `satpos()`, `computeRange()`, `eph2sbf()`, `generateNavMsg()` — still runs unmodified on a normal `ephem_t`.
 
 ```bash
 # Synthesize PRN 25 directly overhead
@@ -167,7 +167,7 @@ Refer to [jamming-spoofing-scenarios.md](jamming-spoofing-scenarios.md) for atta
 
 ## Simulation Behavior Over Time
 
-Synthetic satellites are injected into **all** ephemeris sets (`eph[0..neph-1]`), so they persist through the hourly ephemeris refresh cycle. The orbit is fixed at the initial receiver position (`xyz[0]`). As the simulation progresses:
+Synthetic satellites are stored separately from the real RINEX sets and overlaid onto the active set after each hourly ephemeris refresh. The orbit is fixed at the initial receiver position (`xyz[0]`). As the simulation progresses:
 
 - The satellite moves along the synthetic circular orbit normally, so its az/el will drift slightly from the requested value over time (same as any real satellite would drift)
 - For short runs (< 5 minutes) the drift is under 0.1°
@@ -204,5 +204,6 @@ Realistic range values (~20,000–28,000 km) confirm the orbit geometry is corre
 | `parseSynthConfig()` | `gpssim.c`         | Parse `-S` argument into `synth_config_t`         |
 | `azel2satpos()`      | `gpssim.c`         | Convert az/el + receiver position to ECEF         |
 | `synthEphemeris()`   | `gpssim.c`         | Build complete `ephem_t` for a circular GPS orbit |
+| `overlaySyntheticEphemerisSet()` | `gpssim.c` | Merge synthetic PRNs into the active ephemeris set |
 | `allocateChannel()`  | `gpssim.c`         | Modified to bypass elevation check for synth PRNs |
-| `synth_config_t`     | `gpssim.h`         | Per-PRN synthetic mode and az/el target           |
+| `synth_config_t` / `synth_ephem_store_t` | `gpssim.h` | Per-PRN synthetic config and stored ephemerides |
