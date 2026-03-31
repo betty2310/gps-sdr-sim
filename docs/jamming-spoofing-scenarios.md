@@ -1,254 +1,525 @@
 # GPS Jamming/Spoofing Scenario Catalog
 
-## Purpose
+## Hardware Assumptions
 
-This document defines attack scenario types for GPS-SDR-SIM test campaigns and maps each type to the per-channel parameters that can be controlled.
+All configurations in this document assume:
+
+- **SDR:** bladeRF 1.0 (x40/x115), LMS6002D, minimum TX gain (txvga1=-35, txvga2=0, overall=17 dB)
+- **TX output power at minimum gain:** ~-10 dBm
+- **TX antenna:** Quarter-wave whip (~48 mm), 0 dBi, hanging downward above receiver
+- **Receiver:** u-blox ZED-F9P with multi-band L1+L2 active patch antenna, facing up
+- **RX antenna gain at boresight (TX directly above):** +5 dBi
+- **Polarization loss (linear TX to RHCP RX):** 3 dB
+
+**Verify your hardware:** Run `set gain tx1 0` in bladeRF-cli. If you see `txvga1`/`txvga2` in the output, you have a bladeRF 1.0. The bladeRF 2.0 micro (AD9361) has a different gain model and lower minimum output (~-44 dBm at gain -24).
+
+---
+
+## Interfaces
 
 Two main interfaces control attack behavior:
 
-1. **`-P <prn_list>`** — Partial constellation mode. Only the listed PRNs are rendered in the IQ output; all other visible satellites are excluded. The attack method for each PRN is controlled separately via `-A`.
+1. **`-P <prn_list>`** -- Partial constellation mode. Only the listed PRNs are rendered in the IQ output; all other visible satellites are excluded. **Mandatory for OTA** to avoid doubling real sky signals.
 
-2. **`-A <spec>`** — Per-PRN method selection in the format `PRN:method[,PRN:method...]` for fine-grained control.
+2. **`-A <spec>`** -- Per-PRN method selection: `PRN:method[,PRN:method...]`.
 
-Supported method names:
+Supported methods:
 
-- `normal`
-- `jam_drop`
-- `jam_noise`
-- `spoof_delay` (planned)
-- `spoof_nav` (planned)
+| Method | Effect | Status |
+|--------|--------|--------|
+| `normal` | No attack, clean signal | Implemented |
+| `jam_drop` | Zero the PRN's gain (silent denial) | Implemented |
+| `jam_noise` | Matched-code interference on target correlator | Implemented |
+| `spoof_delay` | Pseudorange/Doppler bias injection | Planned |
+| `spoof_nav` | Navigation message manipulation | Planned |
 
 Additional options:
 
-- **`-J <dB>`** — Jammer-to-signal ratio for `jam_noise` (default: 20 dB)
-- **`-G <dB>`** — Power boost for partial-mode PRNs (default: 0 dB)
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `-J <dB>` | 20 | Jammer-to-signal ratio for `jam_noise` |
+| `-G <dB>` | 0 | Power boost for partial-mode PRNs |
 
-Current implementation status:
+---
 
-- `jam_drop` is implemented by forcing selected PRN channel gain to zero.
-- `jam_noise` is implemented as **matched-code interference** — noise modulated with the target PRN's C/A code and carrier, ensuring interference concentrates on the target correlator while being rejected (~30 dB processing gain) by all other PRNs. See [Noise Generation Model](#noise-generation-model) below.
-- `-P` partial constellation mode is implemented. It filters `allocateChannel()` so only selected PRNs enter the output. Use `-A` to assign an attack method to each.
-- Other methods are placeholders for scenario planning and future implementation.
+## OTA Link Budget: bladeRF 1.0
 
-## Attack Methods
-
-| Method        | Channel Intent                                              | Main Parameter Family |
-| ------------- | ----------------------------------------------------------- | --------------------- |
-| `normal`      | No attack on this PRN                                       | none                  |
-| `jam_drop`    | Remove satellite contribution from composite IQ             | power/gain            |
-| `jam_noise`   | Matched-code interference targeting specific PRN correlator | power/J/S ratio       |
-| `spoof_delay` | Shift pseudorange and Doppler coherently                    | code phase + carrier  |
-| `spoof_nav`   | Mislead by navigation message manipulation                  | nav data + timing     |
-
-## All Practical Scenario Classes
-
-### 1) Baseline and Sanity Scenarios
-
-1. Clean sky reference: all PRNs `normal`.
-2. Single PRN off: one PRN `jam_drop`.
-3. Dual PRN off: two low-elevation PRNs `jam_drop`.
-4. Random PRN drop set: rotating `jam_drop` PRN list every 30 seconds.
-
-### 2) Partial Constellation Jamming Scenarios
-
-1. Low-elevation denial: jam PRNs below a chosen elevation threshold.
-2. Geometry attack: jam PRNs that improve HDOP/VDOP the most.
-3. Sector attack: jam PRNs in one azimuth sector only.
-4. Dynamic denial: increase jammed PRN count over time (1 -> 2 -> 4 -> 6).
-5. Intermittent denial: periodic ON/OFF jamming windows to stress tracking loops.
-
-### 3) Power-Domain Jamming Scenarios
-
-1. Soft attenuation: lower attacked PRN gain but not full drop.
-2. Hard attenuation: full `jam_drop`.
-3. Mixed gain attack: some PRNs dropped, others attenuated.
-4. Time-ramped power attack: gradually move from normal power to denial.
-
-### 4) Noise-Like Jamming Scenarios
-
-1. Wideband-like additive interference over L1 baseband.
-2. Pseudo-random code jammer with no valid nav bits.
-3. Burst-noise attack synchronized to receiver update cycles.
-4. Multi-tone/CW-like narrowband interferers.
-
-### 5) Spoofing Delay/Carry-Off Scenarios (Planned)
-
-1. Static range bias: constant pseudorange offset on selected PRNs.
-2. Slow carry-off: small ramp in range bias and Doppler bias.
-3. Fast carry-off: aggressive ramp to trigger integrity checks.
-4. Partial spoofing: only subset of tracked PRNs spoofed.
-5. Full spoofing: all tracked PRNs spoofed coherently.
-
-### 6) Navigation Message Spoofing Scenarios (Planned)
-
-1. TOW offset injection.
-2. Clock term bias (`af0`) perturbation.
-3. Clock drift (`af1`) perturbation.
-4. Ephemeris distortion (orbital element perturbations).
-5. SV health flag misuse (healthy/unhealthy toggling).
-6. Leap-second/UTC parameter inconsistency.
-
-### 7) Hybrid Attack Scenarios
-
-1. Jam-then-spoof takeover: deny selected PRNs, then replace with spoofed channels.
-2. Spoof-under-jam cover: spoof while additional PRNs are jammed.
-3. Split strategy: one set `jam_drop`, one set `spoof_delay`.
-4. Adaptive strategy: attacker method depends on receiver lock status.
-
-### 8) Temporal Pattern Scenarios
-
-1. Step attack: abrupt method changes at fixed times.
-2. Ramp attack: smooth transition of attack intensity.
-3. Pulsed attack: periodic short bursts.
-4. Randomized attack windows: stochastic timing and PRN selection.
-
-### 9) Receiver Stress Scenarios
-
-1. Acquisition stress: start with attack active from t=0.
-2. Tracking stress: start attack after stable lock.
-3. Reacquisition stress: alternate drop/recover cycles.
-4. Edge-of-fix stress: keep exactly 4 usable PRNs.
-
-### 10) Validation/Measurement Scenarios
-
-1. C/N0 degradation mapping vs jammed PRN count.
-2. Position error growth vs spoof ramp slope.
-3. Time-to-alarm and integrity flag triggering.
-4. Recovery time after attack stop.
-
-## Partial Constellation Mode (`-P`)
-
-### Overview
-
-The `-P` flag enables **targeted OTA jamming** of a subset of the GPS constellation. Only the listed PRNs are rendered in the IQ output file; all other visible satellites are excluded at the channel allocation stage (they consume no channel slots and contribute nothing to the output).
-
-When `-P` is used, only the listed PRNs are rendered. The attack method for each PRN is set separately via `-A`. The intended OTA workflow is:
+### Constants
 
 ```
-Real Sky (all satellites) ──────────────────────────► Receiver antenna
-                                                           ▲
-gps-sdr-sim -P 5,14,21 ──► USRP TX (matched-code noise) ──┘
+P_tx   = -10 dBm  (bladeRF 1.0, txvga1=-35, txvga2=0)
+G_tx   =   0 dBi  (whip)
+G_rx   =  +5 dBi  (F9P patch at boresight, TX directly above)
+Pol    =   3 dB   (linear to RHCP)
+
+P_rx = -10 - Atten - FSPL + 0 + 5 - 3 = -8 - Atten - FSPL
 ```
 
-The receiver tracks the remaining constellation normally from the sky, while the targeted PRNs are jammed by the transmitted matched-code interference.
+### Free-space path loss at 1575.42 MHz
 
-### How It Works
+| Height | FSPL |
+|--------|------|
+| 0.5 m | 30 dB |
+| 1.0 m | 36 dB |
+| 1.5 m | 40 dB |
 
-1. **Channel filter:** `allocateChannel()` skips any PRN not in the `-P` list, even if visible. No channel slot is wasted.
-2. **Method via `-A`:** Use `-A` to assign any attack method (e.g., `jam_noise`, `spoof_delay`) to the selected PRNs. Without `-A`, selected PRNs generate normal signals.
-3. **Power boost (`-G`):** Optional dB boost applied to all selected PRNs on top of the natural path-loss/antenna-gain model.
+### Target power at receiver
 
-### Why PRN Filtering Is Necessary for OTA
+Real GPS at ground: **-130 dBm**. ZED-F9P spoofing detector compares C/N0 across all tracked PRNs.
 
-Without `-P`, the IQ output contains valid signals for **all** visible satellites. When transmitted via SDR alongside real sky signals, the receiver sees **double signals** for every non-targeted satellite (one from sky + one from USRP), corrupting tracking across the entire constellation.
+| Target | P_rx | Margin above real GPS | F9P reaction |
+|--------|------|-----------------------|-------------|
+| Too weak | < -133 dBm | < -3 dB | Not acquired or unstable |
+| Ideal | -127 to -124 dBm | +3 to +6 dB | Accepted, spoofDet=1 |
+| Marginal | -120 to -115 dBm | +10 to +15 dB | May trigger spoofDet=2 |
+| Too strong | > -110 dBm | > +20 dB | spoofDet=2/3, AGC issues |
+
+### Attenuation table by height
+
+| Height | FSPL | Atten for -124 dBm | Atten for -127 dBm | Atten for -130 dBm |
+|--------|------|---------------------|---------------------|---------------------|
+| **0.5 m** | 30 dB | **86 dB** | **89 dB** | **92 dB** |
+| **1.0 m** | 36 dB | **80 dB** | **83 dB** | **86 dB** |
+| **1.5 m** | 40 dB | **76 dB** | **79 dB** | **82 dB** |
+
+### Practical attenuator combinations
+
+SMA fixed attenuators (Mini-Circuits VAT series or equivalent):
+
+| Target atten | Combination | P_rx at 0.5 m | P_rx at 1.0 m | P_rx at 1.5 m |
+|-------------|-------------|----------------|----------------|----------------|
+| 60 dB | 3x VAT-20+ | -98 dBm | -104 dBm | -108 dBm |
+| 70 dB | 3x VAT-20+ + VAT-10+ | -108 dBm | -114 dBm | -118 dBm |
+| 76 dB | 3x VAT-20+ + VAT-10+ + VAT-6+ | -114 dBm | -120 dBm | **-124 dBm** |
+| 80 dB | 4x VAT-20+ | -118 dBm | **-124 dBm** | -128 dBm |
+| 83 dB | 4x VAT-20+ + VAT-3+ | -121 dBm | **-127 dBm** | -131 dBm |
+| 86 dB | 4x VAT-20+ + VAT-6+ | **-124 dBm** | -130 dBm | -134 dBm |
+| 90 dB | 4x VAT-20+ + VAT-10+ | -128 dBm | -134 dBm | -138 dBm |
+
+**Recommended starting points (bold = ideal range for F9P):**
+
+| Height | Attenuator chain | Expected P_rx | Margin vs real GPS |
+|--------|-----------------|---------------|-------------------|
+| **0.5 m** | 4x VAT-20+ + VAT-6+ (86 dB) | -124 dBm | +6 dB |
+| **1.0 m** | 4x VAT-20+ (80 dB) | -124 dBm | +6 dB |
+| **1.5 m** | 3x VAT-20+ + VAT-10+ + VAT-6+ (76 dB) | -124 dBm | +6 dB |
+
+Fine-tune by swapping/adding VAT-3+ or VAT-6+ attenuators while monitoring C/N0 in u-center.
+
+---
+
+## bladerf.script (bladeRF 1.0)
+
+```
+set frequency tx1 1575420000
+set samplerate tx1 2600000
+set bandwidth tx1 2500000
+set txvga1 -35
+set txvga2 0
+cal lms
+cal dc tx
+tx config file=gpssim.bin format=bin repeat=0
+tx start
+tx wait
+```
+
+**Critical notes:**
+- `set gain tx1 -10` is silently clamped to 17 dB on bladeRF 1.0. Always use `set txvga1`/`set txvga2` directly.
+- `cal lms` and `cal dc tx` calibrate the LMS6002D. Without them, LO leakage and DC offset are worse.
+- `samplerate tx1` **must** match gps-sdr-sim output (default 2.6 MHz). A mismatch breaks the C/A code rate.
+
+---
+
+## LO Leakage Warning (bladeRF 1.0)
+
+The LMS6002D leaks local oscillator energy through the TX port **even when not transmitting**. If the frequency was previously set to 1575.42 MHz, this leakage can degrade u-blox tracking across all satellites (5-15 dB C/N0 drop).
+
+**Mitigations:**
+1. Keep attenuators in the RF chain at all times
+2. Cap the TX SMA with a 50-ohm terminator when not transmitting
+3. Unplug the bladeRF during baseline GPS measurements
+4. Run `cal dc tx` before each session
+
+---
+
+## Scenario Configurations
+
+### Preparation (all scenarios)
+
+```bash
+# 1. Download current ephemeris
+bash download_nasa_ephemeris.sh
+
+# 2. Identify visible PRNs at your location
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT -d 10 -v -o /dev/null
+
+# 3. Note visible PRNs. For jam_noise OTA, choose PRNs FROM this list.
+#    For synthetic satellite injection (-S), choose PRNs NOT in this list.
+```
+
+### 1. Targeted PRN Jamming (jam_noise, OTA)
+
+Jam specific real-sky satellites with matched-code interference while the receiver tracks the rest normally.
+
+**Pick target PRNs from the visible list.** These are real satellites the receiver is tracking; the bladeRF transmits interference that denies them.
+
+#### 1a. Single PRN jam at 1.0 m height
+
+```bash
+# Generate matched-code noise for PRN 5
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -P 5 -A 5:jam_noise -J 20 -G 0 \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain: bladeRF TX --> [20dB] --> [20dB] --> [20dB] --> [20dB] --> whip (1.0 m above F9P)
+                         -------------------- 80 dB --------------------
+Expected P_rx: -124 dBm (+6 dB above real GPS)
+```
+
+**Expected receiver behavior:**
+- PRN 5 C/N0 drops from ~40 dB-Hz to <20 dB-Hz, then lost
+- All other PRNs unaffected (matched-code noise rejected by ~30 dB processing gain)
+- Position solution degrades slightly (one fewer satellite)
+
+#### 1b. Multi-PRN jam at 0.5 m height
+
+```bash
+# Jam PRNs 5, 14, 21 with matched-code noise
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 20 -G 0 \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain: bladeRF TX --> [20dB] --> [20dB] --> [20dB] --> [20dB] --> [6dB] --> whip (0.5 m above F9P)
+                         ----------------------- 86 dB -----------------------
+Expected P_rx: -124 dBm (+6 dB above real GPS)
+```
+
+#### 1c. Geometry attack at 1.5 m height
+
+Jam PRNs that contribute most to vertical dilution of precision (VDOP) -- typically high-elevation satellites.
+
+```bash
+# Jam two high-elevation PRNs to degrade VDOP
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -P 8,22 -A 8:jam_noise,22:jam_noise -J 20 -G 0 \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain: bladeRF TX --> [20dB] --> [20dB] --> [20dB] --> [10dB] --> [6dB] --> whip (1.5 m above F9P)
+                         ----------------------- 76 dB -----------------------
+Expected P_rx: -124 dBm (+6 dB above real GPS)
+```
+
+#### 1d. J/S ratio sweep (any height)
+
+Start low and increase to find the ZED-F9P's denial threshold:
+
+```bash
+# Generate multiple files at different J/S levels
+for JS in 0 3 6 10 15 20 30; do
+    ./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+        -P 5 -A 5:jam_noise -J $JS -G 0 \
+        -d 120 -v -o gpssim_j${JS}.bin
+done
+```
+
+| J/S (dB) | Noise amplitude | Expected effect on target PRN |
+|-----------|----------------|-------------------------------|
+| 0 | x1.0 | C/N0 drops ~3 dB, marginal tracking |
+| 3 | x1.4 | C/N0 drops ~6 dB, unstable |
+| 6 | x2.0 | Tracking intermittent |
+| 10 | x3.2 | Likely loss of lock |
+| 15 | x5.6 | Denial probable |
+| **20** | **x10.0** | **Total denial (default)** |
+| 30 | x31.6 | Overkill but useful for margin testing |
+
+### 2. Synthetic Satellite Injection (-S, OTA)
+
+Inject fake GPS satellites that the receiver acquires alongside real sky signals.
+
+**Pick synthetic PRNs NOT in the visible list.** These are satellites the receiver cannot see from the sky; the bladeRF provides them.
+
+#### 2a. Two synthetic satellites at 1.0 m height
+
+```bash
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -S 25:overhead,26:180.0/45.0 \
+    -P 25,26 \
+    -G 3 \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain: bladeRF TX --> [20dB] --> [20dB] --> [20dB] --> [20dB] --> whip (1.0 m above F9P)
+                         -------------------- 80 dB --------------------
+Expected P_rx: -124 dBm (+6 dB above real GPS)
+```
+
+**Expected receiver behavior:**
+- PRN 25 appears in UBX-NAV-SAT with L1 C/A signal, no L2 (gps-sdr-sim is L1-only)
+- PRN 26 appears similarly
+- `qualityInd` = 4 for synthetic (L1 only) vs 7 for real sky (L1+L2)
+- `Used=Yes` if `-l` matches actual receiver location
+- `spoofDetState` should be 1 (no spoofing) if C/N0 within +/-3 dB of real satellites
+
+#### 2b. Four synthetic satellites for full position fix (conducted test)
+
+For cable-connected test without sky signals. Needs 4+ satellites for a fix.
+
+```bash
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -S 25:overhead,26:180.0/45.0,27:90.0/30.0,29:270.0/60.0 \
+    -P 25,26,27,29 \
+    -p \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain (conducted): bladeRF TX --> DC Block --> [20dB] --> [20dB] --> [20dB] --> [20dB] --> ZED-F9P RF IN
+                                                  -------------------- 80 dB --------------------
+```
+
+**Note:** DC block prevents F9P active antenna bias from reaching bladeRF TX. The `-p` flag disables path loss modeling (appropriate for conducted, not for OTA).
+
+### 3. Hybrid: Jam Real + Inject Synthetic
+
+Deny selected real PRNs while injecting synthetic replacements. This is a jam-then-spoof scenario.
+
+```bash
+# Jam real PRN 5, inject synthetic PRN 25
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -S 25:overhead \
+    -P 5,25 -A 5:jam_noise \
+    -J 20 -G 3 \
+    -d 300 -v -o gpssim.bin
+```
+
+```
+RF chain (1.0 m): bladeRF TX --> [20dB] --> [20dB] --> [20dB] --> [20dB] --> whip
+                                  -------------------- 80 dB --------------------
+```
+
+PRN 5 is denied by matched-code noise. PRN 25 (synthetic) takes its constellation slot. The receiver's position solution shifts because one real measurement was replaced with a controlled one.
+
+### 4. Power-Domain Scenarios
+
+#### 4a. Soft attenuation via `-G`
+
+Instead of full denial, reduce the effective signal strength of targeted PRNs.
+
+```bash
+# PRN 5 with -10 dB power (signal weakened but not denied)
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -P 5 -A 5:normal -G -10 \
+    -d 300 -v -o gpssim.bin
+```
+
+#### 4b. Time-ramped J/S (manual)
+
+Generate separate IQ files with increasing J/S and play sequentially:
+
+```bash
+for JS in 0 6 12 20; do
+    ./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+        -P 5 -A 5:jam_noise -J $JS \
+        -d 60 -v -o gpssim_ramp_j${JS}.bin
+done
+# Concatenate: cat gpssim_ramp_j*.bin > gpssim_ramp.bin
+```
+
+### 5. Baseline / Sanity Checks
+
+Run these first to establish reference measurements.
+
+#### 5a. Clean sky reference (no bladeRF transmission)
+
+```bash
+# Record 5 minutes of UBX-NAV-SAT, UBX-NAV-PVT, UBX-MON-RF in u-center 2
+# This is your baseline C/N0, satellite count, and position accuracy
+# IMPORTANT: unplug or cap bladeRF to avoid LO leakage interference
+```
+
+#### 5b. Partial constellation, no attack (verify -P isolation)
+
+```bash
+# Render PRN 5 with normal signal only -- verify other PRNs are not affected
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -P 5 -A 5:normal -G 0 \
+    -d 120 -v -o gpssim.bin
+```
+
+Transmit via bladeRF. All PRNs except 5 should show identical C/N0 to baseline. PRN 5 may show slight C/N0 change from the doubled signal.
+
+---
+
+## Measurement Checklist
+
+For each scenario, record in u-center 2:
+
+| Measurement | UBX Message | What to look for |
+|-------------|-------------|------------------|
+| Per-PRN C/N0 | UBX-NAV-SAT | Target vs non-target PRN comparison |
+| Per-signal L1/L2 status | UBX-NAV-SIG | Synthetic PRNs: L1 tracked, L2 absent |
+| Position solution | UBX-NAV-PVT | Accuracy before/during/after attack |
+| Spoofing detection | UBX-NAV-STATUS | `spoofDetState`: 1=clean, 2=flagged, 3=multiple flags |
+| RF front-end status | UBX-MON-RF | Per-block AGC, noise floor, jamming indicator |
+| Raw pseudorange | UBX-RXM-RAWX | Carrier phase, Doppler for research analysis |
+| Quality indicator | UBX-NAV-SAT | `qualityInd`: 4=L1 only (synthetic), 7=L1+L2 (real) |
+
+**ZED-F9P spoofing detection states:**
+
+| `spoofDetState` | Meaning | Action |
+|-----------------|---------|--------|
+| 0 | Deactivated | Check F9P firmware supports spoofing detection |
+| **1** | **No spoofing** | **Success** |
+| 2 | Spoofing indicated | Reduce TX power (add attenuation), verify `-l` matches location |
+| 3 | Multiple indications | Significant mismatch -- recheck entire RF chain and position |
+
+---
+
+## Gain Tuning by C/N0 Observation
+
+After transmitting, monitor synthetic/jammed PRN C/N0 in UBX-NAV-SAT:
+
+| Observed C/N0 (dB-Hz) | Meaning | Action |
+|------------------------|---------|--------|
+| 0 (not acquired) | Signal too weak | Remove one VAT-20+ or swap for VAT-10+ |
+| < 25 | Weak, unstable | Remove VAT-3+ or VAT-6+ |
+| 25-35 | Marginal | Remove VAT-3+ for reliability |
+| **35-42** | **Matches real L1 GPS** | **Optimal for F9P** |
+| 42-48 | Slightly above real | F9P may flag C/N0 anomaly |
+| > 48 | Too strong | Add VAT-10+ or VAT-3+ |
+| > 50 | Way too strong | Add VAT-20+, check for front-end saturation |
+
+**Key rule for ZED-F9P:** Keep synthetic/jammed PRN C/N0 within **+/- 3 dB** of real satellite C/N0.
+
+---
+
+## Physical Setup Reference
+
+```
+GOOD (TX directly above RX):
+
+     bladeRF 1.0 [whip hanging down]
+                  |
+                  | 0.5 / 1.0 / 1.5 m
+                  |
+                  v
+          [F9P patch antenna, facing up]
+
+     Signal at 0 deg boresight = 0 dB antenna loss
+     Mimics overhead satellite geometry
+
+BAD (TX beside RX, same height):
+
+     bladeRF [whip] ---- 1 m ---- [F9P patch]
+
+     Signal at 90 deg boresight = 8.9 dB antenna loss
+     Requires more TX power, unrealistic geometry
+```
+
+---
 
 ## Noise Generation Model
 
-### Overview
+### How jam_noise Works
 
-The `jam_noise` method models a **per-PRN matched-code interference jammer**. The noise is modulated with the target PRN's C/A code and carrier phase, so that after despreading in the receiver the interference concentrates on the target PRN's correlator while being rejected by all other PRNs (~30 dB processing gain from the 1023-chip C/A code).
+The `jam_noise` method generates **matched-code interference**: noise modulated with the target PRN's C/A code and carrier phase. After despreading in the receiver, the interference concentrates on the target correlator while being rejected (~30 dB processing gain) by all other PRNs.
 
-No valid navigation data is transmitted — only noise-modulated spreading code. This denies the target PRN without providing any usable signal the receiver could track.
+No valid navigation data is transmitted -- only noise-modulated spreading code.
 
 ### Signal Model
 
-For a normal (unjammed) PRN, each I/Q sample is:
-
+Normal PRN sample:
 ```
-I = dataBit × codeCA × cos(carrier_phase) × gain
-Q = dataBit × codeCA × sin(carrier_phase) × gain
-```
-
-For a `jam_noise` PRN, the output is **replaced** with matched-code noise (no valid signal component):
-
-```
-I = gaussianNoise × codeCA × cos(carrier_phase) × noise_amp
-Q = gaussianNoise × codeCA × sin(carrier_phase) × noise_amp
+I = dataBit * codeCA * cos(carrier_phase) * gain
+Q = dataBit * codeCA * sin(carrier_phase) * gain
 ```
 
-Where `noise_amp = gain × js_linear` and `js_linear = 10^(J/S_dB / 20)`.
+jam_noise PRN sample (replaces normal signal):
+```
+I = gaussianNoise * codeCA * cos(carrier_phase) * noise_amp
+Q = gaussianNoise * codeCA * sin(carrier_phase) * noise_amp
+```
+
+Where `noise_amp = gain * 10^(J/S_dB / 20)`.
 
 ### Why Matched-Code, Not Broadband
 
-GPS receivers despread incoming signals by correlating with each PRN's known C/A code. This provides ~30 dB of processing gain (10 × log10(1023)):
+| Noise type | Effect on target PRN | Effect on other PRNs |
+|-----------|---------------------|---------------------|
+| Broadband | Attenuated ~30 dB by despreading | Attenuated ~30 dB equally -- jams everything or nothing |
+| **Matched-code** | **Full noise power after despreading** | **Attenuated ~30 dB -- invisible** |
 
-| Noise Type                         | Effect on target PRN               | Effect on other PRNs                                   |
-| ---------------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| **Broadband** (old implementation) | Attenuated ~30 dB by despreading   | Attenuated ~30 dB equally — jams everything or nothing |
-| **Matched-code** (current)         | Full noise power after despreading | Attenuated ~30 dB — effectively invisible              |
-
-Matched-code noise is the only way to achieve **selective** jamming when transmitting OTA alongside real sky signals.
+Matched-code noise is the only way to achieve selective jamming when transmitting OTA alongside real sky signals.
 
 ### Noise Distribution
 
-The interference samples are generated using an **approximate Gaussian distribution** via the Central Limit Theorem (CLT):
+Approximate Gaussian via Central Limit Theorem: `nextGaussianNoise()` sums 4 independent xorshift32 uniform samples in [-250, +250] and divides by 4. Each PRN has an independent PRNG state seeded from the PRN number for reproducibility.
 
-1. **Base PRNG:** A xorshift32 generator (`nextNoiseValue()`) produces uniform integers in [-250, +250]. Each PRN has an independent PRNG state seeded deterministically from the PRN number, ensuring reproducible results.
+---
 
-2. **CLT approximation:** `nextGaussianNoise()` sums 4 independent uniform samples and divides by 4. By the CLT, the sum of independent uniform random variables converges toward a Gaussian distribution. With 4 terms the result has:
-   - Mean: 0
-   - Reduced tail probability compared to uniform (more realistic for thermal/broadband noise)
-   - Output range: [-250, +250] (integer)
+## Quick Reference: Complete Workflow
 
-3. **Why not true Gaussian?** Box-Muller or Ziggurat methods require floating-point math and `log()`/`sin()` calls per sample at MHz rates. The CLT sum of 4 uniforms is fast (integer-only), deterministic, and sufficient for baseband interference simulation.
-
-### J/S Ratio Parameter
-
-The `-J <dB>` option sets the jammer-to-signal **power** ratio in dB. Internally, amplitude-domain samples are scaled by `10^(J/S_dB / 20)`:
-
-| J/S (dB) | Amplitude scale | Power ratio | Effect                                            |
-| -------- | --------------- | ----------- | ------------------------------------------------- |
-| 0        | ×1.0            | 1×          | Noise power equals signal — marginal tracking     |
-| 10       | ×3.16           | 10×         | Likely loss of lock                               |
-| 20       | ×10.0           | 100×        | Total denial (default)                            |
-| 30       | ×31.6           | 1000×       | Very strong jamming                               |
-| 40       | ×100.0          | 10 000×     | Extreme jamming scenario                          |
-
-The noise amplitude is scaled relative to each PRN's own `gain` value (which includes path loss and antenna pattern), so the J/S ratio is consistent regardless of satellite elevation or distance.
-
-### Design Rationale
-
-- **Matched-code, not broadband:** Noise is modulated with the target C/A code and carrier, concentrating interference on the target correlator after despreading. This enables selective jamming of individual PRNs when transmitting OTA.
-- **No valid signal component:** Only noise is transmitted for jammed PRNs. Including a valid signal would help the receiver track (counterproductive for jamming).
-- **Per-PRN scoping:** Enables partial constellation jamming scenarios (e.g., jam low-elevation PRNs only) without affecting unjammed satellites.
-- **Deterministic:** Seeded PRNG ensures identical output for the same parameters, enabling repeatable test campaigns.
-
-## Examples
-
-### Partial Constellation Targeted Jamming (`-P` + `-A`)
-
-Start low jammer strength and ramp slowly (-J 0 -> 3 -> 6 -> 10 -> 15 -> 20).
-
-```bash
-# Render only PRNs 5 and 14 with matched-code noise jamming
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14 -A 5:jam_noise,14:jam_noise
-
-# Same with custom J/S = 30 dB
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -J 30
-
-# With +5 dB power boost to ensure jamming overcomes real sky signal
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21 -A 5:jam_noise,14:jam_noise,21:jam_noise -G 5
-
-# Render only selected PRNs with normal signal (no attack) — useful for future spoofing
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -P 5,14,21
+```
+1. Download ephemeris         bash download_nasa_ephemeris.sh
+2. Find visible PRNs          ./gps-sdr-sim -e brdc.nav -l LAT,LON,HGT -d 10 -v -o /dev/null
+3. Generate IQ file           ./gps-sdr-sim -e brdc.nav -l LAT,LON,HGT -P ... -A ... -d 300 -v
+4. Assemble RF chain          bladeRF TX --> [attenuators] --> whip antenna above F9P
+5. Cold start receiver        u-center 2 > Device > Reset > Cold Start
+6. Transmit                   bladeRF-cli -s bladerf.script
+7. Monitor C/N0               UBX-NAV-SAT in u-center 2, tune attenuation
+8. Record data                u-center 2 > Record > Start recording (UBX format)
 ```
 
-When validating a `-P` file in GNSS-SDR, use a stricter acquisition false-alarm setting (for example `Acquisition_1C.pfa=0.000001`). With loose thresholds (such as `0.01`), cross-correlation sidelobes can create false acquisitions on non-transmitted PRNs even though gps-sdr-sim rendered only the selected satellites.
+---
 
-### Per-PRN Attack Config (`-A`)
+## Scenario Catalog (Full List)
 
-```bash
-# Two PRNs dropped (gain zeroed — for offline/simulation use)
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,11:jam_drop
+### Baseline & Sanity
+1. Clean sky reference (no TX, bladeRF unplugged)
+2. Single PRN normal signal via `-P` (verify isolation)
+3. Single PRN `jam_drop` (verify signal disappears)
 
-# Matched-code noise jamming on PRN 7 with default J/S = 20 dB
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 7:jam_noise
+### Partial Constellation Jamming
+4. Single PRN `jam_noise` (selective denial)
+5. Multi-PRN `jam_noise` (2-3 PRNs)
+6. Low-elevation denial (jam PRNs below chosen elevation)
+7. Geometry attack (jam PRNs that maximize DOP degradation)
+8. Sector attack (jam PRNs in one azimuth quadrant)
 
-# Mixed catalog (jam_drop + jam_noise)
-./gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,7:jam_noise
-```
+### Power-Domain Jamming
+9. J/S sweep: 0, 3, 6, 10, 15, 20, 30 dB
+10. Soft attenuation via `-G` negative values
+11. Time-ramped J/S (concatenated IQ files)
 
-## Recommended Next Implementation Order
+### Synthetic Satellite Injection
+12. Single synthetic PRN overhead
+13. Two synthetic PRNs at different geometries
+14. Four synthetic PRNs for full position fix (conducted)
 
-1. `spoof_delay`: per-PRN range/range-rate bias injection before `computeCodePhase`.
-2. `spoof_nav`: per-PRN nav-bit and ephemeris field perturbation path.
+### Hybrid Attack
+15. Jam real PRN + inject synthetic replacement
+16. Jam multiple + inject multiple
+17. Jam-then-spoof sequential (two IQ files)
+
+### Receiver Stress
+18. Attack from t=0 (acquisition stress)
+19. Attack after stable lock (tracking stress)
+20. Alternating attack ON/OFF cycles (reacquisition stress)
+21. Edge-of-fix: jam down to exactly 4 usable PRNs
+
+### Measurement Campaigns
+22. C/N0 degradation vs number of jammed PRNs
+23. Position error vs J/S ratio
+24. Time-to-alarm (spoofDetState transition latency)
+25. Recovery time after attack stops
+
+### Planned (Not Yet Implemented)
+26. `spoof_delay`: per-PRN pseudorange/Doppler bias injection
+27. `spoof_nav`: navigation message field perturbation

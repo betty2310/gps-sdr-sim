@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xxd ~/Developer/research/COM3___9600_260331_080349.ubx)",
+      "Bash(python3:*)"
+    ]
+  }
+}
