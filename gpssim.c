@@ -2471,6 +2471,7 @@ int main(int argc, char *argv[]) {
         struct tm *gmt;
 
         time(&timer);
+        timer += 18; // GPS time = UTC + 18 leap seconds (as of 2017-01-01)
         gmt = gmtime(&timer);
 
         t0.y = gmt->tm_year + 1900;
@@ -2481,6 +2482,9 @@ int main(int argc, char *argv[]) {
         t0.sec = (double)gmt->tm_sec;
 
         date2gps(&t0, &g0);
+
+        fprintf(stderr, "GPS time (UTC + 18s leap): %4d/%02d/%02d,%02d:%02d:%02.0f\n",
+                t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec);
 
         break;
       }
