@@ -383,15 +383,19 @@ void initSynthEphemStore(synth_ephem_store_t *store) {
 
 int getSetReferenceToc(const ephem_t *eph_set, gpstime_t *toc) {
   int sv;
+  int found;
 
+  found = FALSE;
   for (sv = 0; sv < MAX_SAT; sv++) {
     if (eph_set[sv].vflg == 1) {
-      *toc = eph_set[sv].toc;
-      return (TRUE);
+      if (found == FALSE || subGpsTime(eph_set[sv].toc, *toc) < 0.0) {
+        *toc = eph_set[sv].toc;
+        found = TRUE;
+      }
     }
   }
 
-  return (FALSE);
+  return (found);
 }
 
 void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
