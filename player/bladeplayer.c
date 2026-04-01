@@ -3,9 +3,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
 #include <libbladeRF.h>
 #ifdef _WIN32
+#include <fcntl.h>
 #include "getopt.h"
+#include <io.h>
 #else
 #include <getopt.h>
 #include <unistd.h>
@@ -25,10 +28,26 @@
 
 #define AMPLITUDE (1000) // Default amplitude for 12-bit I/Q
 
+static volatile sig_atomic_t stop_requested = 0;
+
+static void handle_stop_signal(int signum)
+{
+    (void)signum;
+    stop_requested = 1;
+}
+
+static void install_signal_handlers(void)
+{
+    signal(SIGINT, handle_stop_signal);
+#ifdef SIGTERM
+    signal(SIGTERM, handle_stop_signal);
+#endif
+}
+
 void usage(void)
 {
     fprintf(stderr, "Usage: bladeplayer [options]\n"
-        "  -f <tx_file>  I/Q sampling data file (required)\n"
+        "  -f <tx_file>  I/Q sampling data file or - for stdin (required)\n"
         "  -b <iq_bits>  I/Q data format [1/16] (default: 16)\n"
         "  -g <tx_vga1>  TX VGA1 gain (default: %d)\n",
         TX_VGA1);
@@ -55,7 +74,7 @@ int main(int argc, char *argv[])
 
     int gain = TX_VGA1;
     int result;
-    int data_format;
+    int data_format = 16;
     char txfile[128];
 
     // Empty TX file name
@@ -107,7 +126,17 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    fp = fopen(txfile, "rb");
+    if (strcmp(txfile, "-") == 0)
+    {
+        fp = stdin;
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+    }
+    else
+    {
+        fp = fopen(txfile, "rb");
+    }
 
     if (fp==NULL) {
         fprintf(stderr, "ERROR: Failed to open TX file: %s\n", argv[1]);
@@ -170,6 +199,7 @@ int main(int argc, char *argv[])
 
     // Application code goes here.
     printf("Running...\n");
+    install_signal_handlers();
 
     // Allocate a buffer to hold each block of samples to transmit.
     tx_buffer = (int16_t*)malloc(SAMPLES_PER_BUFFER * 2 * sizeof(int16_t));
@@ -215,7 +245,7 @@ int main(int argc, char *argv[])
     }
 
     // Keep writing samples while there is more data to send and no failures have occurred.
-    while (state != DONE && status == 0) {
+    while (state != DONE && status == 0 && !stop_requested) {
 
         int16_t *tx_buffer_current = tx_buffer;
         unsigned int buffer_samples_remaining = SAMPLES_PER_BUFFER;
@@ -224,7 +254,8 @@ int main(int argc, char *argv[])
         unsigned int read_samples_remaining = SAMPLES_PER_BUFFER / 4;
 
         // Keep adding to the buffer until it is full or a failure occurs
-        while (buffer_samples_remaining > 0 && status == 0 && state != DONE) {
+        while (buffer_samples_remaining > 0 && status == 0 && state != DONE &&
+               !stop_requested) {
             size_t samples_populated = 0;
 
             switch(state) {
@@ -266,6 +297,11 @@ int main(int argc, char *argv[])
                     }
                     // Check for errors
                     else if (ferror(fp)) {
+                        if (stop_requested) {
+                            clearerr(fp);
+                            state = PAD_TRAILING;
+                            break;
+                        }
                         status = errno;
                     }
 
@@ -289,8 +325,8 @@ int main(int argc, char *argv[])
         }
 
         // If there were no errors, transmit the data buffer.
-        if (status == 0) {
-            bladerf_sync_tx(dev, tx_buffer, SAMPLES_PER_BUFFER, NULL, TIMEOUT_MS);
+        if (status == 0 && !stop_requested) {
+            status = bladerf_sync_tx(dev, tx_buffer, SAMPLES_PER_BUFFER, NULL, TIMEOUT_MS);
         }
     }
 
@@ -307,7 +343,9 @@ int main(int argc, char *argv[])
     free(read_buffer);
 
     // Close TX file
-    fclose(fp);
+    if (fp != stdin) {
+        fclose(fp);
+    }
 
 out:
     printf("Closing device...\n");

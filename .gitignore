@@ -48,6 +48,7 @@ nbproject/*
 *.nav
 *.obs
 *.26n
+.DS_Store
 
 # sdr-monitor: ignore all except gnss-sdr-receiver.conf
 sdr-monitor/*
