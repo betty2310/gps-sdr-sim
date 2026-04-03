@@ -13,7 +13,7 @@ BladeRF hardware test later:
 ```bash
   ./gps-sdr-sim -e hour0910.26n -l 21.0047844,105.8460541,5 \
     -P 1,2 -S 1:overhead,2:90.0/45.0 \
-    -n -o - | ./player/bladeplayer -f - -b 16 -g -35
+    -n -r 1.0 -o - | ./player/bladeplayer -f - -b 16 -g -35 -r 1.0
 
 ```
 
@@ -28,5 +28,5 @@ X300 hardware test later, using a FIFO:
     -a "type=x300,clock_source=external,time_source=external" &
   ./gps-sdr-sim -e hour0910.26n -l 21.0047844,105.8460541,5 \
     -P 1,2 -S 1:overhead,2:90.0/45.0 \
-    -n -o /tmp/gpssim.iq
+    -n -r 0.0 -o /tmp/gpssim.iq
 ```

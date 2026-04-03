@@ -86,11 +86,13 @@ Options:
   -o <output>      I/Q sampling data file (default: gpssim.bin ; use - for stdout)
   -s <frequency>   Sampling frequency [Hz] (default: 2600000)
   -b <iq_bits>     I/Q data format [1/8/16] (default: 16)
+  -r <lead_sec>    Stream lead time for -n timed start (default: 1.0)
   -i               Disable ionospheric delay for spacecraft scenario
   -p [fixed_gain]  Disable path loss and hold power level constant
   -A <attack_spec> Attack config PRN:method[,PRN:method...]
                    Methods: normal,jam_drop,jam_noise,spoof_delay,spoof_nav
                    (Currently implemented: jam_drop,jam_noise)
+  -n               Stream-now mode: use precise GPS time with stream lead
   -v               Show details about simulated channels
 ```
 
@@ -151,6 +153,11 @@ You can also execute these commands via the `bladeRF-cli` script option as below
 ```
 > bladeRF-cli -s bladerf.script
 ```
+
+For live stdin or FIFO streaming, `bladeplayer` uses timed TX start automatically.
+Use the same `-r <lead_sec>` value on both tools when tuning stream alignment.
+For untimed consumers such as `gps-sdr-sim-uhd.py`, set `-r 0` in
+`gps-sdr-sim` to disable the lead bias.
 
 #### HackRF:
 

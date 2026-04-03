@@ -4,12 +4,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #include <libbladeRF.h>
 #ifdef _WIN32
 #include <fcntl.h>
 #include "getopt.h"
 #include <io.h>
 #else
+#include <sys/stat.h>
 #include <getopt.h>
 #include <unistd.h>
 #include <errno.h>
@@ -27,6 +29,7 @@
 #define TIMEOUT_MS          1000
 
 #define AMPLITUDE (1000) // Default amplitude for 12-bit I/Q
+#define DEFAULT_STREAM_START_LEAD_SEC (1.0)
 
 static volatile sig_atomic_t stop_requested = 0;
 
@@ -44,12 +47,44 @@ static void install_signal_handlers(void)
 #endif
 }
 
+#ifndef _WIN32
+static int inputUsesStreamingPath(FILE *fp)
+{
+    struct stat st;
+
+    if (fp == stdin) {
+        return 1;
+    }
+
+    if (fstat(fileno(fp), &st) != 0) {
+        return 0;
+    }
+
+    return S_ISFIFO(st.st_mode);
+}
+#else
+static int inputUsesStreamingPath(FILE *fp)
+{
+    return fp == stdin;
+}
+#endif
+
+static bladerf_timestamp leadSecondsToSamples(double lead_sec)
+{
+    if (lead_sec <= 0.0) {
+        return 0;
+    }
+
+    return (bladerf_timestamp)(lead_sec * (double)TX_SAMPLERATE + 0.5);
+}
+
 void usage(void)
 {
     fprintf(stderr, "Usage: bladeplayer [options]\n"
         "  -f <tx_file>  I/Q sampling data file or - for stdin (required)\n"
         "  -b <iq_bits>  I/Q data format [1/16] (default: 16)\n"
-        "  -g <tx_vga1>  TX VGA1 gain (default: %d)\n",
+        "  -g <tx_vga1>  TX VGA1 gain (default: %d)\n"
+        "  -r <lead_sec> Timed TX start lead [sec] (default: 1.0 for stdin/FIFO)\n",
         TX_VGA1);
 
     return;
@@ -75,6 +110,12 @@ int main(int argc, char *argv[])
     int gain = TX_VGA1;
     int result;
     int data_format = 16;
+    int timed_start = 0;
+    int burst_started = 0;
+    int lead_specified = 0;
+    bladerf_format tx_format = BLADERF_FORMAT_SC16_Q11;
+    bladerf_timestamp tx_start_ts = 0;
+    double stream_start_lead = DEFAULT_STREAM_START_LEAD_SEC;
     char txfile[128];
 
     // Empty TX file name
@@ -85,7 +126,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    while ((result=getopt(argc,argv,"g:b:f:"))!=-1)
+    while ((result=getopt(argc,argv,"g:b:f:r:"))!=-1)
     {
         switch (result)
         {
@@ -109,6 +150,15 @@ int main(int argc, char *argv[])
             break;
         case 'f':
             strcpy(txfile, optarg);
+            break;
+        case 'r':
+            stream_start_lead = atof(optarg);
+            if (stream_start_lead < 0.0 || stream_start_lead > 60.0)
+            {
+                printf("ERROR: Invalid timed start lead.\n");
+                exit(1);
+            }
+            lead_specified = 1;
             break;
         case ':':
         case '?':
@@ -139,8 +189,13 @@ int main(int argc, char *argv[])
     }
 
     if (fp==NULL) {
-        fprintf(stderr, "ERROR: Failed to open TX file: %s\n", argv[1]);
+        fprintf(stderr, "ERROR: Failed to open TX file: %s\n", txfile);
         exit(1);
+    }
+
+    timed_start = lead_specified || inputUsesStreamingPath(fp);
+    if (timed_start) {
+        tx_format = BLADERF_FORMAT_SC16_Q11_META;
     }
 
     // Initializing device.
@@ -197,6 +252,12 @@ int main(int argc, char *argv[])
         printf("TX VGA2 gain: %d dB\n", TX_VGA2);
     }
 
+    if (timed_start) {
+        printf("Timed TX start: enabled (lead %.3f s)\n", stream_start_lead);
+    } else {
+        printf("Timed TX start: disabled\n");
+    }
+
     // Application code goes here.
     printf("Running...\n");
     install_signal_handlers();
@@ -226,7 +287,7 @@ int main(int argc, char *argv[])
     // Configure the TX module for use with the synchronous interface.
     status = bladerf_sync_config(dev,
             BLADERF_MODULE_TX,
-            BLADERF_FORMAT_SC16_Q11,
+            tx_format,
             NUM_BUFFERS,
             SAMPLES_PER_BUFFER,
             NUM_TRANSFERS,
@@ -242,6 +303,20 @@ int main(int argc, char *argv[])
     if (status != 0) {
         fprintf(stderr, "Failed to enable TX module: %s\n", bladerf_strerror(status));
         goto out;
+    }
+
+    if (timed_start) {
+        bladerf_timestamp tx_now;
+
+        status = bladerf_get_timestamp(dev, BLADERF_TX, &tx_now);
+        if (status != 0) {
+            fprintf(stderr, "Failed to query TX timestamp: %s\n", bladerf_strerror(status));
+            goto out;
+        }
+
+        tx_start_ts = tx_now + leadSecondsToSamples(stream_start_lead);
+        printf("Scheduled TX start timestamp: %llu\n",
+               (unsigned long long)tx_start_ts);
     }
 
     // Keep writing samples while there is more data to send and no failures have occurred.
@@ -326,7 +401,28 @@ int main(int argc, char *argv[])
 
         // If there were no errors, transmit the data buffer.
         if (status == 0 && !stop_requested) {
-            status = bladerf_sync_tx(dev, tx_buffer, SAMPLES_PER_BUFFER, NULL, TIMEOUT_MS);
+            struct bladerf_metadata meta;
+            struct bladerf_metadata *meta_ptr = NULL;
+
+            if (timed_start) {
+                memset(&meta, 0, sizeof(meta));
+
+                if (!burst_started) {
+                    meta.flags |= BLADERF_META_FLAG_TX_BURST_START;
+                    meta.timestamp = tx_start_ts;
+                }
+
+                if (state == DONE) {
+                    meta.flags |= BLADERF_META_FLAG_TX_BURST_END;
+                }
+
+                meta_ptr = &meta;
+            }
+
+            status = bladerf_sync_tx(dev, tx_buffer, SAMPLES_PER_BUFFER, meta_ptr, TIMEOUT_MS);
+            if (status == 0 && timed_start && !burst_started) {
+                burst_started = 1;
+            }
         }
     }
 

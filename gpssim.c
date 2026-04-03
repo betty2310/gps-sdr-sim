@@ -140,12 +140,24 @@ static void installSignalHandlers(void) {
 #endif
 }
 
-static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0) {
+static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0,
+                                  double lead_sec) {
+  struct timespec ts;
+  double gps_time_sec;
   time_t timer;
   struct tm *gmt;
+  double frac_sec;
 
-  time(&timer);
-  timer += 18; // GPS time = UTC + 18 leap seconds (as of 2017-01-01)
+  if (timespec_get(&ts, TIME_UTC) != TIME_UTC) {
+    time(&timer);
+    ts.tv_sec = timer;
+    ts.tv_nsec = 0;
+  }
+
+  gps_time_sec = (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9 +
+                 18.0 + lead_sec;
+  timer = (time_t)floor(gps_time_sec);
+  frac_sec = gps_time_sec - (double)timer;
   gmt = gmtime(&timer);
 
   t0->y = gmt->tm_year + 1900;
@@ -153,7 +165,7 @@ static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0) {
   t0->d = gmt->tm_mday;
   t0->hh = gmt->tm_hour;
   t0->mm = gmt->tm_min;
-  t0->sec = (double)gmt->tm_sec;
+  t0->sec = (double)gmt->tm_sec + frac_sec;
 
   date2gps(t0, g0);
 }
@@ -2341,6 +2353,8 @@ void usage(void) {
       "                   az/el = synthesize at azimuth/elevation in "
       "degrees\n"
       "                   e.g. -S 17:force,25:overhead,30:180.0/45.0\n"
+      "  -r <lead_sec>    Stream lead time for -n timed start "
+      "(default: 1.0)\n"
       "  -n               Stream-now mode: latch GPS now at generation start\n"
       "                   and, in static mode, stream until interrupted\n"
       "  -v               Show details about simulated channels\n",
@@ -2411,6 +2425,7 @@ int main(int argc, char *argv[]) {
   int current_time_mode = FALSE;
   int stream_mode = FALSE;
   int stream_forever = FALSE;
+  double stream_start_lead = 1.0;
 
   int timeoverwrite = FALSE; // Overwrite the TOC and TOE in the RINEX file
   int attack_enabled = FALSE;
@@ -2449,7 +2464,7 @@ int main(int argc, char *argv[]) {
   }
 
   while ((result = getopt(argc, argv,
-                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:ipvn")) != -1) {
+                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:r:ipvn")) != -1) {
     switch (result) {
     case 'e':
       strcpy(navfile, optarg);
@@ -2538,6 +2553,13 @@ int main(int argc, char *argv[]) {
     case 'd':
       duration_specified = TRUE;
       duration = atof(optarg);
+      break;
+    case 'r':
+      stream_start_lead = atof(optarg);
+      if (stream_start_lead < 0.0 || stream_start_lead > 60.0) {
+        fprintf(stderr, "ERROR: Invalid stream lead time.\n");
+        exit(1);
+      }
       break;
     case 'i':
       ionoutc.enable = FALSE; // Disable ionospheric correction
@@ -2749,9 +2771,19 @@ int main(int argc, char *argv[]) {
     setvbuf(fp, NULL, _IONBF, 0);
 
   if (current_time_mode == TRUE) {
-    resolveCurrentGpsTime(&t0, &g0);
-    fprintf(stderr, "GPS time (UTC + 18s leap): %4d/%02d/%02d,%02d:%02d:%02.0f\n",
-            t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec);
+    double lead_sec = stream_mode == TRUE ? stream_start_lead : 0.0;
+
+    resolveCurrentGpsTime(&t0, &g0, lead_sec);
+    if (stream_mode == TRUE) {
+      fprintf(stderr,
+              "GPS time (UTC + 18s leap + %.3fs stream lead): "
+              "%4d/%02d/%02d,%02d:%02d:%06.3f\n",
+              lead_sec, t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec);
+    } else {
+      fprintf(stderr,
+              "GPS time (UTC + 18s leap): %4d/%02d/%02d,%02d:%02d:%06.3f\n",
+              t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec);
+    }
   }
 
   if (g0.week >= 0) // Scenario start time has been set.
@@ -2804,7 +2836,7 @@ int main(int argc, char *argv[]) {
     t0 = tmin;
   }
 
-  fprintf(stderr, "Start time = %4d/%02d/%02d,%02d:%02d:%02.0f (%d:%.0f)\n",
+  fprintf(stderr, "Start time = %4d/%02d/%02d,%02d:%02d:%06.3f (%d:%.3f)\n",
           t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec, g0.week, g0.sec);
   if (stream_forever == TRUE)
     fprintf(stderr, "Duration = streaming until interrupted\n");
