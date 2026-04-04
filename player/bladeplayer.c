@@ -307,6 +307,12 @@ int main(int argc, char *argv[])
 
     if (timed_start) {
         bladerf_timestamp tx_now;
+        struct timespec ts_blade;
+
+        if (timespec_get(&ts_blade, TIME_UTC) != TIME_UTC) {
+            ts_blade.tv_sec = time(NULL);
+            ts_blade.tv_nsec = 0;
+        }
 
         status = bladerf_get_timestamp(dev, BLADERF_TX, &tx_now);
         if (status != 0) {
@@ -314,9 +320,22 @@ int main(int argc, char *argv[])
             goto out;
         }
 
-        tx_start_ts = tx_now + leadSecondsToSamples(stream_start_lead);
-        printf("Scheduled TX start timestamp: %llu\n",
-               (unsigned long long)tx_start_ts);
+        bladerf_timestamp lead_samples = leadSecondsToSamples(stream_start_lead);
+        tx_start_ts = tx_now + lead_samples;
+
+        fprintf(stderr,
+                "[TIMING] bladeplayer wall-clock at ts read: %lld.%09ld s (CLOCK_REALTIME)\n",
+                (long long)ts_blade.tv_sec, (long)ts_blade.tv_nsec);
+        fprintf(stderr,
+                "[TIMING] bladeplayer bladeRF device timestamp: %llu samples\n",
+                (unsigned long long)tx_now);
+        fprintf(stderr,
+                "[TIMING] bladeplayer lead: %.3f s = %llu samples\n",
+                stream_start_lead, (unsigned long long)lead_samples);
+        fprintf(stderr,
+                "[TIMING] bladeplayer scheduled TX start: %llu samples "
+                "(device_now + lead)\n",
+                (unsigned long long)tx_start_ts);
     }
 
     // Keep writing samples while there is more data to send and no failures have occurred.

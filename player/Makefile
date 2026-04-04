@@ -13,7 +13,7 @@ all: bladeplayer hackplayer limeplayer plutoplayer
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 bladeplayer: bladeplayer.o $(SDR_OBJ) $(COMPAT)
-	$(CC) -g -o $@ $^ $(LDFLAGS) $(LIBS) $(shell pkg-config --libs libbladeRF)
+	$(CC) -g -o $@ $^ $(LDFLAGS) $(LIBS) $(shell pkg-config --libs libbladeRF) -Wl,-rpath,/usr/local/lib
 
 hackplayer: hackplayer.o $(COMPAT)
 	$(CC) -g -o $@ $^ $(LDFLAGS) $(LIBS) $(shell pkg-config --libs libhackrf)

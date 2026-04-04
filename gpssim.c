@@ -154,6 +154,10 @@ static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0,
     ts.tv_nsec = 0;
   }
 
+  fprintf(stderr,
+          "[TIMING] gps-sdr-sim wall-clock latch: %lld.%09ld s (CLOCK_REALTIME)\n",
+          (long long)ts.tv_sec, (long)ts.tv_nsec);
+
   gps_time_sec = (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9 +
                  18.0 + lead_sec;
   timer = (time_t)floor(gps_time_sec);
@@ -168,6 +172,11 @@ static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0,
   t0->sec = (double)gmt->tm_sec + frac_sec;
 
   date2gps(t0, g0);
+
+  fprintf(stderr,
+          "[TIMING] gps-sdr-sim GPS epoch: week %d  tow %.9f s  "
+          "(lead %.3f s included)\n",
+          g0->week, g0->sec, lead_sec);
 }
 
 static int writeOutput(FILE *fp, const void *buf, size_t size, size_t count) {
