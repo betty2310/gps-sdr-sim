@@ -114,16 +114,11 @@ double ant_pat_db[37] = {0.00,  0.00,  0.22,  0.44,  0.67,  1.11,  1.56,  2.00,
                          24.00, 25.56, 27.33, 29.33, 31.56};
 
 int allocatedSat[MAX_SAT];
-static volatile sig_atomic_t stop_requested = 0;
+volatile sig_atomic_t stop_requested = 0;
 
 double xyz[USER_MOTION_SIZE][3];
 
-// Forward declarations for functions used by synthetic satellite code
-void date2gps(const datetime_t *t, gpstime_t *g);
-void xyz2llh(const double *xyz, double *llh);
-void ltcmat(const double *llh, double t[3][3]);
-double normVect(const double *x);
-double subGpsTime(gpstime_t g1, gpstime_t g0);
+// Forward declarations now in gpssim.h
 
 static void handleStopSignal(int signum) {
   (void)signum;
@@ -186,25 +181,7 @@ static int writeOutput(FILE *fp, const void *buf, size_t size, size_t count) {
   return TRUE;
 }
 
-typedef enum {
-  ATTACK_METHOD_NONE = 0,
-  ATTACK_METHOD_JAM_DROP,
-  ATTACK_METHOD_JAM_NOISE,
-  ATTACK_METHOD_SPOOF_DELAY,
-  ATTACK_METHOD_SPOOF_NAV
-} attack_method_t;
-
-typedef struct {
-  attack_method_t method[MAX_SAT];
-  double jam_js_db;        // Jammer-to-signal ratio in dB for jam_noise
-  int prn_select[MAX_SAT]; // 1 = render this PRN, 0 = suppress
-  int partial_mode;        // 1 = only render selected PRNs
-  double gain_boost_db;    // Power boost in dB for partial-mode PRNs
-} attack_config_t;
-
-// RMS of nextGaussianNoise() output (CLT average of 4 samples in [-250, 250]).
-// We normalize jammer noise by this constant so -J maps to expected J/S.
-#define JAM_NOISE_RMS_SCALE 72.31
+// attack_method_t, attack_config_t, JAM_NOISE_RMS_SCALE now in gpssim.h
 
 short clipInt16(int x) {
   if (x > SHRT_MAX)
@@ -413,9 +390,7 @@ void applyGainAttack(const attack_config_t *cfg, int prn, int *gain) {
 
 // Synthetic satellite configuration
 
-#define GPS_ORBIT_RADIUS 26559700.0  // GPS semi-major axis (meters)
-#define GPS_INCLINATION 0.9599310886 // ~55 degrees in radians
-#define D2R (PI / 180.0)
+// GPS_ORBIT_RADIUS, GPS_INCLINATION, D2R now in gpssim.h
 
 double wrapToPi(double angle) {
   while (angle >= PI)
@@ -2372,6 +2347,7 @@ void usage(void) {
   return;
 }
 
+#ifndef GPS_SDR_SIM_LIB
 int main(int argc, char *argv[]) {
   clock_t tstart, tend;
 
@@ -3293,3 +3269,4 @@ int main(int argc, char *argv[]) {
 
   return (0);
 }
+#endif /* GPS_SDR_SIM_LIB */

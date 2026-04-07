@@ -1,6 +1,13 @@
 #ifndef GPSSIM_H
 #define GPSSIM_H
 
+#include <signal.h>
+
+/* Ensure sig_atomic_t is available before extern "C" block */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 //#define FLOAT_CARR_PHASE // For RKT simulation. Higher computational load, but smoother carrier phase.
 
 #define TRUE	(1)
@@ -79,6 +86,14 @@
 #define SC16 (16)
 
 #define EPHEM_ARRAY_SIZE (15) // for daily GPS broadcast ephemers file (brdc)
+
+// Synthetic satellite constants
+#define GPS_ORBIT_RADIUS 26559700.0  // GPS semi-major axis (meters)
+#define GPS_INCLINATION 0.9599310886 // ~55 degrees in radians
+#define D2R (PI / 180.0)
+
+// Jammer noise normalization constant
+#define JAM_NOISE_RMS_SCALE 72.31
 
 /*! \brief Structure representing GPS time */
 typedef struct
@@ -184,6 +199,24 @@ typedef struct
 	range_t rho0;
 } channel_t;
 
+/*! \brief Attack method */
+typedef enum {
+	ATTACK_METHOD_NONE = 0,
+	ATTACK_METHOD_JAM_DROP,
+	ATTACK_METHOD_JAM_NOISE,
+	ATTACK_METHOD_SPOOF_DELAY,
+	ATTACK_METHOD_SPOOF_NAV
+} attack_method_t;
+
+/*! \brief Attack configuration */
+typedef struct {
+	attack_method_t method[MAX_SAT];
+	double jam_js_db;        /*!< Jammer-to-signal ratio in dB for jam_noise */
+	int prn_select[MAX_SAT]; /*!< 1 = render this PRN, 0 = suppress */
+	int partial_mode;        /*!< 1 = only render selected PRNs */
+	double gain_boost_db;    /*!< Power boost in dB for partial-mode PRNs */
+} attack_config_t;
+
 /*! \brief Synthetic satellite mode */
 typedef enum {
 	SYNTH_NONE = 0,
@@ -205,5 +238,113 @@ typedef struct {
 	int valid[MAX_SAT];
 	ephem_t eph[MAX_SAT];
 } synth_ephem_store_t;
+
+////////////////////////////////////////////////////////////
+// Global data (defined in gpssim.c)
+////////////////////////////////////////////////////////////
+
+extern int sinTable512[];
+extern int cosTable512[];
+extern double ant_pat_db[];
+extern int allocatedSat[];
+extern double xyz[][3];
+extern volatile sig_atomic_t stop_requested;
+
+////////////////////////////////////////////////////////////
+// Function declarations
+////////////////////////////////////////////////////////////
+
+/* Clipping */
+short clipInt16(int x);
+int clipInt32FromDouble(double x);
+
+/* Attack / partial constellation */
+void initAttackConfig(attack_config_t *cfg);
+void initAttackNoiseState(unsigned int noise_state[MAX_SAT]);
+int nextNoiseValue(unsigned int *state);
+int nextGaussianNoise(unsigned int *state);
+const char *attackMethodName(attack_method_t method);
+int parseAttackMethod(const char *name, attack_method_t *method);
+int parseAttackConfig(attack_config_t *cfg, const char *spec);
+int parsePartialPrns(attack_config_t *cfg, const char *spec);
+int hasUnimplementedAttack(const attack_config_t *cfg);
+attack_method_t getAttackMethod(const attack_config_t *cfg, int prn);
+void applyGainAttack(const attack_config_t *cfg, int prn, int *gain);
+
+/* Angle utilities */
+double wrapToPi(double angle);
+
+/* Synthetic satellites */
+void initSynthConfig(synth_config_t *cfg);
+void initSynthEphemStore(synth_ephem_store_t *store);
+int getSetReferenceToc(const ephem_t *eph_set, gpstime_t *toc);
+void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
+    const synth_config_t *cfg, const synth_ephem_store_t *store);
+int parseSynthConfig(synth_config_t *cfg, const char *spec);
+void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef);
+void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
+    gpstime_t toe, gpstime_t toc);
+
+/* Vector math */
+void subVect(double *y, const double *x1, const double *x2);
+double normVect(const double *x);
+double dotProd(const double *x1, const double *x2);
+
+/* C/A code generation */
+void codegen(int *ca, int prn);
+
+/* Time conversions */
+void date2gps(const datetime_t *t, gpstime_t *g);
+void gps2date(const gpstime_t *g, datetime_t *t);
+double subGpsTime(gpstime_t g1, gpstime_t g0);
+gpstime_t incGpsTime(gpstime_t g0, double dt);
+int shouldAdvanceEphSet(gpstime_t next_toc, gpstime_t grx);
+
+/* Coordinate transforms */
+void xyz2llh(const double *xyz, double *llh);
+void llh2xyz(const double *llh, double *xyz);
+void ltcmat(const double *llh, double t[3][3]);
+void ecef2neu(const double *xyz, double t[3][3], double *neu);
+void neu2azel(double *azel, const double *neu);
+
+/* Ephemeris */
+int replaceExpDesignator(char *str, int len);
+int readRinexNavAll(ephem_t eph[][MAX_SAT], ionoutc_t *ionoutc, const char *fname);
+void satpos(ephem_t eph, gpstime_t g, double *pos, double *vel, double *clk);
+void eph2sbf(const ephem_t eph, const ionoutc_t ionoutc,
+    unsigned long sbf[5][N_DWRD_SBF]);
+unsigned long countBits(unsigned long v);
+unsigned long computeChecksum(unsigned long source, int nib);
+
+/* Ionospheric delay */
+double ionosphericDelay(const ionoutc_t *ionoutc, gpstime_t g, double *llh,
+    double *azel);
+
+/* Range computation */
+void computeRange(range_t *rho, ephem_t eph, ionoutc_t *ionoutc, gpstime_t g,
+    double xyz[]);
+void computeCodePhase(channel_t *chan, range_t rho1, double dt);
+
+/* User motion */
+int readUserMotion(double xyz[USER_MOTION_SIZE][3], const char *filename);
+int readUserMotionLLH(double xyz[USER_MOTION_SIZE][3], const char *filename);
+int readNmeaGGA(double xyz[USER_MOTION_SIZE][3], const char *filename);
+
+/* Navigation message */
+int generateNavMsg(gpstime_t g, channel_t *chan, int init);
+
+/* Satellite visibility and channel allocation */
+int checkSatVisibility(ephem_t eph, gpstime_t g, double *xyz, double elvMask,
+    double *azel);
+int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
+    gpstime_t grx, double *xyz, double elvMask,
+    const attack_config_t *acfg, const synth_config_t *scfg);
+
+/* Usage */
+void usage(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

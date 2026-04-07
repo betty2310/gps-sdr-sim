@@ -42,14 +42,20 @@ gps-sdr-sim-lut
 # Netbeans project folder
 nbproject/*
 
+temp/*
+
 # Last used USER_MOTION_SIZE variable
 .user-motion-size
 .worktrees/
 *.nav
 *.obs
 *.26n
+*.ubx
 .DS_Store
 
 # sdr-monitor: ignore all except gnss-sdr-receiver.conf
 sdr-monitor/*
 !sdr-monitor/gnss-sdr-receiver.conf
+x300tx
+
+tx

@@ -38,27 +38,6 @@ Inject GPS signals for satellites **not currently visible** in the sky using gps
 
 **ZED-F9P challenge:** The F9P is the hardest u-blox module to spoof. It has dual-frequency (L1+L2) tracking, cross-satellite consistency checks, position residual monitoring, and a dedicated spoofing detection flag. gps-sdr-sim generates L1-only signals, so the F9P will see L1 without matching L2 for synthetic PRNs. This document addresses these challenges.
 
----
-
-## 1. Critical: Fix Sample Rate Mismatch
-
-The current `bladerf.script` plays at 4 MHz but gps-sdr-sim generates at 2.6 MHz by default. This breaks the C/A code rate (1.023 MHz becomes 1.574 MHz) and **no receiver will ever acquire**.
-
-**Rule:** The bladeRF sample rate MUST match the gps-sdr-sim `-s` value (default: 2.6 MHz).
-
----
-
-## 2. LO Leakage Warning
-
-The bladeRF 1.0's LMS6002D **leaks local oscillator energy through the TX port even when not transmitting**. If the frequency was previously set to 1575.42 MHz, this leakage can degrade u-blox tracking across all satellites -- you will see 5-15 dB C/N0 drop and satellites lost even though you are not transmitting anything.
-
-**Mitigations:**
-1. **Keep attenuators in the RF chain at all times** -- even idle LO leakage is killed by 80 dB inline attenuation
-2. **Cap the TX SMA with a 50-ohm terminator** when not transmitting
-3. **Unplug the bladeRF** during baseline GPS measurements
-4. **Run `cal dc tx` before each session** -- reduces (but does not eliminate) LO leakage
-
----
 
 ## 3. RF Link Budget for OTA
 
@@ -625,7 +604,81 @@ IMPORTANT: Keep attenuators connected at all times to suppress LO leakage.
 
 ---
 
-## 11. Key Source References
+## 11. USRP X300 + Trimble 1PPS Time-Tag Mode
+
+### Overview
+
+`x300tx` supports an optional Trimble 1PPS time-tag mode that derives the GPS simulation epoch from a Trimble receiver's ASCII time tag delivered over TCP. This aligns the waveform epoch and TX scheduling to the same GNSS-derived time source, replacing the host wall-clock (`-n`) or manual `--gps-week`/`--gps-tow` approaches.
+
+**Limitation:** This is a software timing anchor, not a hardware PPS replacement. Without a physical PPS wire into the X300, residual jitter from TCP transport and host scheduling remains. Treat this as a mitigation mode, not absolute-time mode.
+
+### How it works
+
+1. `x300tx` connects to the Trimble TCP endpoint and reads the binary GSOF stream.
+2. It scans for the embedded ASCII `1 PPS TIME TAG` (format: `UTC YY.MM.DD HH:MM:SS`).
+3. The tagged UTC second + `--trimble-start-offset-sec` is converted to GPS week/TOW (adding leap seconds), becoming the simulation epoch `g0`.
+4. Host monotonic time is captured at tag receipt. After pre-buffering, the remaining delay is computed and used for timed TX scheduling.
+5. If the target second becomes stale (remaining delay < 20 ms), transmission is refused with a diagnostic.
+
+### CLI options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--trimble-time-tag-host <host>` | — | Trimble TCP host (enables Trimble mode) |
+| `--trimble-time-tag-port <port>` | — | Trimble TCP port (enables Trimble mode) |
+| `--trimble-start-offset-sec <s>` | 2 | Future offset from tagged second (1-30) |
+| `--trimble-tag-lead-ms <ms>` | 500 | Estimated tag-to-PPS lead (0-5000) |
+| `--trimble-timeout-ms <ms>` | 3000 | TCP read timeout (100-30000) |
+| `--trimble-leap-sec <sec>` | 18 | UTC-to-GPS leap second offset (0-50) |
+| `--trimble-tx-cal-ns <ns>` | 0 | Calibration term applied to g0 |
+
+**Mutual exclusion:** Trimble mode cannot be combined with `-n` (wall-clock) or `--gps-week`/`--gps-tow` (explicit epoch).
+
+### Example command
+
+```bash
+x300tx -e hour0910.26n -l 21.0047844,105.8460541,5 \
+    -P 3,4,7,8 -S 3:0/60,4:90/45,7:180/30,8:45/55 \
+    --trimble-time-tag-host 192.168.5.245 \
+    --trimble-time-tag-port 5017 \
+    --trimble-start-offset-sec 2 --gain 0
+```
+
+### Expected output
+
+```
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-07 07:52:57
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=500 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2413  tow 201197.000000000
+[TRIMBLE] Target datetime:  2026/04/07,07:53:17.000
+...
+[TRIMBLE] Planned delay (lead + offset): 2.500 s
+[TRIMBLE] Prep elapsed since tag: 12.917 ms
+[TRIMBLE] Remaining delay:        2487.083 ms
+[TRIMBLE] Accepted: scheduling TX at +2487.083 ms
+[TX] Scheduling first TX at hardware time +2487.083 ms
+[TX] First epoch sent (timed). Streaming ...
+```
+
+### Trimble port notes
+
+The Trimble NetR9 (and similar receivers) output a binary GSOF stream on the configured TCP port. The ASCII `1 PPS TIME TAG` is embedded within this binary framing. `x300tx` scans the raw byte stream for the `UTC ` marker -- it does not require a clean ASCII-only port. Non-tag binary data is silently skipped.
+
+### Tuning guide
+
+| Symptom | Adjustment |
+|---------|------------|
+| `Target second is stale` error | Increase `--trimble-start-offset-sec` (e.g., 3 or 4) or reduce `--prebuffer` |
+| Time tag not found within timeout | Check Trimble host/port, verify `1 PPS TIME TAG` is enabled on that port |
+| GPS epoch looks wrong | Verify `--trimble-leap-sec` matches current UTC-GPS offset (18 as of 2026) |
+| Systematic time bias observed | Use `--trimble-tx-cal-ns` to absorb constant residual (positive = advance) |
+| `EVENT_CODE_TIME_ERROR` after TX start | Remaining delay was too small; increase start offset |
+
+---
+
+## 12. Key Source References
 
 | File | Line | What |
 |------|------|------|
@@ -636,5 +689,8 @@ IMPORTANT: Keep attenuators connected at all times to suppress LO leakage.
 | `gpssim.c` | 508 | `synthEphemeris()` -- builds synthetic `ephem_t` |
 | `gpssim.c` | 2899-2917 | Gain/power computation with path loss and antenna pattern |
 | `gpssim.h` | 14-16 | `MAX_SAT=32`, `MAX_CHAN=16` |
+| `player/x300tx.cpp` | 116 | `trimbleTcpConnect()` -- TCP connect with timeout |
+| `player/x300tx.cpp` | 179 | `findUtcMarker()` / `trimbleReadTag()` -- GSOF stream scanner |
+| `player/x300tx.cpp` | 249 | `trimbleUtcToGpsEpoch()` -- UTC tag to GPS week/TOW |
 | `docs/synthetic-satellites.md` | - | Full `-S` flag documentation |
 | `docs/jamming-spoofing-scenarios.md` | - | `-P` partial mode and attack methods |

@@ -5,16 +5,32 @@ all: gps-sdr-sim
 
 SHELL=/bin/bash
 CC=gcc
+CXX=g++
 CFLAGS=-O3 -Wall -D_FILE_OFFSET_BITS=64
+CXXFLAGS=-O3 -Wall -std=c++17 $(shell pkg-config --cflags uhd)
 ifdef USER_MOTION_SIZE
 CFLAGS+=-DUSER_MOTION_SIZE=$(USER_MOTION_SIZE)
+CXXFLAGS+=-DUSER_MOTION_SIZE=$(USER_MOTION_SIZE)
 endif
 LDFLAGS=-lm
+UHD_LIBS=$(shell pkg-config --libs uhd)
+BOOST_LIBDIRS=$(wildcard /opt/homebrew/lib /usr/local/lib)
+BOOST_LIBS=$(addprefix -L,$(BOOST_LIBDIRS)) -lboost_program_options -lboost_thread
 
 gps-sdr-sim: gpssim.o
 	${CC} $< ${LDFLAGS} -o $@
 
 gpssim.o: .user-motion-size gpssim.h
+
+# Library object: gpssim without main() for linking into x300tx
+gpssim-lib.o: gpssim.c gpssim.h .user-motion-size
+	${CC} ${CFLAGS} -DGPS_SDR_SIM_LIB -c gpssim.c -o $@
+
+x300tx: player/x300tx.cpp gpssim-lib.o gpssim.h
+	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp gpssim-lib.o ${UHD_LIBS} ${LDFLAGS} -o $@
+
+tx: tx_samples_from_file.cpp
+	${CXX} ${CXXFLAGS} $< ${UHD_LIBS} ${BOOST_LIBS} ${LDFLAGS} -o $@
 
 .user-motion-size: .FORCE
 	@if [ -f .user-motion-size ]; then \
@@ -27,7 +43,7 @@ gpssim.o: .user-motion-size gpssim.h
 	fi;
 
 clean:
-	rm -f gpssim.o gps-sdr-sim *.bin .user-motion-size
+	rm -f gpssim.o gpssim-lib.o gps-sdr-sim x300tx *.bin .user-motion-size
 
 time: gps-sdr-sim
 	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 1
