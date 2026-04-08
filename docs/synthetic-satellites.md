@@ -1,5 +1,8 @@
 # Synthetic Satellite Generation (`-S`)
 
+For a code-level walkthrough of the implementation, see
+[`docs/synthetic-satellites-implementation.md`](synthetic-satellites-implementation.md).
+
 ## Purpose
 
 By default, gps-sdr-sim only generates signals for satellites that have valid ephemeris **and** are above the horizon at the given location and time. The `-S` flag breaks this constraint, enabling signals from satellites that a real receiver could not normally see. This is the foundation for:
