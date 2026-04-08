@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./bladetx:*)",
+      "Bash(DYLD_LIBRARY_PATH=/usr/local/lib ./bladetx:*)"
+    ]
+  }
+}
