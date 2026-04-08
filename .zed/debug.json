@@ -13,7 +13,7 @@
       "cwd": "$ZED_WORKTREE_ROOT",
     },
     "program": "$ZED_WORKTREE_ROOT/gps-sdr-sim",
-    "args": ["-e", "hour0970.26n", "-l", "21.0047844,105.8460541,5"],
+    "args": ["-e", "hour0980.26n", "-l", "21.0047844,105.8460541,5"],
     "cwd": "$ZED_WORKTREE_ROOT",
   },
 ]

@@ -8,8 +8,8 @@
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
-#include <fcntl.h>
 #include "getopt.h"
+#include <fcntl.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -149,12 +149,13 @@ static void resolveCurrentGpsTime(datetime_t *t0, gpstime_t *g0,
     ts.tv_nsec = 0;
   }
 
-  fprintf(stderr,
-          "[TIMING] gps-sdr-sim wall-clock latch: %lld.%09ld s (CLOCK_REALTIME)\n",
-          (long long)ts.tv_sec, (long)ts.tv_nsec);
+  fprintf(
+      stderr,
+      "[TIMING] gps-sdr-sim wall-clock latch: %lld.%09ld s (CLOCK_REALTIME)\n",
+      (long long)ts.tv_sec, (long)ts.tv_nsec);
 
-  gps_time_sec = (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9 +
-                 18.0 + lead_sec;
+  gps_time_sec =
+      (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9 + 18.0 + lead_sec;
   timer = (time_t)floor(gps_time_sec);
   frac_sec = gps_time_sec - (double)timer;
   gmt = gmtime(&timer);
@@ -2449,7 +2450,8 @@ int main(int argc, char *argv[]) {
   }
 
   while ((result = getopt(argc, argv,
-                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:r:ipvn")) != -1) {
+                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:r:ipvn")) !=
+         -1) {
     switch (result) {
     case 'e':
       strcpy(navfile, optarg);
@@ -2626,14 +2628,14 @@ int main(int argc, char *argv[]) {
     llh[2] = 10.0;
   }
 
-  stream_forever =
-      (stream_mode == TRUE && staticLocationMode == TRUE &&
-       duration_specified == FALSE);
+  stream_forever = (stream_mode == TRUE && staticLocationMode == TRUE &&
+                    duration_specified == FALSE);
 
   if ((!stream_forever && duration < 0.0) ||
       (!stream_forever && duration > ((double)USER_MOTION_SIZE) / 10.0 &&
        !staticLocationMode) ||
-      (!stream_forever && duration > STATIC_MAX_DURATION && staticLocationMode)) {
+      (!stream_forever && duration > STATIC_MAX_DURATION &&
+       staticLocationMode)) {
     fprintf(stderr, "ERROR: Invalid duration.\n");
     exit(1);
   }
@@ -2711,7 +2713,7 @@ int main(int argc, char *argv[]) {
             ionoutc.beta1, ionoutc.beta2, ionoutc.beta3);
     fprintf(stderr, "   %19.11e %19.11e  %9d %9d\n", ionoutc.A0, ionoutc.A1,
             ionoutc.tot, ionoutc.wnt);
-    fprintf(stderr, "%6d\n", ionoutc.dtls);
+    fprintf(stderr, "Leap seconds = %d\n", ionoutc.dtls);
   }
 
   for (sv = 0; sv < MAX_SAT; sv++) {
@@ -2937,7 +2939,7 @@ int main(int argc, char *argv[]) {
   ////////////////////////////////////////////////////////////
 
   // Allocate I/Q buffer
-  iq_buff = calloc(2 * iq_buff_size, 2);
+  iq_buff = (short *)calloc(2 * iq_buff_size, 2);
 
   if (iq_buff == NULL) {
     fprintf(stderr, "ERROR: Failed to allocate 16-bit I/Q buffer.\n");
@@ -2945,14 +2947,14 @@ int main(int argc, char *argv[]) {
   }
 
   if (data_format == SC08) {
-    iq8_buff = calloc(2 * iq_buff_size, 1);
+    iq8_buff = (signed char *)calloc(2 * iq_buff_size, 1);
     if (iq8_buff == NULL) {
       fprintf(stderr, "ERROR: Failed to allocate 8-bit I/Q buffer.\n");
       exit(1);
     }
   } else if (data_format == SC01) {
-    iq8_buff =
-        calloc(iq_buff_size / 4, 1); // byte = {I0, Q0, I1, Q1, I2, Q2, I3, Q3}
+    iq8_buff = (signed char *)calloc(
+        iq_buff_size / 4, 1); // byte = {I0, Q0, I1, Q1, I2, Q2, I3, Q3}
     if (iq8_buff == NULL) {
       fprintf(stderr,
               "ERROR: Failed to allocate compressed 1-bit I/Q buffer.\n");
@@ -3227,8 +3229,7 @@ int main(int argc, char *argv[]) {
       // Update channel allocation
       if (!staticLocationMode)
         allocateChannel(chan, active_eph, ionoutc, grx, xyz[motion_index],
-                        elvmask,
-                        &attack_cfg, &synth_cfg);
+                        elvmask, &attack_cfg, &synth_cfg);
       else
         allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
                         &attack_cfg, &synth_cfg);
