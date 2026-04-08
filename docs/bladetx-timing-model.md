@@ -105,14 +105,14 @@ REAL TIME (UTC)  EVENT                                     CLOCK DOMAIN
 
 ## Where Timing Errors Enter
 
-| # | Error source | Magnitude | Affects what |
-|---|---|---|---|
-| 1 | `tag_lead_ms` estimate — "tag arrives ~500ms before PPS" is a guess; actual lead varies with Trimble internal processing, TCP buffering, kernel scheduling | ±100-500 ms | Initial `g0` alignment with true GPS time. **Dominant error.** |
-| 2 | `CLOCK_MONOTONIC` latch after `trimbleReadTag()` returns — TCP + kernel scheduling delay | ~0.1-1 ms | Same |
-| 3 | `nanosleep()` wakeup jitter — OS scheduler granularity | ~1-5 ms | Shifts `blade_lead_sec`, but compensated by Phase 3 recompute |
-| 4 | `bladerf_get_timestamp()` to `bladerf_sync_tx()` gap — USB round-trip | ~0.01-0.1 ms | Slight shift in `tx_start_ts` accuracy |
-| 5 | bladeRF FPGA timestamp resolution = 1 sample at 2.6 Msps | ~384 ns | Sample-grid quantization (sub-microsecond) |
-| 6 | bladeRF VCTCXO drift — no external reference, ~1-2 ppm | 1-2 us/sec | Accumulating drift: +60 us after 60s, +600 us after 10 min |
+| #   | Error source                                                                                                                                               | Magnitude    | Affects what                                                   |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------- |
+| 1   | `tag_lead_ms` estimate — "tag arrives ~500ms before PPS" is a guess; actual lead varies with Trimble internal processing, TCP buffering, kernel scheduling | ±100-500 ms  | Initial `g0` alignment with true GPS time. **Dominant error.** |
+| 2   | `CLOCK_MONOTONIC` latch after `trimbleReadTag()` returns — TCP + kernel scheduling delay                                                                   | ~0.1-1 ms    | Same                                                           |
+| 3   | `nanosleep()` wakeup jitter — OS scheduler granularity                                                                                                     | ~1-5 ms      | Shifts `blade_lead_sec`, but compensated by Phase 3 recompute  |
+| 4   | `bladerf_get_timestamp()` to `bladerf_sync_tx()` gap — USB round-trip                                                                                      | ~0.01-0.1 ms | Slight shift in `tx_start_ts` accuracy                         |
+| 5   | bladeRF FPGA timestamp resolution = 1 sample at 2.6 Msps                                                                                                   | ~384 ns      | Sample-grid quantization (sub-microsecond)                     |
+| 6   | bladeRF VCTCXO drift — no external reference, ~1-2 ppm                                                                                                     | 1-2 us/sec   | Accumulating drift: +60 us after 60s, +600 us after 10 min     |
 
 ## The Dominant Error: tag_lead_ms
 
@@ -185,29 +185,29 @@ RF signal arrives at receiver antenna
 The receiver sees the pseudorange encoded in the C/A code phase. If `g0` is off
 from true GPS time by `Δt`, the pseudorange error is `Δt × c` (speed of light):
 
-| `Δt` | Pseudorange error | Receiver behavior |
-|---|---|---|
-| 1 ms | 300 km | Rejected, spoof flagged |
-| 100 us | 30 km | Rejected, spoof flagged |
-| 10 us | 3 km | Marginal, de-weighted |
-| 1 us | 300 m | Marginal |
-| 100 ns | 30 m | Accepted with minor residuals |
-| < 50 ns | < 15 m | Transparent — within normal noise |
+| `Δt`    | Pseudorange error | Receiver behavior                 |
+| ------- | ----------------- | --------------------------------- |
+| 1 ms    | 300 km            | Rejected, spoof flagged           |
+| 100 us  | 30 km             | Rejected, spoof flagged           |
+| 10 us   | 3 km              | Marginal, de-weighted             |
+| 1 us    | 300 m             | Marginal                          |
+| 100 ns  | 30 m              | Accepted with minor residuals     |
+| < 50 ns | < 15 m            | Transparent — within normal noise |
 
 ## Time Error Budget for bladetx
 
-| Source | Uncalibrated | With `--trimble-tx-cal-ns` | Notes |
-|---|---|---|---|
-| `tag_lead_ms` accuracy | ±200 ms | absorbed | Fixed bias, measured once |
-| `CLOCK_MONOTONIC` jitter | ±1 ms | ±1 ms | Small, per-run variation |
-| `nanosleep` + Phase 3 recompute | ~0 ms | ~0 ms | Compensated in code |
-| bladeRF timed TX | ±0.4 us | ±0.4 us | Sample-grid quantization |
-| USB pipeline + DAC latency | fixed bias | absorbed | Measured into cal term |
-| Cable + air path delay | fixed bias | absorbed | Measured into cal term |
-| VCTCXO drift | +1 us/sec | +1 us/sec | Accumulates, uncorrectable |
-| **Total initial** | **±200 ms** | **±few ms** | After calibration |
-| **After 60s** | +60 us added | +60 us added | Drift on top of initial |
-| **After 10 min** | +600 us added | +600 us added | Drift on top of initial |
+| Source                          | Uncalibrated  | With `--trimble-tx-cal-ns` | Notes                      |
+| ------------------------------- | ------------- | -------------------------- | -------------------------- |
+| `tag_lead_ms` accuracy          | ±200 ms       | absorbed                   | Fixed bias, measured once  |
+| `CLOCK_MONOTONIC` jitter        | ±1 ms         | ±1 ms                      | Small, per-run variation   |
+| `nanosleep` + Phase 3 recompute | ~0 ms         | ~0 ms                      | Compensated in code        |
+| bladeRF timed TX                | ±0.4 us       | ±0.4 us                    | Sample-grid quantization   |
+| USB pipeline + DAC latency      | fixed bias    | absorbed                   | Measured into cal term     |
+| Cable + air path delay          | fixed bias    | absorbed                   | Measured into cal term     |
+| VCTCXO drift                    | +1 us/sec     | +1 us/sec                  | Accumulates, uncorrectable |
+| **Total initial**               | **±200 ms**   | **±few ms**                | After calibration          |
+| **After 60s**                   | +60 us added  | +60 us added               | Drift on top of initial    |
+| **After 10 min**                | +600 us added | +600 us added              | Drift on top of initial    |
 
 ## Comparison with x300tx.cpp
 
@@ -225,12 +225,12 @@ bladetx:  bladerf_get_timestamp()      ← reads free-running counter
 Both have the same `tag_lead_ms` uncertainty. The X300 has two additional
 capabilities that the bladeRF 1.0 lacks:
 
-| Capability | X300 | bladeRF 1.0 |
-|---|---|---|
-| External PPS input | Yes — can discipline TX start to PPS edge | No |
-| External 10 MHz reference | Yes — eliminates clock drift | No |
-| Clock accuracy (internal) | ~1 ppm (TCXO) | ~1-2 ppm (VCTCXO) |
-| Clock accuracy (external) | ~0.01 ppm | N/A |
+| Capability                | X300                                      | bladeRF 1.0       |
+| ------------------------- | ----------------------------------------- | ----------------- |
+| External PPS input        | Yes — can discipline TX start to PPS edge | No                |
+| External 10 MHz reference | Yes — eliminates clock drift              | No                |
+| Clock accuracy (internal) | ~1 ppm (TCXO)                             | ~1-2 ppm (VCTCXO) |
+| Clock accuracy (external) | ~0.01 ppm                                 | N/A               |
 
 With external PPS + 10 MHz, the X300 can reach < 1 us alignment. The bladeRF
 is limited to whatever accuracy the Trimble tag + host clock chain can achieve,
@@ -294,11 +294,11 @@ error, USB pipeline delay, DAC latency, cable delay, and air-path delay.
 
 ## Realistic Targets
 
-| Configuration | Initial alignment | After 60s | After 10 min |
-|---|---|---|---|
-| Uncalibrated | ±200 ms | ±200 ms + 60 us | ±200 ms + 600 us |
-| Calibrated (`--trimble-tx-cal-ns`) | ±few ms | ±few ms + 60 us | ±few ms + 600 us |
-| Calibrated + measured `tag_lead_ms` | ±1-2 ms | ±1-2 ms + 60 us | ±1-2 ms + 600 us |
+| Configuration                       | Initial alignment | After 60s       | After 10 min     |
+| ----------------------------------- | ----------------- | --------------- | ---------------- |
+| Uncalibrated                        | ±200 ms           | ±200 ms + 60 us | ±200 ms + 600 us |
+| Calibrated (`--trimble-tx-cal-ns`)  | ±few ms           | ±few ms + 60 us | ±few ms + 600 us |
+| Calibrated + measured `tag_lead_ms` | ±1-2 ms           | ±1-2 ms + 60 us | ±1-2 ms + 600 us |
 
 Compared to the original 233 ms (70,000 km) mismatch from the pipe-based path,
 a calibrated `bladetx` should reduce the initial error by ~100x. The remaining

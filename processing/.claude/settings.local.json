@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xxd /Users/betty/Developer/gnss-tools/gps-sdr-sim/processing/dataset/COM4___9600_260408_034137.ubx)"
+    ]
+  }
+}
