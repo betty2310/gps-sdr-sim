@@ -533,17 +533,22 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   return (TRUE);
 }
 
-/*! \brief Convert az/el from receiver to satellite ECEF at GPS orbit altitude
+/*! \brief Check whether a requested az/el is representable by the synthetic orbit
  *  \param[in] rx_xyz  Receiver position in ECEF (meters)
  *  \param[in] az      Azimuth (radians, from North)
  *  \param[in] el      Elevation (radians, from horizon)
- *  \param[out] sat_ecef  Satellite ECEF position (meters)
+ *  \param[out] sat_ecef  Exact ECEF point on the GPS orbit sphere for this look ray
+ *  \returns TRUE if the point is representable by the fixed 55 deg circular orbit
  */
-void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef) {
+int synthAzelReachable(const double *rx_xyz, double az, double el,
+                      double *sat_ecef) {
   double llh[3];
   double tmat[3][3];
   double neu[3], ecef_dir[3];
-  double r_rx, disc, slant;
+  double dir_norm;
+  double b, c, disc, slant;
+  double sat_z;
+  double max_z;
 
   // NEU unit vector for desired az/el
   neu[0] = cos(el) * cos(az); // North
@@ -559,25 +564,52 @@ void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef) {
   ecef_dir[1] = tmat[0][1] * neu[0] + tmat[1][1] * neu[1] + tmat[2][1] * neu[2];
   ecef_dir[2] = tmat[0][2] * neu[0] + tmat[1][2] * neu[1] + tmat[2][2] * neu[2];
 
-  // Slant range via law of cosines:
-  // R_sat^2 = R_rx^2 + d^2 + 2*R_rx*d*sin(el)
-  // d^2 + 2*R_rx*sin(el)*d + (R_rx^2 - R_sat^2) = 0
-  r_rx = normVect(rx_xyz);
-  disc = GPS_ORBIT_RADIUS * GPS_ORBIT_RADIUS - r_rx * r_rx * cos(el) * cos(el);
+  dir_norm = normVect(ecef_dir);
+  if (dir_norm <= 0.0) {
+    sat_ecef[0] = rx_xyz[0];
+    sat_ecef[1] = rx_xyz[1];
+    sat_ecef[2] = rx_xyz[2];
+    return (FALSE);
+  }
+
+  ecef_dir[0] /= dir_norm;
+  ecef_dir[1] /= dir_norm;
+  ecef_dir[2] /= dir_norm;
+
+  // Solve the exact ray/sphere intersection for the geodetic look vector.
+  // The earlier shortcut using |rx|*sin(el) assumes geodetic Up is radial,
+  // which can miss the target orbit sphere by several kilometers.
+  b = 2.0 * dotProd(rx_xyz, ecef_dir);
+  c = dotProd(rx_xyz, rx_xyz) - GPS_ORBIT_RADIUS * GPS_ORBIT_RADIUS;
+  disc = b * b - 4.0 * c;
 
   if (disc < 0.0) {
-    // Ray misses the orbit sphere — place at zenith as fallback
-    slant = GPS_ORBIT_RADIUS - r_rx;
-    ecef_dir[0] = rx_xyz[0] / r_rx;
-    ecef_dir[1] = rx_xyz[1] / r_rx;
-    ecef_dir[2] = rx_xyz[2] / r_rx;
-  } else {
-    slant = -r_rx * sin(el) + sqrt(disc);
+    sat_ecef[0] = rx_xyz[0];
+    sat_ecef[1] = rx_xyz[1];
+    sat_ecef[2] = rx_xyz[2];
+    return (FALSE);
   }
+
+  slant = 0.5 * (-b + sqrt(disc));
 
   sat_ecef[0] = rx_xyz[0] + slant * ecef_dir[0];
   sat_ecef[1] = rx_xyz[1] + slant * ecef_dir[1];
   sat_ecef[2] = rx_xyz[2] + slant * ecef_dir[2];
+
+  max_z = GPS_ORBIT_RADIUS * sin(GPS_INCLINATION) * 0.9999;
+  sat_z = fabs(sat_ecef[2]);
+
+  return (sat_z <= max_z);
+}
+
+/*! \brief Convert az/el from receiver to satellite ECEF at GPS orbit altitude
+ *  \param[in] rx_xyz  Receiver position in ECEF (meters)
+ *  \param[in] az      Azimuth (radians, from North)
+ *  \param[in] el      Elevation (radians, from horizon)
+ *  \param[out] sat_ecef  Satellite ECEF position (meters)
+ */
+void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef) {
+  (void)synthAzelReachable(rx_xyz, az, el, sat_ecef);
 
   return;
 }
@@ -2899,17 +2931,19 @@ int main(int argc, char *argv[]) {
             el = synth_cfg.elevation[sv];
           }
 
-          // Check if requested position exceeds GPS inclination band
+          // Skip tuples that cannot be represented by the fixed 55 deg orbit.
           {
-            double max_z = GPS_ORBIT_RADIUS * sin(GPS_INCLINATION) * 0.9999;
             double test_sat[3];
 
-            azel2satpos(xyz[0], az, el, test_sat);
-            if (fabs(test_sat[2]) > max_z)
+            if (synthAzelReachable(xyz[0], az, el, test_sat) == FALSE) {
               fprintf(stderr,
-                      "WARNING: PRN %d requested position exceeds GPS "
-                      "inclination band (~55 deg), clamped.\n",
-                      sv + 1);
+                      "WARNING: PRN %d az=%.1f el=%.1f deg lies outside the "
+                      "synthetic GPS inclination envelope at this location. "
+                      "Skipping.\n",
+                      sv + 1, az * R2D, el * R2D);
+              synth_cfg.mode[sv] = SYNTH_NONE;
+              continue;
+            }
           }
 
           synthEphemeris(&synth_eph.eph[sv], xyz[0], az, el, synth_ref,

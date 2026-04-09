@@ -278,6 +278,8 @@ void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
                                   const synth_config_t *cfg,
                                   const synth_ephem_store_t *store);
 int parseSynthConfig(synth_config_t *cfg, const char *spec);
+int synthAzelReachable(const double *rx_xyz, double az, double el,
+                      double *sat_ecef);
 void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef);
 void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
                     gpstime_t toe, gpstime_t toc);
