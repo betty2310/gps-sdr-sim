@@ -1,0 +1,68 @@
+thử  4 5 10 11 12 15 16
+
+con u-blox xịn vẫn thế, track 1 lúc rồi reject trùm giả
+con u-blox cùi theo luôn trùm giả, reject trùm thật
+
+=> cân bằng?
+
+
+bladetx -e hour0990.26n -l 21.0047844,105.8460541,5 -P 4,5,10,16,11,12,15 -S 4:20/60,5:90/45,10:60/30,16:45/55,11:30/45,12:27/35,15:48/54 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790   --trimble-start-offset-sec 2 --txvga1 -35
+xyz =  -1626547.4,   5730511.6,   2271891.3
+llh =   21.004784,  105.846054,         5.0
+
+[BLADE] Opening bladeRF device ...
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:883] Waiting for device to become ready...
+[WARNING @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1742] RX DC calibration table not found. Manual gain control will be used instead.
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1743] To enable AGC, see "Generating a DC offset table" at https://github.com/Nuand/bladeRF/wiki/DC-offset-and-IQ-Imbalance-Correction
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-09 02:38:51
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=790 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2413  tow 355151.000000000
+[TRIMBLE] Target datetime:  2026/04/09,02:39:11.000
+Start time = 2026/04/09,02:39:11.000 (2413:355151.000)
+Duration = streaming until interrupted
+Synthetic PRN 04: az=20.0 el=60.0 deg
+Synthetic PRN 05: az=90.0 el=45.0 deg
+Synthetic PRN 10: az=60.0 el=30.0 deg
+Synthetic PRN 11: az=30.0 el=45.0 deg
+WARNING: PRN 12 exceeds GPS inclination band.
+Synthetic PRN 12: az=27.0 el=35.0 deg
+Synthetic PRN 15: az=48.0 el=54.0 deg
+Synthetic PRN 16: az=45.0 el=55.0 deg
+04   20.0  59.9  20856348.0   5.4
+05   90.2  45.0  21669050.1   6.7
+10   60.1  30.0  22800037.8   8.9
+11   30.0  44.9  21679426.7   6.6
+12   28.7  36.0  22315862.9   7.7
+15   48.2  54.0  21139960.0   5.8
+16   45.2  55.0  21087918.4   5.7
+Partial constellation mode: rendering only PRNs 4 5 10 11 12 15 16
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.790 s
+[TRIMBLE] Planned delay (lead + offset): 2.790 s
+[TRIMBLE] Prep elapsed since tag: 38.011 ms
+[TRIMBLE] Remaining until TX epoch: 2751.989 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 9090778 samples
+[TX] TX lead after sleep: 295.0 ms = 766914 samples
+[TX] Scheduled TX start: 9857692 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 766.3
+[BLADE] TX error: An unexpected error occurred
+
+
+[TX] Shutting down ...

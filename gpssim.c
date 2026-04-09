@@ -2474,6 +2474,7 @@ int main(int argc, char *argv[]) {
       // Static ECEF coordinates input mode
       staticLocationMode = TRUE;
       sscanf(optarg, "%lf,%lf,%lf", &xyz[0][0], &xyz[0][1], &xyz[0][2]);
+      xyz2llh(xyz[0], llh);
       break;
     case 'l':
       // Static geodetic coordinates input mode
@@ -2687,7 +2688,7 @@ int main(int argc, char *argv[]) {
     llh2xyz(llh, xyz[0]);
   }
 
-  fprintf(stderr, "xyz = %11.1f, %11.1f, %11.1f\n", xyz[0][0], xyz[0][1],
+  fprintf(stderr, "xyz = %11.6f, %11.6f, %11.6f\n", xyz[0][0], xyz[0][1],
           xyz[0][2]);
   fprintf(stderr, "llh = %11.6f, %11.6f, %11.1f\n", llh[0] * R2D, llh[1] * R2D,
           llh[2]);
