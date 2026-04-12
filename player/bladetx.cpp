@@ -459,6 +459,52 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
   }
 }
 
+static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
+                            int neph, int *ieph, ephem_t *active_eph,
+                            synth_ephem_store_t *synth_eph,
+                            const synth_config_t *synth_cfg,
+                            const ionoutc_t *ionoutc, gpstime_t grx,
+                            double elvmask,
+                            const attack_config_t *attack_cfg) {
+  int i;
+  int eph_changed = FALSE;
+
+  if (*ieph + 1 < neph) {
+    gpstime_t next_toc;
+
+    if (getSetReferenceToc(eph[*ieph + 1], &next_toc) == TRUE &&
+        shouldAdvanceEphSet(next_toc, grx) == TRUE) {
+      (*ieph)++;
+      eph_changed = TRUE;
+    }
+  }
+
+  if (synth_cfg->enabled) {
+    gpstime_t synth_ref = quantizeSynthReferenceTime(grx);
+
+    if (refreshSyntheticEphemerisSet(synth_eph, eph[*ieph], ionoutc, synth_cfg,
+                                     xyz[0], synth_ref) == TRUE)
+      eph_changed = TRUE;
+  }
+
+  if (eph_changed == TRUE) {
+    overlaySyntheticEphemerisSet(active_eph, eph[*ieph], synth_cfg, synth_eph);
+
+    for (i = 0; i < MAX_CHAN; i++) {
+      if (chan[i].prn != 0)
+        eph2sbf(active_eph[chan[i].prn - 1], *ionoutc, chan[i].sbf);
+    }
+  }
+
+  for (i = 0; i < MAX_CHAN; i++) {
+    if (chan[i].prn > 0)
+      generateNavMsg(grx, &chan[i], 0);
+  }
+
+  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask, attack_cfg,
+                  synth_cfg);
+}
+
 ////////////////////////////////////////////////////////////
 // Usage
 ////////////////////////////////////////////////////////////
@@ -1239,8 +1285,7 @@ int main(int argc, char *argv[]) {
   ////////////////////////////////////////////////////////////
 
   if (synth_cfg.enabled) {
-    gpstime_t synth_ref = g0;
-    synth_ref.sec = floor(synth_ref.sec / 16.0) * 16.0;
+    gpstime_t synth_ref = quantizeSynthReferenceTime(g0);
 
     for (sv = 0; sv < MAX_SAT; sv++) {
       if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
@@ -1256,17 +1301,18 @@ int main(int argc, char *argv[]) {
         }
 
         {
-          double max_z = GPS_ORBIT_RADIUS * sin(GPS_INCLINATION) * 0.9999;
           double test_sat[3];
-          azel2satpos(xyz[0], az, el, test_sat);
-          if (fabs(test_sat[2]) > max_z)
-            fprintf(stderr, "WARNING: PRN %d exceeds GPS inclination band.\n",
-                    sv + 1);
-        }
 
-        synthEphemeris(&synth_eph.eph[sv], xyz[0], az, el, synth_ref,
-                       synth_ref);
-        synth_eph.valid[sv] = TRUE;
+          if (synthAzelReachable(xyz[0], az, el, test_sat) == FALSE) {
+            fprintf(stderr,
+                    "WARNING: PRN %d az=%.1f el=%.1f deg lies outside the "
+                    "synthetic GPS inclination envelope at this location. "
+                    "Skipping.\n",
+                    sv + 1, az * R2D, el * R2D);
+            synth_cfg.mode[sv] = SYNTH_NONE;
+            continue;
+          }
+        }
 
         fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n", sv + 1,
                 az * R2D, el * R2D);
@@ -1281,6 +1327,9 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+
+    refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc, &synth_cfg,
+                                 xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -1377,26 +1426,9 @@ int main(int argc, char *argv[]) {
 
       // 30-second nav/channel refresh
       igrx = (int)(grx.sec * 10.0 + 0.5);
-      if (igrx % 300 == 0) {
-        for (i = 0; i < MAX_CHAN; i++)
-          if (chan[i].prn > 0)
-            generateNavMsg(grx, &chan[i], 0);
-
-        if (ieph + 1 < neph) {
-          gpstime_t next_toc;
-          if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
-              shouldAdvanceEphSet(next_toc, grx) == TRUE) {
-            ieph++;
-            overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
-                                         &synth_eph);
-            for (i = 0; i < MAX_CHAN; i++)
-              if (chan[i].prn != 0)
-                eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
-          }
-        }
-        allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
-                        &attack_cfg, &synth_cfg);
-      }
+      if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0)
+        refreshNavState(chan, eph, neph, &ieph, active_eph, &synth_eph,
+                        &synth_cfg, &ionoutc, grx, elvmask, &attack_cfg);
 
       ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
       current_epoch_duration =
@@ -1619,25 +1651,9 @@ int main(int argc, char *argv[]) {
 
       // 30-second nav/channel refresh
       igrx = (int)(grx.sec * 10.0 + 0.5);
-      if (igrx % 300 == 0) {
-        for (i = 0; i < MAX_CHAN; i++)
-          if (chan[i].prn > 0)
-            generateNavMsg(grx, &chan[i], 0);
-
-        if (ieph + 1 < neph) {
-          gpstime_t next_toc;
-          if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
-              shouldAdvanceEphSet(next_toc, grx) == TRUE) {
-            ieph++;
-            overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
-                                         &synth_eph);
-            for (i = 0; i < MAX_CHAN; i++)
-              if (chan[i].prn != 0)
-                eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
-          }
-        }
-        allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
-                        &attack_cfg, &synth_cfg);
+      if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0) {
+        refreshNavState(chan, eph, neph, &ieph, active_eph, &synth_eph,
+                        &synth_cfg, &ionoutc, grx, elvmask, &attack_cfg);
 
         if (verb) {
           fprintf(stderr, "\n");

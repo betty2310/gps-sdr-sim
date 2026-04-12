@@ -91,6 +91,9 @@ extern "C" {
 // Synthetic satellite constants
 #define GPS_ORBIT_RADIUS 26559700.0  // GPS semi-major axis (meters)
 #define GPS_INCLINATION 0.9599310886 // ~55 degrees in radians
+#define SYNTH_BROADCAST_QUANTUM_SEC 16.0
+#define SYNTH_EPHEM_REFRESH_SEC 30.0
+#define SYNTH_ISSUE_MODULUS 256
 #define D2R (PI / 180.0)
 
 // Jammer noise normalization constant
@@ -283,6 +286,12 @@ int synthAzelReachable(const double *rx_xyz, double az, double el,
 void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef);
 void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
                     gpstime_t toe, gpstime_t toc);
+gpstime_t quantizeSynthReferenceTime(gpstime_t g);
+int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
+                                 const ephem_t *real_set,
+                                 const ionoutc_t *ionoutc,
+                                 const synth_config_t *cfg,
+                                 const double *rx_xyz, gpstime_t g_ref);
 
 /* Vector math */
 void subVect(double *y, const double *x1, const double *x2);

@@ -533,15 +533,18 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   return (TRUE);
 }
 
-/*! \brief Check whether a requested az/el is representable by the synthetic orbit
+/*! \brief Check whether a requested az/el is representable by the synthetic
+ * orbit
  *  \param[in] rx_xyz  Receiver position in ECEF (meters)
  *  \param[in] az      Azimuth (radians, from North)
  *  \param[in] el      Elevation (radians, from horizon)
- *  \param[out] sat_ecef  Exact ECEF point on the GPS orbit sphere for this look ray
- *  \returns TRUE if the point is representable by the fixed 55 deg circular orbit
+ *  \param[out] sat_ecef  Exact ECEF point on the GPS orbit sphere for this look
+ * ray
+ *  \returns TRUE if the point is representable by the fixed 55 deg circular
+ * orbit
  */
 int synthAzelReachable(const double *rx_xyz, double az, double el,
-                      double *sat_ecef) {
+                       double *sat_ecef) {
   double llh[3];
   double tmat[3][3];
   double neu[3], ecef_dir[3];
@@ -681,6 +684,7 @@ void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
 
   // Fill ephemeris
   eph->vflg = 1;
+  gps2date(&toc, &eph->t);
   eph->toe = toe;
   eph->toc = toc;
 
@@ -723,6 +727,183 @@ void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
   eph->omgkdot = eph->omgdot - OMEGA_EARTH;
 
   return;
+}
+
+gpstime_t quantizeSynthReferenceTime(gpstime_t g) {
+  g.sec =
+      floor(g.sec / SYNTH_BROADCAST_QUANTUM_SEC) * SYNTH_BROADCAST_QUANTUM_SEC;
+
+  if (g.sec >= SECONDS_IN_WEEK) {
+    g.sec -= SECONDS_IN_WEEK;
+    g.week += 1;
+  } else if (g.sec < 0.0) {
+    g.sec += SECONDS_IN_WEEK;
+    g.week -= 1;
+  }
+
+  return (g);
+}
+
+static double azelSeparation(double az0, double el0, double az1, double el1) {
+  double cos_sep;
+
+  cos_sep =
+      sin(el0) * sin(el1) + cos(el0) * cos(el1) * cos(wrapToPi(az0 - az1));
+
+  if (cos_sep > 1.0)
+    cos_sep = 1.0;
+  else if (cos_sep < -1.0)
+    cos_sep = -1.0;
+
+  return (acos(cos_sep));
+}
+
+static int findSynthClockDonor(const ephem_t *real_set, gpstime_t g_ref,
+                               const double *rx_xyz, int synth_sv,
+                               double target_az, double target_el) {
+  int pass;
+
+  for (pass = 0; pass < 3; pass++) {
+    int best_sv = -1;
+    double best_sep = 0.0;
+    int require_visible = (pass == 0);
+    int require_healthy = (pass != 2);
+    int sv;
+
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      double donor_azel[2];
+      double sep;
+      int vis;
+
+      if (sv == synth_sv || real_set[sv].vflg != 1)
+        continue;
+
+      if (require_healthy && real_set[sv].svhlth != 0)
+        continue;
+
+      vis = checkSatVisibility(real_set[sv], g_ref, (double *)rx_xyz,
+                               require_visible ? 0.0 : -90.0, donor_azel);
+      if (vis != 1)
+        continue;
+
+      sep = azelSeparation(target_az, target_el, donor_azel[0], donor_azel[1]);
+      if (best_sv < 0 || sep < best_sep) {
+        best_sv = sv;
+        best_sep = sep;
+      }
+    }
+
+    if (best_sv >= 0)
+      return (best_sv);
+  }
+
+  return (-1);
+}
+
+static void fitSynthClockTerms(ephem_t *eph, const ephem_t *donor,
+                               const ephem_t *previous,
+                               const ionoutc_t *ionoutc, const double *rx_xyz,
+                               gpstime_t g_ref) {
+  range_t rho_new, rho_prev;
+
+  eph->af0 = 0.0;
+
+  if (donor != NULL && donor->vflg == 1) {
+    eph->af1 = donor->af1;
+    eph->af2 = donor->af2;
+    eph->tgd = donor->tgd;
+  } else if (previous != NULL && previous->vflg == 1) {
+    eph->af1 = previous->af1;
+    eph->af2 = previous->af2;
+    eph->tgd = previous->tgd;
+  } else {
+    eph->af1 = 0.0;
+    eph->af2 = 0.0;
+    eph->tgd = 0.0;
+  }
+
+  if (previous != NULL && previous->vflg == 1) {
+    computeRange(&rho_prev, *previous, (ionoutc_t *)ionoutc, g_ref,
+                 (double *)rx_xyz);
+    computeRange(&rho_new, *eph, (ionoutc_t *)ionoutc, g_ref, (double *)rx_xyz);
+    eph->af0 = (rho_new.range - rho_prev.range) / SPEED_OF_LIGHT;
+  } else if (donor != NULL && donor->vflg == 1) {
+    double donor_pos[3], donor_vel[3], donor_clk[2];
+    double synth_pos[3], synth_vel[3], synth_clk[2];
+
+    satpos(*donor, g_ref, donor_pos, donor_vel, donor_clk);
+    satpos(*eph, g_ref, synth_pos, synth_vel, synth_clk);
+    eph->af0 = donor_clk[0] - synth_clk[0];
+  }
+
+  return;
+}
+
+int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
+                                 const ephem_t *real_set,
+                                 const ionoutc_t *ionoutc,
+                                 const synth_config_t *cfg,
+                                 const double *rx_xyz, gpstime_t g_ref) {
+  int changed;
+  int sv;
+
+  changed = FALSE;
+
+  for (sv = 0; sv < MAX_SAT; sv++) {
+    double az, el;
+    double test_sat[3];
+    ephem_t previous;
+    int previous_valid;
+    int donor_sv;
+
+    if (cfg->mode[sv] != SYNTH_OVERHEAD && cfg->mode[sv] != SYNTH_AZEL) {
+      if (store->valid[sv] == TRUE)
+        changed = TRUE;
+      store->valid[sv] = FALSE;
+      continue;
+    }
+
+    if (cfg->mode[sv] == SYNTH_OVERHEAD) {
+      az = 0.0;
+      el = PI / 2.0;
+    } else {
+      az = cfg->azimuth[sv];
+      el = cfg->elevation[sv];
+    }
+
+    previous_valid = (store->valid[sv] == TRUE && store->eph[sv].vflg == 1);
+    if (synthAzelReachable(rx_xyz, az, el, test_sat) == FALSE) {
+      if (previous_valid == FALSE) {
+        fprintf(stderr,
+                "WARNING: PRN %d az=%.1f el=%.1f deg lies outside the "
+                "synthetic GPS inclination envelope at this location. "
+                "Skipping.\n",
+                sv + 1, az * R2D, el * R2D);
+      }
+      continue;
+    }
+
+    previous = store->eph[sv];
+    synthEphemeris(&store->eph[sv], rx_xyz, az, el, g_ref, g_ref);
+
+    if (previous_valid == TRUE) {
+      store->eph[sv].iode = (previous.iode + 1) % SYNTH_ISSUE_MODULUS;
+      store->eph[sv].iodc = (previous.iodc + 1) % SYNTH_ISSUE_MODULUS;
+    } else {
+      store->eph[sv].iode = 1;
+      store->eph[sv].iodc = 1;
+    }
+
+    donor_sv = findSynthClockDonor(real_set, g_ref, rx_xyz, sv, az, el);
+    fitSynthClockTerms(
+        &store->eph[sv], donor_sv >= 0 ? &real_set[donor_sv] : NULL,
+        previous_valid == TRUE ? &previous : NULL, ionoutc, rx_xyz, g_ref);
+
+    store->valid[sv] = TRUE;
+    changed = TRUE;
+  }
+
+  return (changed);
 }
 
 /*! \brief Subtract two vectors of double
@@ -2912,10 +3093,7 @@ int main(int argc, char *argv[]) {
   if (synth_cfg.enabled) {
     gpstime_t synth_ref;
 
-    // Keep synthetic ephemeris stable across hourly set refresh.
-    // Align to the 16-second broadcast resolution used for TOE/TOC fields.
-    synth_ref = g0;
-    synth_ref.sec = floor(synth_ref.sec / 16.0) * 16.0;
+    synth_ref = quantizeSynthReferenceTime(g0);
 
     {
       for (sv = 0; sv < MAX_SAT; sv++) {
@@ -2946,10 +3124,6 @@ int main(int argc, char *argv[]) {
             }
           }
 
-          synthEphemeris(&synth_eph.eph[sv], xyz[0], az, el, synth_ref,
-                         synth_ref);
-          synth_eph.valid[sv] = TRUE;
-
           fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n", sv + 1,
                   az * R2D, el * R2D);
         } else if (synth_cfg.mode[sv] == SYNTH_FORCE) {
@@ -2965,6 +3139,9 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+
+    refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc, &synth_cfg,
+                                 xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -3234,31 +3411,48 @@ int main(int argc, char *argv[]) {
 
     igrx = (int)(grx.sec * 10.0 + 0.5);
 
-    if (igrx % 300 == 0) // Every 30 seconds
+    if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) ==
+        0) // Every 30 seconds
     {
-      // Update navigation message
-      for (i = 0; i < MAX_CHAN; i++) {
-        if (chan[i].prn > 0)
-          generateNavMsg(grx, &chan[i], 0);
-      }
+      int eph_changed = FALSE;
 
       // Refresh ephemeris and subframes
-      // Quick and dirty fix. Need more elegant way.
       if (ieph + 1 < neph) {
         gpstime_t next_toc;
 
         if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
             shouldAdvanceEphSet(next_toc, grx) == TRUE) {
           ieph++;
-          overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
-                                       &synth_eph);
-
-          for (i = 0; i < MAX_CHAN; i++) {
-            // Generate new subframes if allocated
-            if (chan[i].prn != 0)
-              eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
-          }
+          eph_changed = TRUE;
         }
+      }
+
+      if (synth_cfg.enabled) {
+        const double *rx_ref;
+        gpstime_t synth_ref;
+
+        rx_ref = staticLocationMode ? xyz[0] : xyz[motion_index];
+        synth_ref = quantizeSynthReferenceTime(grx);
+
+        if (refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc,
+                                         &synth_cfg, rx_ref, synth_ref) == TRUE)
+          eph_changed = TRUE;
+      }
+
+      if (eph_changed == TRUE) {
+        overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
+                                     &synth_eph);
+
+        for (i = 0; i < MAX_CHAN; i++) {
+          if (chan[i].prn != 0)
+            eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
+        }
+      }
+
+      // Update navigation message after any subframe refresh.
+      for (i = 0; i < MAX_CHAN; i++) {
+        if (chan[i].prn > 0)
+          generateNavMsg(grx, &chan[i], 0);
       }
 
       // Update channel allocation
