@@ -1,0 +1,48 @@
+bladetx -e hour1060.26n -l 21.0047844,105.8460541,22 -P 7,8 -S 7:60/55,8:105/45 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790   --trimble-start-offset-sec 2 --txvga1 -35
+xyz =  -1626551.8,   5730526.8,   2271897.4
+llh =   21.004784,  105.846054,        22.0
+
+[BLADE] Opening bladeRF device ...
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:883] Waiting for device to become ready...
+[WARNING @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1742] RX DC calibration table not found. Manual gain control will be used instead.
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1743] To enable AGC, see "Generating a DC offset table" at https://github.com/Nuand/bladeRF/wiki/DC-offset-and-IQ-Imbalance-Correction
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-16 06:40:00
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=790 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2414  tow 369620.000000000
+[TRIMBLE] Target datetime:  2026/04/16,06:40:20.000
+Start time = 2026/04/16,06:40:20.000 (2414:369620.000)
+Duration = streaming until interrupted
+Synthetic PRN 07: az=60.0 el=55.0 deg
+Synthetic PRN 08: az=105.0 el=45.0 deg
+07   60.1  55.0  21087633.4   7.5
+08  105.0  45.0  21665081.6   8.6
+Partial constellation mode: rendering only PRNs 7 8
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.790 s
+[TRIMBLE] Planned delay (lead + offset): 2.790 s
+[TRIMBLE] Prep elapsed since tag: 27.468 ms
+[TRIMBLE] Remaining until TX epoch: 2762.532 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 7966577 samples
+[TX] TX lead after sleep: 295.1 ms = 767380 samples
+[TX] Scheduled TX start: 8733957 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 384.4^C
+
+[TX] Shutting down ...
+[BLADE] Closing device...

@@ -232,3 +232,10 @@ This new issue operates at a completely different layer: even with perfect timin
 alignment, the `SYNTH_AZEL` orbit model is too simplified to produce pseudoranges
 that are consistent with real broadcast ephemerides.
 
+## Follow-On Fix
+
+The mitigation path is `docs/synth-clone-mode.md`: transmit synthetic target
+PRNs using live broadcast ephemeris copied from donor PRNs carried in RTCM `1019`.
+In the measured lab setup on 2026-04-16, those `1019` messages were available on
+the NAVIS NTRIP source at `192.168.5.245:5005` (`mount=NAVIS`), while the raw
+`5018` stream exposed MSM/station messages but not GPS ephemeris.
