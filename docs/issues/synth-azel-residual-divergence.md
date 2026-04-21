@@ -36,22 +36,22 @@ bladetx -e hour0990.26n -l 21.0047844,105.8460541,5 \
 
 ### Key parameters
 
-| Parameter | Value |
-|---|---|
-| Ephemeris | hour0990.26n |
-| Target position | 21.0047844, 105.8460541, 5 m |
-| Injected PRNs | 4, 5, 10, 11, 12, 15, 16 |
-| Mode | SYNTH_AZEL (custom azimuth/elevation per PRN) |
-| Timing | Trimble time-tag, lead=790 ms, start-offset=2 s, cal=0 ns |
-| TX power | txvga1=-35 dB |
-| Run duration | ~766 s before bladeRF TX error |
+| Parameter       | Value                                                     |
+| --------------- | --------------------------------------------------------- |
+| Ephemeris       | hour0990.26n                                              |
+| Target position | 21.0047844, 105.8460541, 5 m                              |
+| Injected PRNs   | 4, 5, 10, 11, 12, 15, 16                                  |
+| Mode            | SYNTH_AZEL (custom azimuth/elevation per PRN)             |
+| Timing          | Trimble time-tag, lead=790 ms, start-offset=2 s, cal=0 ns |
+| TX power        | txvga1=-35 dB                                             |
+| Run duration    | ~766 s before bladeRF TX error                            |
 
 ### Receiver captures
 
-| File | Receiver | Role |
-|---|---|---|
-| `COM3___9600_260409_023906.ubx` | Higher-quality u-blox F9P | Rejects synthetic, uses real sky |
-| `COM4___9600_260409_024636.ubx` | Lower-quality u-blox F9P | Adopts synthetic, rejects real sky |
+| File                            | Receiver                  | Role                               |
+| ------------------------------- | ------------------------- | ---------------------------------- |
+| `COM3___9600_260409_023906.ubx` | Higher-quality u-blox F9P | Rejects synthetic, uses real sky   |
+| `COM4___9600_260409_024636.ubx` | Lower-quality u-blox F9P  | Adopts synthetic, rejects real sky |
 
 Both receivers at the same antenna location, receiving both real sky and synthetic
 signals simultaneously.
@@ -75,18 +75,18 @@ the synthetic signal briefly then drops it.
 
 NAV-SAT residuals for the unused synthetic PRNs (from notebook analysis):
 
-| Satellite | Epochs | Mean prRes (m) | Mean |prRes| (m) | Max |prRes| (m) | svUsed epochs |
-|---|---|---|---|---|---|
-| GPS04 | 426 | -1104.8 | 1212.5 | 3276.8 | 0 |
-| GPS05 | 426 | -1001.4 | 1155.7 | 3276.8 | 0 |
-| GPS10 | 426 | -1010.4 | 1125.2 | 3276.8 | 0 |
-| GPS11 | 426 | -969.3 | 1023.8 | 3276.8 | 0 |
-| GPS12 | 426 | -1104.1 | 1204.4 | 3276.8 | 0 |
-| GPS15 | 426 | -1011.2 | 1112.0 | 3276.8 | 0 |
-| GPS16 | 426 | -1053.8 | 1122.0 | 3276.8 | 0 |
+| Satellite | Epochs | Mean prRes (m) | Mean   | prRes  | (m) | Max | prRes | (m) | svUsed epochs |
+| --------- | ------ | -------------- | ------ | ------ | --- | --- | ----- | --- | ------------- |
+| GPS04     | 426    | -1104.8        | 1212.5 | 3276.8 | 0   |
+| GPS05     | 426    | -1001.4        | 1155.7 | 3276.8 | 0   |
+| GPS10     | 426    | -1010.4        | 1125.2 | 3276.8 | 0   |
+| GPS11     | 426    | -969.3         | 1023.8 | 3276.8 | 0   |
+| GPS12     | 426    | -1104.1        | 1204.4 | 3276.8 | 0   |
+| GPS15     | 426    | -1011.2        | 1112.0 | 3276.8 | 0   |
+| GPS16     | 426    | -1053.8        | 1122.0 | 3276.8 | 0   |
 
 All mean residuals cluster around -1000 m with max values hitting the I16 saturation
-limit of 3276.8 m (= 32768 * 0.1 m).
+limit of 3276.8 m (= 32768 \* 0.1 m).
 
 ### COM4 — Basic receiver adopts synthetic PRNs
 
@@ -104,15 +104,15 @@ Spoof detection permanently flagged as `multi_spoof`.
 
 Post-fit residuals for used synthetic PRNs (median from cal tool):
 
-| PRN | Median prRes (m) | Notes |
-|---|---|---|
-| GPS04 | +6.9 | small |
-| GPS05 | -7.2 | small |
-| GPS10 | -5.0 | small |
-| GPS11 | -16.0 | moderate |
-| GPS12 | -0.3 | excellent |
-| GPS15 | +31.7 | large, growing over time |
-| GPS16 | -54.3 | large, growing over time |
+| PRN   | Median prRes (m) | Notes                    |
+| ----- | ---------------- | ------------------------ |
+| GPS04 | +6.9             | small                    |
+| GPS05 | -7.2             | small                    |
+| GPS10 | -5.0             | small                    |
+| GPS11 | -16.0            | moderate                 |
+| GPS12 | -0.3             | excellent                |
+| GPS15 | +31.7            | large, growing over time |
+| GPS16 | -54.3            | large, growing over time |
 
 These are post-fit residuals (PVT absorbs common-mode clock bias). The residuals
 diverge over time from near-zero to +/-60 m over ~175 seconds, indicating the
@@ -139,7 +139,8 @@ prRes = rho_measured - rho_predicted
 ```
 
 Where:
-- `rho_measured` = pseudorange from tracking loop (code phase * c)
+
+- `rho_measured` = pseudorange from tracking loop (code phase \* c)
 - `rho_predicted` = |pos_sat - pos_rx| + c*dt_rx - c*dt_sat + iono + tropo
   - `pos_sat` from decoded/cached ephemeris
   - `pos_rx`, `dt_rx` from current PVT solution
@@ -156,6 +157,7 @@ Three factors contribute, in order of magnitude:
 The receiver caches the **real broadcast ephemeris** for each PRN from the live-sky
 signal. When the synthetic signal arrives with a SYNTH_AZEL ephemeris (IODE=1,
 ecc=0, all perturbation terms zero, af0=0), the receiver likely:
+
 - Retains the already-validated real ephemeris
 - Rejects the anomalous synthetic ephemeris (or never fully decodes it from the
   intermittently-tracked signal)
@@ -201,36 +203,6 @@ by the receiver clock estimate. The remaining per-satellite residuals come from:
 3. **Missing perturbation terms**: Real GPS orbits have non-zero cuc, cus, cic, cis,
    crc, crs corrections. Setting all to zero removes ~1-10 m of periodic orbital
    variation that the receiver's model cannot recover.
-
-### Why `--trimble-tx-cal-ns` cannot fix this
-
-The `--trimble-tx-cal-ns` flag (`bladetx.cpp:1143`) shifts the simulator's GPS
-epoch by a fixed nanosecond offset:
-
-```cpp
-double cal_sec = (double)trimble_tx_cal_ns * 1.0e-9;
-g0 = incGpsTime(g0, cal_sec);
-```
-
-This adjusts **common-mode timing** (clock bias), which shifts all pseudoranges
-uniformly. It **cannot correct**:
-- Per-satellite geometric mismatch (different az/el vs real orbit)
-- Per-satellite clock model mismatch (af0/af1/af2 = 0 vs real values)
-- Orbit model drift over time
-- Atmospheric correction mismatch
-
-These are fundamentally geometric and model-fidelity issues, not timing issues.
-
-## Relationship to Previous Issue
-
-The earlier issue (`synthetic-satellite-time-basis-mismatch.md`) documented a ~233 ms
-gross timing error from the wall-clock-based `-n` start mode. That problem was solved
-by the Trimble time-tag system in `bladetx.cpp`, which provides millisecond-level
-GPS time alignment and nanosecond-level calibration via `--trimble-tx-cal-ns`.
-
-This new issue operates at a completely different layer: even with perfect timing
-alignment, the `SYNTH_AZEL` orbit model is too simplified to produce pseudoranges
-that are consistent with real broadcast ephemerides.
 
 ## Follow-On Fix
 

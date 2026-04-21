@@ -221,7 +221,8 @@ typedef enum {
   SYNTH_NONE = 0,
   SYNTH_FORCE,    /*!< Bypass elevation check (requires ephemeris in RINEX) */
   SYNTH_OVERHEAD, /*!< Synthesize circular orbit placing satellite at zenith */
-  SYNTH_AZEL /*!< Synthesize circular orbit at specified azimuth/elevation */
+  SYNTH_AZEL, /*!< Synthesize circular orbit at specified azimuth/elevation */
+  SYNTH_CLONE /*!< Clone live ephemeris from another PRN */
 } synth_mode_t;
 
 /*! \brief Configuration for synthetic satellite generation */
@@ -229,6 +230,7 @@ typedef struct {
   synth_mode_t mode[MAX_SAT];
   double azimuth[MAX_SAT];   /*!< Target azimuth in radians (SYNTH_AZEL) */
   double elevation[MAX_SAT]; /*!< Target elevation in radians (SYNTH_AZEL) */
+  int source_prn[MAX_SAT];   /*!< 1-indexed donor PRN for SYNTH_CLONE */
   int enabled;               /*!< 1 if any synthetic satellite is configured */
 } synth_config_t;
 
@@ -284,6 +286,7 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec);
 int synthAzelReachable(const double *rx_xyz, double az, double el,
                       double *sat_ecef);
 void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef);
+void cloneEphemerisFromDonor(ephem_t *dst, const ephem_t *donor);
 void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
                     gpstime_t toe, gpstime_t toc);
 gpstime_t quantizeSynthReferenceTime(gpstime_t g);

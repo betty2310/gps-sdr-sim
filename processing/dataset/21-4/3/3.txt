@@ -1,0 +1,62 @@
+bladetx -l 21.0047844,105.8460541,20 -P 2,3,4,8 \
+           -S 2:clone=5,3:clone=11,4:clone=19,8:clone=20 \
+           --trimble-time-tag-host 192.168.5.245 \
+           --trimble-time-tag-port 5017 \
+           --trimble-rtcm-host 192.168.5.245 --trimble-rtcm-port 5005 \
+           --trimble-rtcm-mount NAVIS --trimble-rtcm-user NAVIS:navis123 \
+           --trimble-start-offset-sec 2 --trimble-tag-lead-ms 788 --txvga1 -35 \
+            --trimble-tx-cal-ns 580000
+xyz =  -1626551.3,   5730525.0,   2271896.7
+llh =   21.004784,  105.846054,        20.0
+
+[RTCM] Connecting to 192.168.5.245:5005 ...
+[RTCM] NTRIP mount: NAVIS
+[RTCM] NTRIP auth: enabled
+[RTCM] Warming up up to 30 s for at least 16 GPS PRNs...
+[RTCM] Warmup complete: 16 GPS PRNs loaded.
+Clone PRN 02 <- donor PRN 05 (IODE=85)
+Clone PRN 03 <- donor PRN 11 (IODE=92)
+Clone PRN 04 <- donor PRN 19 (IODE=87)
+Clone PRN 08 <- donor PRN 20 (IODE=83)
+
+[BLADE] Opening bladeRF device ...
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-21 08:11:14
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=788 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2415  tow 202294.000000000
+[TRIMBLE] Target datetime:  2026/04/21,08:11:34.000
+Start time = 2026/04/21,08:11:34.000 (2415:202294.000)
+Duration = streaming until interrupted
+02  309.2  60.1  20733444.1   1.7
+03   41.3  43.9  21763805.3   2.1
+04  138.4  18.6  23588080.4   3.4
+08  172.2  47.4  21511819.4   2.0
+Partial constellation mode: rendering only PRNs 2 3 4 8
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.788 s
+[TRIMBLE] Planned delay (lead + offset): 2.788 s
+[TRIMBLE] Prep elapsed since tag: 33.081 ms
+[TRIMBLE] Remaining until TX epoch: 2754.919 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 6862850 samples
+[TX] TX lead after sleep: 297.0 ms = 772325 samples
+[TX] Scheduled TX start: 7635175 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 263.6^C
+
+[TX] Shutting down ...
+[BLADE] Closing device...

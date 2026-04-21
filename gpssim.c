@@ -410,6 +410,7 @@ void initSynthConfig(synth_config_t *cfg) {
     cfg->mode[i] = SYNTH_NONE;
     cfg->azimuth[i] = 0.0;
     cfg->elevation[i] = 0.0;
+    cfg->source_prn[i] = 0;
   }
 
   cfg->enabled = FALSE;
@@ -451,7 +452,8 @@ void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
     return;
 
   for (sv = 0; sv < MAX_SAT; sv++) {
-    if ((cfg->mode[sv] == SYNTH_OVERHEAD || cfg->mode[sv] == SYNTH_AZEL) &&
+    if ((cfg->mode[sv] == SYNTH_OVERHEAD || cfg->mode[sv] == SYNTH_AZEL ||
+         cfg->mode[sv] == SYNTH_CLONE) &&
         store->valid[sv] == TRUE)
       dst[sv] = store->eph[sv];
   }
@@ -462,6 +464,7 @@ void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
 int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   char buf[1024];
   char *token;
+  int first_family = -1; /* -1 = none; 0 = classic; 1 = clone */
 
   if (strlen(spec) >= sizeof(buf))
     return (FALSE);
@@ -472,6 +475,7 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   while (token != NULL) {
     char *colon;
     int prn;
+    int this_family;
 
     colon = strchr(token, ':');
     if (colon == NULL)
@@ -486,10 +490,33 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
         return (FALSE);
     }
 
-    if (strcmp(colon + 1, "force") == 0) {
+    if (strncmp(colon + 1, "clone=", 6) == 0) {
+      char *endptr;
+      int src_prn = (int)strtol(colon + 1 + 6, &endptr, 10);
+
+      if (*endptr != '\0' || src_prn < 1 || src_prn > MAX_SAT) {
+        fprintf(stderr, "ERROR: Clone source PRN must be 1..%d.\n", MAX_SAT);
+        return (FALSE);
+      }
+      if (src_prn == prn) {
+        fprintf(stderr,
+                "ERROR: Clone target PRN cannot equal source PRN %d.\n", prn);
+        return (FALSE);
+      }
+
+      cfg->mode[prn - 1] = SYNTH_CLONE;
+      cfg->azimuth[prn - 1] = 0.0;
+      cfg->elevation[prn - 1] = 0.0;
+      cfg->source_prn[prn - 1] = src_prn;
+      this_family = 1;
+    } else if (strcmp(colon + 1, "force") == 0) {
       cfg->mode[prn - 1] = SYNTH_FORCE;
+      cfg->source_prn[prn - 1] = 0;
+      this_family = 0;
     } else if (strcmp(colon + 1, "overhead") == 0) {
       cfg->mode[prn - 1] = SYNTH_OVERHEAD;
+      cfg->source_prn[prn - 1] = 0;
+      this_family = 0;
     } else {
       // Try to parse as az/el (two floats separated by '/')
       double az_deg, el_deg;
@@ -524,6 +551,17 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
       cfg->mode[prn - 1] = SYNTH_AZEL;
       cfg->azimuth[prn - 1] = az_deg * D2R;
       cfg->elevation[prn - 1] = el_deg * D2R;
+      cfg->source_prn[prn - 1] = 0;
+      this_family = 0;
+    }
+
+    if (first_family < 0)
+      first_family = this_family;
+    else if (first_family != this_family) {
+      fprintf(stderr,
+              "ERROR: Cannot mix clone and az/el synthetic modes in one -S "
+              "argument.\n");
+      return (FALSE);
     }
 
     cfg->enabled = TRUE;
@@ -531,6 +569,15 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   }
 
   return (TRUE);
+}
+
+void cloneEphemerisFromDonor(ephem_t *dst, const ephem_t *donor) {
+  if (donor == NULL || donor->vflg != 1)
+    return;
+
+  *dst = *donor;
+
+  return;
 }
 
 /*! \brief Check whether a requested az/el is representable by the synthetic
@@ -855,6 +902,24 @@ int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
     ephem_t previous;
     int previous_valid;
     int donor_sv;
+
+    if (cfg->mode[sv] == SYNTH_CLONE) {
+      int src = cfg->source_prn[sv] - 1;
+
+      if (src < 0 || src >= MAX_SAT)
+        continue;
+
+      if (real_set[src].vflg == 1) {
+        if (store->valid[sv] != TRUE ||
+            memcmp(&store->eph[sv], &real_set[src], sizeof(ephem_t)) != 0)
+          changed = TRUE;
+
+        cloneEphemerisFromDonor(&store->eph[sv], &real_set[src]);
+        store->valid[sv] = TRUE;
+      }
+
+      continue;
+    }
 
     if (cfg->mode[sv] != SYNTH_OVERHEAD && cfg->mode[sv] != SYNTH_AZEL) {
       if (store->valid[sv] == TRUE)

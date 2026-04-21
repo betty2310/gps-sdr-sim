@@ -1,0 +1,55 @@
+bladetx -l 21.0047844,105.8460541,22 -e hour1110.26n -P 2,8,3,4,9 \
+           -S 2:120/50,8:90/40,3:150/35,4:200/55,9:45/30 \
+           --trimble-time-tag-host 192.168.5.245 \
+           --trimble-time-tag-port 5017 \
+           --trimble-start-offset-sec 2 --txvga1 -35 --trimble-tag-lead-ms 790
+xyz =  -1626551.8,   5730526.8,   2271897.4
+llh =   21.004784,  105.846054,        22.0
+
+[BLADE] Opening bladeRF device ...
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-21 08:03:07
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=790 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2415  tow 201807.000000000
+[TRIMBLE] Target datetime:  2026/04/21,08:03:27.000
+Start time = 2026/04/21,08:03:27.000 (2415:201807.000)
+Duration = streaming until interrupted
+Synthetic PRN 02: az=120.0 el=50.0 deg
+Synthetic PRN 03: az=150.0 el=35.0 deg
+Synthetic PRN 04: az=200.0 el=55.0 deg
+Synthetic PRN 08: az=90.0 el=40.0 deg
+Synthetic PRN 09: az=45.0 el=30.0 deg
+02  120.1  49.9  21358845.6   7.3
+03  150.1  34.9  22384281.1   9.2
+04  199.9  54.9  21084114.1   6.9
+08   90.1  40.0  22011951.6   8.5
+09   45.1  30.0  22803519.4  10.3
+Partial constellation mode: rendering only PRNs 2 3 4 8 9
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.790 s
+[TRIMBLE] Planned delay (lead + offset): 2.790 s
+[TRIMBLE] Prep elapsed since tag: 34.551 ms
+[TRIMBLE] Remaining until TX epoch: 2755.449 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 7219874 samples
+[TX] TX lead after sleep: 295.0 ms = 766938 samples
+[TX] Scheduled TX start: 7986812 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 300
+
+[TX] Shutting down ...
+[BLADE] Closing device...

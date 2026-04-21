@@ -1,0 +1,60 @@
+bladetx -l 21.0047844,105.8460541,95 -P 7,8 \
+           -S 7:clone=15,8:clone=20 \
+           --trimble-time-tag-host 192.168.5.245 \
+           --trimble-time-tag-port 5017 \
+           --trimble-rtcm-host 192.168.5.245 --trimble-rtcm-port 5005 \
+           --trimble-rtcm-mount NAVIS --trimble-rtcm-user NAVIS:navis123 \
+           --trimble-start-offset-sec 2 --trimble-tag-lead-ms 790 --txvga1 -35
+xyz =  -1626570.4,   5730592.4,   2271923.6
+llh =   21.004784,  105.846054,        95.0
+
+[RTCM] Connecting to 192.168.5.245:5005 ...
+[RTCM] NTRIP mount: NAVIS
+[RTCM] NTRIP auth: enabled
+[RTCM] Warming up up to 30 s for at least 16 GPS PRNs...
+[RTCM] Warmup complete: 18 GPS PRNs loaded.
+Clone PRN 07 <- donor PRN 15 (IODE=54)
+Clone PRN 08 <- donor PRN 20 (IODE=70)
+
+[BLADE] Opening bladeRF device ...
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:883] Waiting for device to become ready...
+[WARNING @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1742] RX DC calibration table not found. Manual gain control will be used instead.
+[INFO @ host/libraries/libbladeRF/src/board/bladerf1/bladerf1.c:1743] To enable AGC, see "Generating a DC offset table" at https://github.com/Nuand/bladeRF/wiki/DC-offset-and-IQ-Imbalance-Correction
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-20 08:58:45
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=790 ms  cal=0 ns
+[TRIMBLE] Target GPS epoch: week 2415  tow 118745.000000000
+[TRIMBLE] Target datetime:  2026/04/20,08:59:05.000
+Start time = 2026/04/20,08:59:05.000 (2415:118745.000)
+Duration = streaming until interrupted
+07  204.1  49.7  21410794.1   1.9
+08  158.0  68.7  20540627.8   1.6
+Partial constellation mode: rendering only PRNs 7 8
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.790 s
+[TRIMBLE] Planned delay (lead + offset): 2.790 s
+[TRIMBLE] Prep elapsed since tag: 23.475 ms
+[TRIMBLE] Remaining until TX epoch: 2766.525 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 6819516 samples
+[TX] TX lead after sleep: 294.9 ms = 766865 samples
+[TX] Scheduled TX start: 7586381 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 355.3^C
+
+[TX] Shutting down ...
+[BLADE] Closing device...
