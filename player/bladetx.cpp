@@ -483,7 +483,8 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
 }
 
 static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
-                            int neph, int *ieph, ephem_t *active_eph,
+                            const ephem_t synth_source[][MAX_SAT], int neph,
+                            int *ieph, ephem_t *active_eph,
                             synth_ephem_store_t *synth_eph,
                             const synth_config_t *synth_cfg,
                             const ionoutc_t *ionoutc, gpstime_t grx,
@@ -524,8 +525,9 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
   if (synth_cfg->enabled) {
     gpstime_t synth_ref = quantizeSynthReferenceTime(grx);
 
-    if (refreshSyntheticEphemerisSet(synth_eph, eph, neph, eph[*ieph], ionoutc,
-                                     synth_cfg, xyz[0], synth_ref) == TRUE)
+    if (refreshSyntheticEphemerisSet(synth_eph, synth_source, neph, eph[*ieph],
+                                     ionoutc, synth_cfg, xyz[0],
+                                     synth_ref) == TRUE)
       eph_changed = TRUE;
   }
 
@@ -645,6 +647,7 @@ int main(int argc, char *argv[]) {
   int sv, i;
   int neph, ieph;
   ephem_t eph[EPHEM_ARRAY_SIZE][MAX_SAT];
+  ephem_t revive_scan_eph[EPHEM_ARRAY_SIZE][MAX_SAT];
   ephem_t active_eph[MAX_SAT];
   synth_ephem_store_t synth_eph;
   gpstime_t g0;
@@ -692,6 +695,7 @@ int main(int argc, char *argv[]) {
   double current_epoch_duration = 0.0;
 
   int timeoverwrite = FALSE;
+  int has_revive_mode = FALSE;
   int attack_enabled = FALSE;
   unsigned int attack_noise_state[MAX_SAT];
   double jam_js_linear = 10.0;
@@ -1108,7 +1112,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (hasReviveMode(&synth_cfg) == TRUE) {
+  has_revive_mode = hasReviveMode(&synth_cfg);
+  if (has_revive_mode == TRUE) {
     if (navfile[0] == 0) {
       fprintf(stderr, "ERROR: Revive mode requires -e ephemeris file.\n");
       return 1;
@@ -1292,6 +1297,9 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "ERROR: Ephemeris file not found.\n");
       return 1;
     }
+
+    if (has_revive_mode == TRUE)
+      memcpy(revive_scan_eph, eph, sizeof(revive_scan_eph));
 
     for (sv = 0; sv < MAX_SAT; sv++) {
       if (eph[0][sv].vflg == 1) {
@@ -1572,6 +1580,8 @@ int main(int argc, char *argv[]) {
 
   if (synth_cfg.enabled) {
     gpstime_t synth_ref = quantizeSynthReferenceTime(g0);
+    const ephem_t(*synth_source)[MAX_SAT] =
+        has_revive_mode == TRUE ? revive_scan_eph : eph;
 
     for (sv = 0; sv < MAX_SAT; sv++) {
       if (synth_cfg.mode[sv] == SYNTH_REVIVE) {
@@ -1581,8 +1591,8 @@ int main(int argc, char *argv[]) {
         double elev_deg;
         int found_ephem = FALSE;
 
-        if (scanEphemerisForRevive(eph, neph, sv + 1, synth_ref, xyz[0],
-                                   &revive_template, &template_toe,
+        if (scanEphemerisForRevive(synth_source, neph, sv + 1, synth_ref,
+                                   xyz[0], &revive_template, &template_toe,
                                    &delta_sec, &elev_deg,
                                    &found_ephem) == FALSE) {
           if (found_ephem == TRUE) {
@@ -1592,9 +1602,9 @@ int main(int argc, char *argv[]) {
                     sv + 1, SYNTH_REVIVE_MIN_ELEVATION_DEG);
           } else {
             fprintf(stderr,
-                    "ERROR: Revive PRN %d: no ephemeris found within 4h "
+                    "ERROR: Revive PRN %d: no ephemeris found within %.1fh "
                     "lookback.\n",
-                    sv + 1);
+                    sv + 1, SYNTH_REVIVE_MAX_LOOKBACK_SEC / 3600.0);
           }
           status = 1;
           goto cleanup_module;
@@ -1639,8 +1649,8 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph], &ionoutc,
-                                 &synth_cfg, xyz[0], synth_ref);
+    refreshSyntheticEphemerisSet(&synth_eph, synth_source, neph, eph[ieph],
+                                 &ionoutc, &synth_cfg, xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -1738,9 +1748,11 @@ int main(int argc, char *argv[]) {
       // 30-second nav/channel refresh
       igrx = (int)(grx.sec * 10.0 + 0.5);
       if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0)
-        refreshNavState(chan, eph, neph, &ieph, active_eph, &synth_eph,
-                        &synth_cfg, &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                        &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
+        refreshNavState(chan, eph,
+                        has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
+                        &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc,
+                        grx, elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
+                        &trimble_rtcm_stream, &attack_cfg);
 
       ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
       current_epoch_duration =
@@ -1964,9 +1976,11 @@ int main(int argc, char *argv[]) {
       // 30-second nav/channel refresh
       igrx = (int)(grx.sec * 10.0 + 0.5);
       if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0) {
-        refreshNavState(chan, eph, neph, &ieph, active_eph, &synth_eph,
-                        &synth_cfg, &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                        &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
+        refreshNavState(chan, eph,
+                        has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
+                        &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc,
+                        grx, elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
+                        &trimble_rtcm_stream, &attack_cfg);
 
         if (verb) {
           fprintf(stderr, "\n");

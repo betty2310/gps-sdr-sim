@@ -1199,9 +1199,9 @@ int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
                     sv + 1, SYNTH_REVIVE_MIN_ELEVATION_DEG);
           } else {
             fprintf(stderr,
-                    "ERROR: Revive PRN %d: no ephemeris found within 4h "
+                    "ERROR: Revive PRN %d: no ephemeris found within %.1fh "
                     "lookback.\n",
-                    sv + 1);
+                    sv + 1, SYNTH_REVIVE_MAX_LOOKBACK_SEC / 3600.0);
           }
         }
         continue;
@@ -2945,6 +2945,7 @@ int main(int argc, char *argv[]) {
   int sv;
   int neph, ieph;
   ephem_t eph[EPHEM_ARRAY_SIZE][MAX_SAT];
+  ephem_t revive_scan_eph[EPHEM_ARRAY_SIZE][MAX_SAT];
   ephem_t active_eph[MAX_SAT];
   synth_ephem_store_t synth_eph;
   gpstime_t g0;
@@ -3002,6 +3003,7 @@ int main(int argc, char *argv[]) {
   double stream_start_lead = 1.0;
 
   int timeoverwrite = FALSE; // Overwrite the TOC and TOE in the RINEX file
+  int has_revive_mode = FALSE;
   int attack_enabled = FALSE;
   unsigned int attack_noise_state[MAX_SAT];
   double jam_js_linear = 10.0; // Default J/S = 20 dB -> 10.0 linear amplitude
@@ -3295,6 +3297,15 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
+  for (sv = 0; sv < MAX_SAT; sv++) {
+    if (synth_cfg.mode[sv] == SYNTH_REVIVE) {
+      has_revive_mode = TRUE;
+      break;
+    }
+  }
+  if (has_revive_mode == TRUE)
+    memcpy(revive_scan_eph, eph, sizeof(revive_scan_eph));
+
   if ((verb == TRUE) && (ionoutc.vflg == TRUE)) {
     fprintf(stderr, "  %12.3e %12.3e %12.3e %12.3e\n", ionoutc.alpha0,
             ionoutc.alpha1, ionoutc.alpha2, ionoutc.alpha3);
@@ -3515,8 +3526,9 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph], &ionoutc,
-                                 &synth_cfg, xyz[0], synth_ref);
+    refreshSyntheticEphemerisSet(
+        &synth_eph, has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
+        eph[ieph], &ionoutc, &synth_cfg, xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -3809,9 +3821,10 @@ int main(int argc, char *argv[]) {
         rx_ref = staticLocationMode ? xyz[0] : xyz[motion_index];
         synth_ref = quantizeSynthReferenceTime(grx);
 
-        if (refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph],
-                                         &ionoutc, &synth_cfg, rx_ref,
-                                         synth_ref) == TRUE)
+        if (refreshSyntheticEphemerisSet(
+                &synth_eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
+                neph, eph[ieph], &ionoutc, &synth_cfg, rx_ref,
+                synth_ref) == TRUE)
           eph_changed = TRUE;
       }
 

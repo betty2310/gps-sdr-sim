@@ -51,5 +51,22 @@ int main(void) {
                           "scanner elevation accepted");
   failures += expect_true(picked.vflg == 1, "scanner returns template");
 
+  template_toe = incGpsTime(t_now, -21600.0);
+  synthEphemeris(&eph[1][1], rx_xyz, 0.0, PI / 2.0, template_toe,
+                 template_toe);
+
+  found_ephem = FALSE;
+  failures += expect_true(
+      scanEphemerisForRevive(eph, EPHEM_ARRAY_SIZE, 2, t_now, rx_xyz, &picked,
+                             &template_toe, &delta_sec, &elev_deg,
+                             &found_ephem) == TRUE,
+      "scanner finds extended-window revive template");
+  failures += expect_true(found_ephem == TRUE,
+                          "extended-window scanner saw ephemeris");
+  failures += expect_true(fabs(delta_sec - 21600.0) < 1.0e-6,
+                          "scanner accepts template beyond old 4h ceiling");
+  failures += expect_true(elev_deg >= SYNTH_REVIVE_MIN_ELEVATION_DEG,
+                          "extended-window elevation accepted");
+
   return failures == 0 ? 0 : 1;
 }

@@ -243,6 +243,36 @@ static void print_1019(const rtcm1019_t *e) {
          e->cuc, e->cus, e->crc_m, e->crs, e->cic, e->cis);
 }
 
+static void print_1004_prns(const uint8_t *p, size_t len) {
+  int pos;
+  uint32_t station_id;
+  uint32_t tow_ms;
+  uint32_t sync;
+  uint32_t nsat;
+
+  if (len * 8 < 64) {
+    printf("  (1004 payload too short: %zu bytes)\n", len);
+    return;
+  }
+
+  station_id = (uint32_t)bits_u(p, 12, 12);
+  tow_ms = (uint32_t)bits_u(p, 24, 30);
+  sync = (uint32_t)bits_u(p, 54, 1);
+  nsat = (uint32_t)bits_u(p, 55, 5);
+
+  printf("  station=%u tow=%.3fs sync=%u nsat=%u prns:",
+         station_id, (double)tow_ms * 0.001, sync, nsat);
+
+  pos = 64;
+  for (uint32_t i = 0; i < nsat; i++) {
+    if (pos + 6 > (int)len * 8)
+      break;
+    printf(" %u", (uint32_t)bits_u(p, pos, 6));
+    pos += 125;
+  }
+  printf("\n");
+}
+
 /* =========================================================================
  * RTCM v3 frame scanner over a byte stream.
  *
@@ -600,7 +630,9 @@ int main(int argc, char **argv) {
         printf("[%s] msg %u (%s)  payload=%zu B\n",
                ts, msg_num, msg_name(msg_num), plen);
 
-        if (msg_num == 1019) {
+        if (msg_num == 1004) {
+          print_1004_prns(payload, plen);
+        } else if (msg_num == 1019) {
           rtcm1019_t e;
 
           if (decode_1019(payload, plen, &e) == 0)

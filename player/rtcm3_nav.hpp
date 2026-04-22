@@ -27,6 +27,10 @@ typedef struct {
   ephem_t gps_rtcm_eph[MAX_SAT];
   int valid[MAX_SAT];
   int valid_count;
+  int observed[MAX_SAT];
+  int observed_count;
+  double last_obs_tow_s;
+  unsigned int msg1004_count;
 } rtcm3_nav_stream_t;
 
 void rtcm3_nav_init(rtcm3_nav_stream_t *stream);
@@ -38,5 +42,9 @@ int rtcm3_nav_pump(rtcm3_nav_stream_t *stream, int timeout_ms, int *updated,
 void rtcm3_nav_copy_ephemeris(const rtcm3_nav_stream_t *stream, ephem_t *dst);
 int rtcm3_nav_has_prn(const rtcm3_nav_stream_t *stream, int prn);
 int rtcm3_nav_valid_prns(const rtcm3_nav_stream_t *stream);
+int rtcm3_nav_has_observation_prn(const rtcm3_nav_stream_t *stream, int prn);
+int rtcm3_nav_observed_prns(const rtcm3_nav_stream_t *stream);
+double rtcm3_nav_last_obs_tow(const rtcm3_nav_stream_t *stream);
+void rtcm3_nav_copy_observed(const rtcm3_nav_stream_t *stream, int *dst);
 
 #endif

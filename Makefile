@@ -43,6 +43,9 @@ BLADE_LIBDIR=$(shell pkg-config --variable=libdir libbladeRF 2>/dev/null || echo
 bladetx: player/bladetx.cpp player/rtcm3_nav.o gpssim-lib.o gpssim.h
 	${CXX} -O3 -Wall -std=c++17 ${BLADE_CFLAGS} -isystem . player/bladetx.cpp player/rtcm3_nav.o gpssim-lib.o ${BLADE_LIBS} ${LDFLAGS} -Wl,-rpath,${BLADE_LIBDIR} -o $@
 
+revive_candidates: tools/revive_candidates.cpp player/rtcm3_nav.o gpssim-lib.o gpssim.h
+	${CXX} -O3 -Wall -std=c++17 -isystem . tools/revive_candidates.cpp player/rtcm3_nav.o gpssim-lib.o ${LDFLAGS} -o $@
+
 tests/test_parse_synth_revive: tests/test_parse_synth_revive.c gpssim.c gpssim.h
 	${CC} ${CFLAGS} -DGPS_SDR_SIM_LIB -isystem . tests/test_parse_synth_revive.c gpssim.c ${LDFLAGS} -o $@
 
@@ -71,7 +74,7 @@ tx: tx_samples_from_file.cpp
 	fi;
 
 clean:
-	rm -f gpssim.o gpssim-lib.o player/rtcm3_nav.o gps-sdr-sim x300tx bladetx tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan *.bin .user-motion-size
+	rm -f gpssim.o gpssim-lib.o player/rtcm3_nav.o gps-sdr-sim x300tx bladetx revive_candidates tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan *.bin .user-motion-size
 
 time: gps-sdr-sim
 	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 1

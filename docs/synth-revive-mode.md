@@ -6,11 +6,11 @@ Implemented — 2026-04-22
 
 ## Goal
 
-Add a new synthetic satellite mode (`SYNTH_REVIVE`) that injects a GPS PRN which is not currently in the sky by **re-animating the target PRN's own past orbital state at the current simulation time**. The satellite appears at the az/el it occupied 2 hours ago, with natural forward orbital motion thereafter.
+Add a new synthetic satellite mode (`SYNTH_REVIVE`) that injects a GPS PRN which is not currently in the sky by **re-animating the target PRN's own past orbital state at the current simulation time**. The satellite appears at the az/el it occupied at a recent past TOE, with natural forward orbital motion thereafter.
 
 The core objective, stated as a receiver-side invariant:
 
-> **Make the u-blox ZED-F9P receiver compute a satellite position at `t_now` — from the decoded navigation message — that equals the real ECEF position of the target PRN at `t_past = t_now − 2h`.**
+> **Make the u-blox ZED-F9P receiver compute a satellite position at `t_now` — from the decoded navigation message — that equals the real ECEF position of the target PRN at `t_past = t_now − Δt`.**
 
 Because the receiver uses the same `satpos()` formula as the simulator, and both evaluate the decoded ephemeris to the identical ECEF position, the pseudorange residual collapses to near zero. Every parameter in the broadcast ephemeris is drawn from a real, valid GPS broadcast — only the time-reference and node-longitude fields are shifted with exact bookkeeping.
 
@@ -40,7 +40,7 @@ No dependency on `trimble-rtcm-ephemeris-sync.md`: revive uses the RINEX file lo
 - `player/bladetx.cpp` — CLI validation, startup scan, usage text
 
 **Out of scope (future or explicit non-goals):**
-- Per-PRN lookback override (`revive=-7200`) — all targets use the single global 2h default
+- Per-PRN lookback override (`revive=-7200`) — all targets use the single global revive scan policy
 - Template PRN different from target PRN — cross-PRN templating is what clone mode is for
 - Automatic live-sky collision check — user responsibility to select non-visible targets
 - Mirror to `player/x300tx.cpp` — follow after bladetx path is proven
@@ -51,9 +51,9 @@ No dependency on `trimble-rtcm-ephemeris-sync.md`: revive uses the RINEX file lo
 | # | Decision | Choice |
 |---|---|---|
 | D1 | CLI grammar | `-S <prn>:revive` — no per-segment options |
-| D2 | Default lookback | 2 hours (7200 s) — within ephemeris fit window, above-horizon reliably |
+| D2 | Default lookback | 4 hours (14400 s) — avoids the too-fresh window that often only finds currently visible PRNs |
 | D3 | Template source | Target PRN's own ephemeris from the `-e` RINEX file |
-| D4 | Scan fallback if 2h doesn't place PRN visible | Expand outward in 15-minute steps up to 4h max; abort if still no hit |
+| D4 | Scan fallback if default doesn't place PRN visible | Expand outward in 15-minute steps up to 8h max; abort if still no hit |
 | D5 | Minimum elevation for template acceptance | 20° at `t_past` — avoids marginal rising/setting geometry |
 | D6 | Refresh cadence during long runs | 30 minutes (new constant `SYNTH_REVIVE_REFRESH_SEC`) |
 | D7 | IODE bump policy | `iode += ceil(Δt / 7200) & 0xFF` — matches real GPS 2h broadcast cycle |
@@ -122,7 +122,7 @@ segment_spec := 'force'                       [existing]
 ERROR: Cannot mix revive and az/el synthetic modes in one -S argument.
 ERROR: Cannot mix revive and clone synthetic modes in one -S argument.
 ERROR: Revive mode requires -e ephemeris file.
-ERROR: Revive PRN %d: no ephemeris found within 4h lookback.
+ERROR: Revive PRN %d: no ephemeris found within %.1fh lookback.
 ERROR: Revive PRN %d: not above %.1f deg at any point in lookback window.
 ```
 
@@ -159,8 +159,8 @@ No new fields in `synth_config_t` — revive is parameter-free at the CLI.
 ### gpssim.h — Constants
 
 ```c
-#define SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC   7200.0    /* 2 hours */
-#define SYNTH_REVIVE_MAX_LOOKBACK_SEC       14400.0   /* 4 hours ceiling */
+#define SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC  14400.0    /* 4 hours */
+#define SYNTH_REVIVE_MAX_LOOKBACK_SEC      28800.0    /* 8 hours ceiling */
 #define SYNTH_REVIVE_SCAN_STEP_SEC            900.0   /* 15-minute scan step */
 #define SYNTH_REVIVE_MIN_ELEVATION_DEG         20.0
 #define SYNTH_REVIVE_REFRESH_SEC             1800.0   /* 30-minute refresh tick */
@@ -177,7 +177,7 @@ This section is the heart of the feature. Everything else is plumbing.
 |---|---|
 | `template` | `ephem_t` copied from RINEX at past time `t_past` |
 | `modified` | Output ephemeris, time-shifted to `t_now` |
-| `Δt` | `t_now − t_past` (default 7200 s) |
+| `Δt` | `t_now − t_past` (default 14400 s) |
 | `Ω_E` | `OMEGA_EARTH` = 7.2921151467e-5 rad/s |
 | `tk` | `t_rx − toe` as seen by the receiver when satpos() runs |
 
@@ -393,9 +393,9 @@ int scanEphemerisForRevive(
 
 Scan pattern (prefer shortest delta for freshest ephemeris):
 
-1. Try `Δ = 7200 s` first.
-2. If no hit, expand: `Δ ∈ { 7200+900, 7200−900, 7200+1800, 7200−1800, ... }` up to ±3600 s around default.
-3. If still no hit, extend the range to `[1800, 14400]` in 900 s steps.
+1. Try `Δ = 14400 s` first.
+2. If no hit, expand: `Δ ∈ { 14400+900, 14400−900, 14400+1800, 14400−1800, ... }` up to ±3600 s around default.
+3. If still no hit, extend the range to `[1800, 28800]` in 900 s steps.
 4. For each candidate `Δ`:
    - `t_past = t_now − Δ`
    - Find the RINEX ephemeris set whose `toe` is closest to `t_past` for `target_prn`. Accept only if `abs(toe − t_past) < 7200 s` (satellite actually had a valid broadcast near that time).
@@ -541,7 +541,17 @@ if (has_revive && navfile[0] == '\0') {
 
 After RINEX load but before the simulation main loop:
 
+Important for `bladetx`: `-n`, `-t`, explicit GPS week/TOW, and Trimble
+time-tag mode can shift the active RINEX TOE/TOC values to the transmit epoch.
+Revive must keep a preserved copy of the original RINEX table
+(`revive_scan_eph`) for template search, while `eph` remains the active,
+time-overwritten table used for normal broadcast scheduling. Startup scan and
+30-second refresh both pass that preserved source into
+`refreshSyntheticEphemerisSet()`.
+
 ```cpp
+const ephem_t (*synth_source)[MAX_SAT] = has_revive ? revive_scan_eph : eph;
+
 for (int s = 0; s < MAX_SAT; s++) {
   if (synth_cfg.mode[s] != SYNTH_REVIVE) continue;
 
@@ -549,7 +559,7 @@ for (int s = 0; s < MAX_SAT; s++) {
   gpstime_t template_toe;
   double    delta_sec;
 
-  if (!scanEphemerisForRevive(eph, n_sets, s + 1, g0, xyz[0],
+  if (!scanEphemerisForRevive(synth_source, n_sets, s + 1, g0, xyz[0],
                               &template, &template_toe, &delta_sec)) {
     fprintf(stderr,
             "ERROR: Revive PRN %d: not above %.1f deg at any point "
@@ -579,7 +589,7 @@ Update `bladetx_usage()`:
                             clone:   PRN:clone=<src_prn>
                             revive:  PRN:revive
                             Revive requires -e and injects PRN at the az/el
-                            it occupied 2 h ago, using its own past ephemeris.
+                            it occupied in the recent past, using its own past ephemeris.
 ```
 
 ## Implementation Tasks
@@ -620,6 +630,7 @@ Update `bladetx_usage()`:
 - [x] `player/bladetx.cpp`: Step 1 CLI validation
 - [x] `player/bladetx.cpp`: Step 2 initial scan + fail-fast
 - [x] `player/bladetx.cpp`: Step 3 usage text update
+- [x] `player/bladetx.cpp`: preserve original RINEX for revive scans when the active ephemeris is time-overwritten
 
 ### Task 7 — Documentation
 
@@ -674,7 +685,7 @@ Update `bladetx_usage()`:
 
 **6. `test_bladetx_revive_no_window.sh`**
 
-- Fixture RINEX where PRN X never climbs above 20° within 4h
+- Fixture RINEX where PRN X never climbs above 20° within the configured max lookback
 - Assert exit != 0
 - Assert stderr contains `not above 20.0 deg at any point in lookback window`
 
@@ -704,7 +715,7 @@ Success criteria:
 | Scenario | Handling |
 |---|---|
 | Revive spec + no `-e` | CLI validation error at startup |
-| Target PRN absent from RINEX at any past time | Abort with "no ephemeris found within 4h lookback" |
+| Target PRN absent from RINEX at any past time | Abort with "no ephemeris found within %.1fh lookback" |
 | Target PRN present but never above 20° within lookback | Abort with "not above %.1f deg at any point in lookback window" |
 | Mixing revive with az/el | Parse error |
 | Mixing revive with clone | Parse error |
@@ -748,7 +759,7 @@ Success criteria:
 
 ## Not Implemented By Design
 
-- **Per-PRN lookback override** (e.g., `revive=-5400`): all targets share the single global 2h default. Simpler CLI; re-run with a code change if a concrete experiment needs different defaults.
+- **Per-PRN lookback override** (e.g., `revive=-5400`): all targets share the single global scan policy. Simpler CLI; re-run with a code change if a concrete experiment needs different defaults.
 - **Cross-PRN templating** (target uses another PRN's ephemeris): that is what clone mode is for. Revive deliberately uses the target's own history.
 - **Automatic live-sky collision check at startup**: would require a live RTCM listener for a pure-RINEX mode. Not added here; user verifies non-visibility manually before the run.
 - **Immediate refresh on ephemeris update**: refresh is a fixed 30-minute tick. Matches the cadence at which the receiver would see natural IODE updates in a real scenario.

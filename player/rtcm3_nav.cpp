@@ -181,6 +181,47 @@ static int decode_1019(const std::uint8_t *payload, std::size_t len,
   return (0);
 }
 
+static int decode1004ObservedPrns(const std::uint8_t *payload, std::size_t len,
+                                  int *observed, int *observed_count,
+                                  double *tow_s) {
+  std::uint32_t tow_ms;
+  std::uint32_t nsat;
+  int count = 0;
+  int pos = 64;
+  int bits = (int)len * 8;
+
+  if (payload == NULL || observed == NULL || len * 8 < 64)
+    return (FALSE);
+
+  tow_ms = (std::uint32_t)bits_u(payload, 24, 30);
+  nsat = (std::uint32_t)bits_u(payload, 55, 5);
+
+  memset(observed, 0, sizeof(int) * MAX_SAT);
+
+  for (std::uint32_t i = 0; i < nsat; i++) {
+    std::uint32_t prn;
+
+    if (pos + 6 > bits)
+      break;
+
+    prn = (std::uint32_t)bits_u(payload, pos, 6);
+    if (prn >= 1u && prn <= (std::uint32_t)MAX_SAT &&
+        observed[(int)prn - 1] != TRUE) {
+      observed[(int)prn - 1] = TRUE;
+      count++;
+    }
+
+    pos += 125;
+  }
+
+  if (observed_count != NULL)
+    *observed_count = count;
+  if (tow_s != NULL)
+    *tow_s = (double)tow_ms * 0.001;
+
+  return (TRUE);
+}
+
 static void ephemFrom1019(const rtcm1019_t *src, ephem_t *dst) {
   gpstime_t toc;
 
@@ -657,7 +698,13 @@ int rtcm3_nav_pump(rtcm3_nav_stream_t *stream, int timeout_ms, int *updated,
       if (rc < 0)
         continue;
 
-      if (msg_type == 1019u) {
+      if (msg_type == 1004u) {
+        if (decode1004ObservedPrns(payload, payload_len, stream->observed,
+                                   &stream->observed_count,
+                                   &stream->last_obs_tow_s) == TRUE) {
+          stream->msg1004_count++;
+        }
+      } else if (msg_type == 1019u) {
         rtcm1019_t decoded;
 
         if (decode_1019(payload, payload_len, &decoded) == 0 &&
@@ -703,4 +750,32 @@ int rtcm3_nav_valid_prns(const rtcm3_nav_stream_t *stream) {
     return (0);
 
   return (stream->valid_count);
+}
+
+int rtcm3_nav_has_observation_prn(const rtcm3_nav_stream_t *stream, int prn) {
+  if (stream == NULL || prn < 1 || prn > MAX_SAT)
+    return (FALSE);
+
+  return (stream->observed[prn - 1] == TRUE);
+}
+
+int rtcm3_nav_observed_prns(const rtcm3_nav_stream_t *stream) {
+  if (stream == NULL)
+    return (0);
+
+  return (stream->observed_count);
+}
+
+double rtcm3_nav_last_obs_tow(const rtcm3_nav_stream_t *stream) {
+  if (stream == NULL)
+    return (0.0);
+
+  return (stream->last_obs_tow_s);
+}
+
+void rtcm3_nav_copy_observed(const rtcm3_nav_stream_t *stream, int *dst) {
+  if (stream == NULL || dst == NULL)
+    return;
+
+  memcpy(dst, stream->observed, sizeof(int) * MAX_SAT);
 }
