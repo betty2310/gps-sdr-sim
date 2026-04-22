@@ -19,6 +19,8 @@ By default, gps-sdr-sim only generates signals for satellites that have valid ep
              PRN:force           Force a below-horizon PRN (requires ephemeris in RINEX)
              PRN:overhead        Place a synthesized satellite directly at zenith
              PRN:az/el           Place a synthesized satellite at azimuth/elevation (degrees)
+             PRN:clone=<src>     Use another PRN's live ephemeris (RTCM path)
+             PRN:revive          Re-animate this PRN's past RINEX ephemeris at now
 ```
 
 **Multiple specs** are comma-separated:
@@ -28,6 +30,20 @@ By default, gps-sdr-sim only generates signals for satellites that have valid ep
 ```
 
 **Coordinate convention**: azimuth is measured clockwise from North (0°–360°), elevation is measured from the horizon (0°–90°). Slightly negative elevations (down to –5°) are accepted.
+
+## Mode Summary
+
+| Mode | Orbit source | Typical use |
+|---|---|---|
+| `PRN:force` | Target PRN's current RINEX ephemeris | Transmit a valid but below-mask PRN |
+| `PRN:overhead` / `PRN:az/el` | Synthetic circular GPS-like orbit | Exact user-specified sky position |
+| `PRN:clone=<src>` | Live donor PRN ephemeris | Diagnostic residual collapse / duplicate geometry |
+| `PRN:revive` | Target PRN's own past RINEX ephemeris | Non-visible PRN with real ephemeris shape and independent geometry |
+
+Revive mode requires `-e`. It scans the target PRN's past ephemerides, prefers
+the 2-hour lookback, and accepts a template only when the past elevation is at
+least 20 degrees. The transmitted navigation message is re-stamped to current
+GPS time while preserving the target PRN's past orbital phase.
 
 ## Two Cases
 

@@ -453,7 +453,7 @@ void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
 
   for (sv = 0; sv < MAX_SAT; sv++) {
     if ((cfg->mode[sv] == SYNTH_OVERHEAD || cfg->mode[sv] == SYNTH_AZEL ||
-         cfg->mode[sv] == SYNTH_CLONE) &&
+         cfg->mode[sv] == SYNTH_CLONE || cfg->mode[sv] == SYNTH_REVIVE) &&
         store->valid[sv] == TRUE)
       dst[sv] = store->eph[sv];
   }
@@ -464,7 +464,7 @@ void overlaySyntheticEphemerisSet(ephem_t *dst, const ephem_t *real_set,
 int parseSynthConfig(synth_config_t *cfg, const char *spec) {
   char buf[1024];
   char *token;
-  int first_family = -1; /* -1 = none; 0 = classic; 1 = clone */
+  int first_family = -1; /* -1 = none; 0 = classic; 1 = clone; 2 = revive */
 
   if (strlen(spec) >= sizeof(buf))
     return (FALSE);
@@ -490,7 +490,13 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
         return (FALSE);
     }
 
-    if (strncmp(colon + 1, "clone=", 6) == 0) {
+    if (strcmp(colon + 1, "revive") == 0) {
+      cfg->mode[prn - 1] = SYNTH_REVIVE;
+      cfg->azimuth[prn - 1] = 0.0;
+      cfg->elevation[prn - 1] = 0.0;
+      cfg->source_prn[prn - 1] = 0;
+      this_family = 2;
+    } else if (strncmp(colon + 1, "clone=", 6) == 0) {
       char *endptr;
       int src_prn = (int)strtol(colon + 1 + 6, &endptr, 10);
 
@@ -558,9 +564,21 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
     if (first_family < 0)
       first_family = this_family;
     else if (first_family != this_family) {
-      fprintf(stderr,
-              "ERROR: Cannot mix clone and az/el synthetic modes in one -S "
-              "argument.\n");
+      if (first_family == 2 || this_family == 2) {
+        if (first_family == 1 || this_family == 1) {
+          fprintf(stderr,
+                  "ERROR: Cannot mix revive and clone synthetic modes in one "
+                  "-S argument.\n");
+        } else {
+          fprintf(stderr,
+                  "ERROR: Cannot mix revive and az/el synthetic modes in one "
+                  "-S argument.\n");
+        }
+      } else {
+        fprintf(stderr,
+                "ERROR: Cannot mix clone and az/el synthetic modes in one -S "
+                "argument.\n");
+      }
       return (FALSE);
     }
 
@@ -578,6 +596,236 @@ void cloneEphemerisFromDonor(ephem_t *dst, const ephem_t *donor) {
   *dst = *donor;
 
   return;
+}
+
+static gpstime_t alignGpsTimeToBroadcastQuantum(gpstime_t g) {
+  g.sec = floor((g.sec + (SYNTH_BROADCAST_QUANTUM_SEC / 2.0)) /
+                SYNTH_BROADCAST_QUANTUM_SEC) *
+          SYNTH_BROADCAST_QUANTUM_SEC;
+
+  if (g.sec >= SECONDS_IN_WEEK) {
+    g.sec -= SECONDS_IN_WEEK;
+    g.week += 1;
+  } else if (g.sec < 0.0) {
+    g.sec += SECONDS_IN_WEEK;
+    g.week -= 1;
+  }
+
+  return (g);
+}
+
+void reviveEphemerisFromTemplate(ephem_t *modified, const ephem_t *templ,
+                                 double delta_sec, gpstime_t t_now_gps) {
+  gpstime_t toe_now;
+  int n_bumps;
+
+  if (modified == NULL || templ == NULL || templ->vflg != 1)
+    return;
+
+  /*
+   * Receiver-side invariant:
+   *   satpos(modified, t_now) == satpos(template, t_past)
+   *
+   * The scanner chooses a template whose TOE is the desired past state. Keeping
+   * M0 and all orbit-shape terms unchanged anchors the satellite to that old
+   * orbital phase, while the Omega0 compensation below preserves the same ECEF
+   * node rotation after the TOE is re-stamped to current GPS time.
+   */
+  *modified = *templ;
+
+  toe_now = alignGpsTimeToBroadcastQuantum(t_now_gps);
+  modified->toe = toe_now;
+  modified->toc = toe_now;
+  gps2date(&toe_now, &modified->t);
+
+  /*
+   * satpos() uses:
+   *   Omega_k = Omega0 + (OmegaDot - OmegaEarth) * tk - OmegaEarth * toe
+   * At tk=0, preserving the old ECEF node rotation requires:
+   *   Omega0_new - OmegaEarth * toe_new
+   *       == Omega0_old - OmegaEarth * toe_old
+   */
+  modified->omg0 = wrapToPi(templ->omg0 + OMEGA_EARTH * delta_sec);
+
+  /*
+   * Propagate the broadcast clock polynomial to the revived epoch. The
+   * simulator and receiver evaluate the same af0/af1/af2/toc values, so this
+   * mostly keeps the nav message plausible rather than changing self-
+   * consistency.
+   */
+  modified->af0 = templ->af0 + templ->af1 * delta_sec +
+                  0.5 * templ->af2 * delta_sec * delta_sec;
+
+  n_bumps = (int)ceil(delta_sec / SYNTH_REVIVE_IODE_BUMP_PER_SEC);
+  modified->iode = (templ->iode + n_bumps) & 0xFF;
+  modified->iodc = modified->iode;
+  modified->svhlth = 0;
+  modified->vflg = 1;
+
+  return;
+}
+
+static int findEphemerisForPrnNearTime(const ephem_t rinex_eph[][MAX_SAT],
+                                       int n_sets, int target_prn,
+                                       gpstime_t target_time,
+                                       ephem_t *out_template,
+                                       double *out_abs_dt) {
+  int sv;
+  int i;
+  int found;
+  double best_abs_dt;
+
+  if (rinex_eph == NULL || n_sets <= 0 || target_prn < 1 ||
+      target_prn > MAX_SAT)
+    return (FALSE);
+
+  sv = target_prn - 1;
+  found = FALSE;
+  best_abs_dt = 0.0;
+
+  for (i = 0; i < n_sets; i++) {
+    double dt;
+
+    if (rinex_eph[i][sv].vflg != 1)
+      continue;
+
+    dt = fabs(subGpsTime(rinex_eph[i][sv].toe, target_time));
+    if (found == FALSE || dt < best_abs_dt) {
+      if (out_template != NULL)
+        *out_template = rinex_eph[i][sv];
+      best_abs_dt = dt;
+      found = TRUE;
+    }
+  }
+
+  if (found == FALSE)
+    return (FALSE);
+
+  if (out_abs_dt != NULL)
+    *out_abs_dt = best_abs_dt;
+
+  return (TRUE);
+}
+
+static int tryReviveDelta(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
+                          int target_prn, gpstime_t t_now,
+                          const double rx_ecef[3], double requested_delta,
+                          ephem_t *out_template,
+                          gpstime_t *out_template_toe,
+                          double *out_delta_sec, double *out_elev_deg,
+                          int *found_ephem) {
+  gpstime_t target_time;
+  ephem_t templ;
+  double nearest_dt;
+  double actual_delta;
+  double azel[2];
+
+  if (requested_delta < SYNTH_REVIVE_SCAN_STEP_SEC ||
+      requested_delta > SYNTH_REVIVE_MAX_LOOKBACK_SEC)
+    return (FALSE);
+
+  target_time = incGpsTime(t_now, -requested_delta);
+  if (findEphemerisForPrnNearTime(rinex_eph, n_sets, target_prn, target_time,
+                                  &templ, &nearest_dt) == FALSE)
+    return (FALSE);
+
+  if (found_ephem != NULL)
+    *found_ephem = TRUE;
+
+  if (nearest_dt >= SYNTH_REVIVE_IODE_BUMP_PER_SEC)
+    return (FALSE);
+
+  actual_delta = subGpsTime(t_now, templ.toe);
+  if (actual_delta < SYNTH_REVIVE_SCAN_STEP_SEC ||
+      actual_delta > SYNTH_REVIVE_MAX_LOOKBACK_SEC)
+    return (FALSE);
+
+  if (checkSatVisibility(templ, templ.toe, (double *)rx_ecef, -90.0, azel) !=
+      1)
+    return (FALSE);
+
+  if (out_elev_deg != NULL)
+    *out_elev_deg = azel[1] * R2D;
+
+  if (azel[1] * R2D < SYNTH_REVIVE_MIN_ELEVATION_DEG)
+    return (FALSE);
+
+  if (out_template != NULL)
+    *out_template = templ;
+  if (out_template_toe != NULL)
+    *out_template_toe = templ.toe;
+  if (out_delta_sec != NULL)
+    *out_delta_sec = actual_delta;
+
+  return (TRUE);
+}
+
+int scanEphemerisForRevive(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
+                           int target_prn, gpstime_t t_now,
+                           const double rx_ecef[3], ephem_t *out_template,
+                           gpstime_t *out_template_toe,
+                           double *out_delta_sec, double *out_elev_deg,
+                           int *out_found_ephem) {
+  double offset;
+  double delta;
+  int found_ephem;
+
+  found_ephem = FALSE;
+
+  if (out_found_ephem != NULL)
+    *out_found_ephem = FALSE;
+
+  if (tryReviveDelta(rinex_eph, n_sets, target_prn, t_now, rx_ecef,
+                     SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC, out_template,
+                     out_template_toe, out_delta_sec, out_elev_deg,
+                     &found_ephem) == TRUE) {
+    if (out_found_ephem != NULL)
+      *out_found_ephem = found_ephem;
+    return (TRUE);
+  }
+
+  for (offset = SYNTH_REVIVE_SCAN_STEP_SEC; offset <= 3600.0 + 1.0e-9;
+       offset += SYNTH_REVIVE_SCAN_STEP_SEC) {
+    delta = SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC + offset;
+    if (tryReviveDelta(rinex_eph, n_sets, target_prn, t_now, rx_ecef, delta,
+                       out_template, out_template_toe, out_delta_sec,
+                       out_elev_deg, &found_ephem) == TRUE) {
+      if (out_found_ephem != NULL)
+        *out_found_ephem = found_ephem;
+      return (TRUE);
+    }
+
+    delta = SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC - offset;
+    if (delta >= SYNTH_REVIVE_SCAN_STEP_SEC &&
+        tryReviveDelta(rinex_eph, n_sets, target_prn, t_now, rx_ecef, delta,
+                       out_template, out_template_toe, out_delta_sec,
+                       out_elev_deg, &found_ephem) == TRUE) {
+      if (out_found_ephem != NULL)
+        *out_found_ephem = found_ephem;
+      return (TRUE);
+    }
+  }
+
+  for (delta = SYNTH_REVIVE_SCAN_STEP_SEC;
+       delta <= SYNTH_REVIVE_MAX_LOOKBACK_SEC + 1.0e-9;
+       delta += SYNTH_REVIVE_SCAN_STEP_SEC) {
+    if (delta >= SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC - 3600.0 - 1.0e-9 &&
+        delta <= SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC + 3600.0 + 1.0e-9)
+      continue;
+
+    if (tryReviveDelta(rinex_eph, n_sets, target_prn, t_now, rx_ecef, delta,
+                       out_template, out_template_toe, out_delta_sec,
+                       out_elev_deg, &found_ephem) == TRUE) {
+      if (out_found_ephem != NULL)
+        *out_found_ephem = found_ephem;
+      return (TRUE);
+    }
+  }
+
+  if (out_found_ephem != NULL)
+    *out_found_ephem = found_ephem;
+
+  return (FALSE);
 }
 
 /*! \brief Check whether a requested az/el is representable by the synthetic
@@ -887,6 +1135,8 @@ static void fitSynthClockTerms(ephem_t *eph, const ephem_t *donor,
 }
 
 int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
+                                 const ephem_t rinex_eph[][MAX_SAT],
+                                 int n_sets,
                                  const ephem_t *real_set,
                                  const ionoutc_t *ionoutc,
                                  const synth_config_t *cfg,
@@ -916,6 +1166,65 @@ int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
 
         cloneEphemerisFromDonor(&store->eph[sv], &real_set[src]);
         store->valid[sv] = TRUE;
+      }
+
+      continue;
+    }
+
+    if (cfg->mode[sv] == SYNTH_REVIVE) {
+      ephem_t templ;
+      gpstime_t template_toe;
+      double delta_sec;
+      double elev_deg;
+      int found_ephem;
+      int template_changed;
+      int refresh_due;
+
+      refresh_due =
+          (store->valid[sv] != TRUE ||
+           fabs(subGpsTime(g_ref, store->eph[sv].toe)) >=
+               SYNTH_REVIVE_REFRESH_SEC);
+      if (refresh_due == FALSE)
+        continue;
+
+      found_ephem = FALSE;
+      if (scanEphemerisForRevive(rinex_eph, n_sets, sv + 1, g_ref, rx_xyz,
+                                 &templ, &template_toe, &delta_sec, &elev_deg,
+                                 &found_ephem) == FALSE) {
+        if (store->valid[sv] != TRUE) {
+          if (found_ephem == TRUE) {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: not above %.1f deg at any point in "
+                    "lookback window.\n",
+                    sv + 1, SYNTH_REVIVE_MIN_ELEVATION_DEG);
+          } else {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: no ephemeris found within 4h "
+                    "lookback.\n",
+                    sv + 1);
+          }
+        }
+        continue;
+      }
+
+      template_changed =
+          (store->valid[sv] != TRUE ||
+           store->template_toe[sv].week != template_toe.week ||
+           fabs(store->template_toe[sv].sec - template_toe.sec) > 1.0e-6 ||
+           fabs(store->revive_delta_sec[sv] - delta_sec) > 1.0e-6);
+
+      reviveEphemerisFromTemplate(&store->eph[sv], &templ, delta_sec, g_ref);
+      store->valid[sv] = TRUE;
+      store->revive_delta_sec[sv] = delta_sec;
+      store->template_toe[sv] = template_toe;
+      changed = TRUE;
+
+      if (template_changed == TRUE) {
+        fprintf(stderr,
+                "Revive PRN %02d: template from t-%.0fs (toe=%d:%.0f), "
+                "el=%.1f deg at t_past\n",
+                sv + 1, delta_sec, template_toe.week, template_toe.sec,
+                elev_deg);
       }
 
       continue;
@@ -2609,12 +2918,13 @@ void usage(void) {
       "  -G <boost_db>    Power boost [dB] for partial-mode PRNs (default: "
       "0)\n"
       "  -S <synth_spec>  Synthetic satellite: PRN:force, PRN:overhead, "
-      "PRN:az/el\n"
+      "PRN:az/el, PRN:clone=<src>, PRN:revive\n"
       "                   force = bypass elevation (needs ephemeris in "
       "RINEX)\n"
       "                   overhead = synthesize at zenith\n"
       "                   az/el = synthesize at azimuth/elevation in "
       "degrees\n"
+      "                   revive = re-animate target PRN's past ephemeris\n"
       "                   e.g. -S 17:force,25:overhead,30:180.0/45.0\n"
       "  -r <lead_sec>    Stream lead time for -n timed start "
       "(default: 1.0)\n"
@@ -2872,7 +3182,7 @@ int main(int argc, char *argv[]) {
       if (parseSynthConfig(&synth_cfg, optarg) == FALSE) {
         fprintf(stderr,
                 "ERROR: Invalid synthetic spec. Use PRN:force, PRN:overhead, "
-                "or PRN:az/el\n");
+                "PRN:az/el, PRN:clone=<src>, or PRN:revive\n");
         fprintf(stderr, "       e.g. -S 17:force,25:overhead,30:180.0/45.0\n");
         exit(1);
       }
@@ -3205,8 +3515,8 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc, &synth_cfg,
-                                 xyz[0], synth_ref);
+    refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph], &ionoutc,
+                                 &synth_cfg, xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -3499,8 +3809,9 @@ int main(int argc, char *argv[]) {
         rx_ref = staticLocationMode ? xyz[0] : xyz[motion_index];
         synth_ref = quantizeSynthReferenceTime(grx);
 
-        if (refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc,
-                                         &synth_cfg, rx_ref, synth_ref) == TRUE)
+        if (refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph],
+                                         &ionoutc, &synth_cfg, rx_ref,
+                                         synth_ref) == TRUE)
           eph_changed = TRUE;
       }
 

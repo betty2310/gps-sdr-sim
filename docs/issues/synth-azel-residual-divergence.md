@@ -211,3 +211,8 @@ PRNs using live broadcast ephemeris copied from donor PRNs carried in RTCM `1019
 In the measured lab setup on 2026-04-16, those `1019` messages were available on
 the NAVIS NTRIP source at `192.168.5.245:5005` (`mount=NAVIS`), while the raw
 `5018` stream exposed MSM/station messages but not GPS ephemeris.
+
+Second follow-on: `docs/synth-revive-mode.md` adds `PRN:revive`, which avoids
+clone-mode duplicate geometry by re-animating the target PRN's own past RINEX
+ephemeris at the current transmit epoch. This keeps real broadcast orbit-shape
+terms while giving the receiver an independent above-horizon line of sight.

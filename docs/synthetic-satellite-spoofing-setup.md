@@ -519,6 +519,21 @@ make clean && make
     -d 300 -v
 ```
 
+Revive-mode variant for cold-start F9P experiments where the selected PRNs are
+not currently visible but had valid above-horizon geometry earlier in the same
+RINEX file:
+
+```bash
+./gps-sdr-sim -e brdc.nav -l YOUR_LAT,YOUR_LON,YOUR_HGT \
+    -S 1:revive,2:revive \
+    -P 1,2 \
+    -G 3 \
+    -d 300 -v
+```
+
+`PRN:revive` uses the target PRN's own past ephemeris, re-stamped to the current
+simulation epoch. Verify target PRNs are absent from live sky before transmitting.
+
 ### Phase 3: Physical setup
 
 ```

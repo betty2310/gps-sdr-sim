@@ -343,6 +343,15 @@ static int hasCloneMode(const synth_config_t *cfg) {
   return FALSE;
 }
 
+static int hasReviveMode(const synth_config_t *cfg) {
+  for (int sv = 0; sv < MAX_SAT; sv++) {
+    if (cfg->mode[sv] == SYNTH_REVIVE)
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
 ////////////////////////////////////////////////////////////
 // Generate one 0.1-second epoch of SC16 IQ samples
 ////////////////////////////////////////////////////////////
@@ -515,8 +524,8 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
   if (synth_cfg->enabled) {
     gpstime_t synth_ref = quantizeSynthReferenceTime(grx);
 
-    if (refreshSyntheticEphemerisSet(synth_eph, eph[*ieph], ionoutc, synth_cfg,
-                                     xyz[0], synth_ref) == TRUE)
+    if (refreshSyntheticEphemerisSet(synth_eph, eph, neph, eph[*ieph], ionoutc,
+                                     synth_cfg, xyz[0], synth_ref) == TRUE)
       eph_changed = TRUE;
   }
 
@@ -556,8 +565,10 @@ static void bladetx_usage(void) {
       "  -d <seconds>                Duration\n"
       "  -P <prn[,prn...]>           Partial constellation PRN list\n"
       "  -S <synth_spec>             Synthetic satellites. One family per -S:\n"
-      "                              PRN:force | PRN:overhead | PRN:az/el\n"
-      "                              OR PRN:clone=<src_prn>\n"
+      "                              classic: PRN:force | PRN:overhead | "
+      "PRN:az/el\n"
+      "                              clone:   PRN:clone=<src_prn>\n"
+      "                              revive:  PRN:revive (requires -e)\n"
       "  -A <attack_spec>            Attack config\n"
       "  -J <dB>                     Jammer-to-signal ratio\n"
       "  -G <dB>                     Power boost for partial mode\n"
@@ -615,6 +626,12 @@ static void bladetx_usage(void) {
       "    --trimble-time-tag-port 5017 \\\n"
       "    --trimble-rtcm-host 192.168.5.245 --trimble-rtcm-port 5005 \\\n"
       "    --trimble-rtcm-mount NAVIS --trimble-rtcm-user NAVIS:navis123 \\\n"
+      "    --trimble-start-offset-sec 2 --txvga1 -35\n"
+      "\n"
+      "  bladetx -e hour1120.26n -l 21.0047844,105.8460541,5 \\\n"
+      "    -P 1,2 -S 1:revive,2:revive \\\n"
+      "    --trimble-time-tag-host 192.168.5.245 \\\n"
+      "    --trimble-time-tag-port 5017 \\\n"
       "    --trimble-start-offset-sec 2 --txvga1 -35\n"
       "\n",
       TX_VGA1_DEFAULT, TX_VGA2_DEFAULT);
@@ -1091,6 +1108,18 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  if (hasReviveMode(&synth_cfg) == TRUE) {
+    if (navfile[0] == 0) {
+      fprintf(stderr, "ERROR: Revive mode requires -e ephemeris file.\n");
+      return 1;
+    }
+    if (trimble_rtcm_mode == TRUE) {
+      fprintf(stderr, "ERROR: Revive mode cannot use live RTCM ephemeris; "
+                      "provide -e without --trimble-rtcm-host.\n");
+      return 1;
+    }
+  }
+
   if (navfile[0] == 0 && trimble_rtcm_mode == FALSE) {
     fprintf(stderr, "ERROR: Navigation RINEX file is required (-e) unless "
                     "--trimble-rtcm-host is set.\n");
@@ -1545,7 +1574,32 @@ int main(int argc, char *argv[]) {
     gpstime_t synth_ref = quantizeSynthReferenceTime(g0);
 
     for (sv = 0; sv < MAX_SAT; sv++) {
-      if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
+      if (synth_cfg.mode[sv] == SYNTH_REVIVE) {
+        ephem_t revive_template;
+        gpstime_t template_toe;
+        double delta_sec;
+        double elev_deg;
+        int found_ephem = FALSE;
+
+        if (scanEphemerisForRevive(eph, neph, sv + 1, synth_ref, xyz[0],
+                                   &revive_template, &template_toe,
+                                   &delta_sec, &elev_deg,
+                                   &found_ephem) == FALSE) {
+          if (found_ephem == TRUE) {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: not above %.1f deg at any point "
+                    "in lookback window.\n",
+                    sv + 1, SYNTH_REVIVE_MIN_ELEVATION_DEG);
+          } else {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: no ephemeris found within 4h "
+                    "lookback.\n",
+                    sv + 1);
+          }
+          status = 1;
+          goto cleanup_module;
+        }
+      } else if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
           synth_cfg.mode[sv] == SYNTH_AZEL) {
         double az, el;
 
@@ -1585,8 +1639,8 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    refreshSyntheticEphemerisSet(&synth_eph, eph[ieph], &ionoutc, &synth_cfg,
-                                 xyz[0], synth_ref);
+    refreshSyntheticEphemerisSet(&synth_eph, eph, neph, eph[ieph], &ionoutc,
+                                 &synth_cfg, xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);

@@ -94,6 +94,12 @@ extern "C" {
 #define SYNTH_BROADCAST_QUANTUM_SEC 16.0
 #define SYNTH_EPHEM_REFRESH_SEC 30.0
 #define SYNTH_ISSUE_MODULUS 256
+#define SYNTH_REVIVE_DEFAULT_LOOKBACK_SEC 7200.0
+#define SYNTH_REVIVE_MAX_LOOKBACK_SEC 14400.0
+#define SYNTH_REVIVE_SCAN_STEP_SEC 900.0
+#define SYNTH_REVIVE_MIN_ELEVATION_DEG 20.0
+#define SYNTH_REVIVE_REFRESH_SEC 1800.0
+#define SYNTH_REVIVE_IODE_BUMP_PER_SEC 7200.0
 #define D2R (PI / 180.0)
 
 // Jammer noise normalization constant
@@ -222,7 +228,8 @@ typedef enum {
   SYNTH_FORCE,    /*!< Bypass elevation check (requires ephemeris in RINEX) */
   SYNTH_OVERHEAD, /*!< Synthesize circular orbit placing satellite at zenith */
   SYNTH_AZEL, /*!< Synthesize circular orbit at specified azimuth/elevation */
-  SYNTH_CLONE /*!< Clone live ephemeris from another PRN */
+  SYNTH_CLONE, /*!< Clone live ephemeris from another PRN */
+  SYNTH_REVIVE /*!< Re-animate the target PRN's past ephemeris at now */
 } synth_mode_t;
 
 /*! \brief Configuration for synthetic satellite generation */
@@ -238,6 +245,8 @@ typedef struct {
 typedef struct {
   int valid[MAX_SAT];
   ephem_t eph[MAX_SAT];
+  double revive_delta_sec[MAX_SAT]; /*!< Lookback used by SYNTH_REVIVE */
+  gpstime_t template_toe[MAX_SAT];  /*!< Source TOE used by SYNTH_REVIVE */
 } synth_ephem_store_t;
 
 ////////////////////////////////////////////////////////////
@@ -287,10 +296,20 @@ int synthAzelReachable(const double *rx_xyz, double az, double el,
                       double *sat_ecef);
 void azel2satpos(const double *rx_xyz, double az, double el, double *sat_ecef);
 void cloneEphemerisFromDonor(ephem_t *dst, const ephem_t *donor);
+void reviveEphemerisFromTemplate(ephem_t *modified, const ephem_t *templ,
+                                 double delta_sec, gpstime_t t_now_gps);
+int scanEphemerisForRevive(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
+                           int target_prn, gpstime_t t_now,
+                           const double rx_ecef[3], ephem_t *out_template,
+                           gpstime_t *out_template_toe,
+                           double *out_delta_sec, double *out_elev_deg,
+                           int *out_found_ephem);
 void synthEphemeris(ephem_t *eph, const double *rx_xyz, double az, double el,
                     gpstime_t toe, gpstime_t toc);
 gpstime_t quantizeSynthReferenceTime(gpstime_t g);
 int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
+                                 const ephem_t rinex_eph[][MAX_SAT],
+                                 int n_sets,
                                  const ephem_t *real_set,
                                  const ionoutc_t *ionoutc,
                                  const synth_config_t *cfg,
