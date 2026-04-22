@@ -1,0 +1,52 @@
+bladetx -l 21.0047844,105.8460541,22 -e hour1120.26n -P 22,14,17,1 \
+           -S 22:revive,14:revive,17:revive,1:revive \
+           --trimble-time-tag-host 192.168.5.245 \
+           --trimble-time-tag-port 5017 \
+           --trimble-start-offset-sec 2 --txvga1 -35 --trimble-tag-lead-ms 788 --trimble-tx-cal-ns 580000
+xyz =  -1626551.8,   5730526.8,   2271897.4
+llh =   21.004784,  105.846054,        22.0
+
+[BLADE] Opening bladeRF device ...
+[BLADE] Device: libusb  serial: 270c4bef62ded4be1bd9c822a60306a5
+[BLADE] TX frequency: 1575420000 Hz
+[BLADE] TX sample rate: 2600000 sps
+[BLADE] TX bandwidth: 2500000 Hz
+[BLADE] TX VGA1: -35 dB
+[BLADE] TX VGA2: 0 dB
+[TIMING] Generator sample rate: 2600000.000000 Hz
+[TIMING] Epoch sample count: 260000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-04-22 08:46:09
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=788 ms  cal=580000 ns
+[TRIMBLE] Applied calibration: +580.000 us
+[TRIMBLE] Target GPS epoch: week 2415  tow 290789.001000000
+[TRIMBLE] Target datetime:  2026/04/22,08:46:29.001
+Start time = 2026/04/22,08:46:29.001 (2415:290789.001)
+Duration = streaming until interrupted
+Revive PRN 01: template from t-24384s (toe=2415:266400), el=44.6 deg at t_past
+Revive PRN 14: template from t-17184s (toe=2415:273600), el=66.3 deg at t_past
+Revive PRN 17: template from t-17184s (toe=2415:273600), el=46.4 deg at t_past
+Revive PRN 22: template from t-17184s (toe=2415:273600), el=82.8 deg at t_past
+01   42.4  44.6  21668528.0   7.6
+14  138.8  66.2  20439847.2   6.0
+17   27.1  46.4  21920196.6   7.4
+22   91.3  82.8  20494558.5   5.6
+Partial constellation mode: rendering only PRNs 1 14 17 22
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.788 s
+[TRIMBLE] Planned delay (lead + offset): 2.788 s
+[TRIMBLE] Prep elapsed since tag: 31.412 ms
+[TRIMBLE] Remaining until TX epoch: 2756.588 ms
+[TX] Waiting 2.5 s for TX epoch (then 300 ms lead) ...
+
+[TX] bladeRF device timestamp: 7774335 samples
+[TX] TX lead after sleep: 295.0 ms = 766886 samples
+[TX] Scheduled TX start: 8541221 samples (device_now + lead)
+[TX] Streaming ...
+
+Time into run = 378.6^C
+[TX] Shutting down ...                                                                                         [BLADE] Closing device...

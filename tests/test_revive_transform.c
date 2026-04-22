@@ -24,7 +24,9 @@ int main(void) {
   ephem_t templ;
   ephem_t revived;
   gpstime_t t_now;
-  double delta = 7200.0;
+  double delta = 7205.0;
+  double tk_at_now;
+  double toe_delta_sec;
   double pos_old[3], vel_old[3], clk_old[2];
   double pos_new[3], vel_new[3], clk_new[2];
   double diff[3];
@@ -63,24 +65,30 @@ int main(void) {
 
   t_now = incGpsTime(templ.toe, delta);
   reviveEphemerisFromTemplate(&revived, &templ, delta, t_now);
+  tk_at_now = subGpsTime(t_now, revived.toe);
+  toe_delta_sec = subGpsTime(revived.toe, templ.toe);
 
-  failures += expect_near(revived.toe.sec, t_now.sec, 1.0e-9,
-                          "toe is retimed");
+  failures += expect_near(revived.toe.sec, 273600.0, 1.0e-9,
+                          "toe is retimed to broadcast quantum");
   failures += expect_near(revived.toc.sec, revived.toe.sec, 1.0e-9,
                           "toc equals toe");
-  failures += expect_near(revived.omg0, wrapToPi(templ.omg0 +
-                                                  OMEGA_EARTH * delta),
+  failures += expect_near(revived.omg0,
+                          wrapToPi(templ.omg0 +
+                                   OMEGA_EARTH * toe_delta_sec -
+                                   templ.omgkdot * tk_at_now),
                           1.0e-10, "Omega0 compensated");
   failures += expect_near(revived.af0,
                           templ.af0 + templ.af1 * delta +
                               0.5 * templ.af2 * delta * delta,
                           1.0e-15, "af0 propagated");
-  failures += expect_true(revived.iode == ((templ.iode + 1) & 0xFF),
-                          "iode bumped by one 2h cycle");
-  failures += expect_true(revived.m0 == templ.m0, "M0 unchanged");
+  failures += expect_true(revived.iode == ((templ.iode + 2) & 0xFF),
+                          "iode bumped by elapsed 2h cycles");
+  failures += expect_near(revived.m0, wrapToPi(templ.m0 - templ.n * tk_at_now),
+                          1.0e-12, "M0 compensates TOE rounding");
   failures += expect_true(revived.sqrta == templ.sqrta, "sqrtA unchanged");
   failures += expect_true(revived.ecc == templ.ecc, "ecc unchanged");
-  failures += expect_true(revived.inc0 == templ.inc0, "inc0 unchanged");
+  failures += expect_near(revived.inc0, templ.inc0 - templ.idot * tk_at_now,
+                          1.0e-15, "inc0 compensates TOE rounding");
 
   satpos(templ, templ.toe, pos_old, vel_old, clk_old);
   satpos(revived, t_now, pos_new, vel_new, clk_new);

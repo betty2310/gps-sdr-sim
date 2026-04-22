@@ -617,6 +617,8 @@ static gpstime_t alignGpsTimeToBroadcastQuantum(gpstime_t g) {
 void reviveEphemerisFromTemplate(ephem_t *modified, const ephem_t *templ,
                                  double delta_sec, gpstime_t t_now_gps) {
   gpstime_t toe_now;
+  double toe_delta_sec;
+  double tk_at_now;
   int n_bumps;
 
   if (modified == NULL || templ == NULL || templ->vflg != 1)
@@ -626,26 +628,40 @@ void reviveEphemerisFromTemplate(ephem_t *modified, const ephem_t *templ,
    * Receiver-side invariant:
    *   satpos(modified, t_now) == satpos(template, t_past)
    *
-   * The scanner chooses a template whose TOE is the desired past state. Keeping
-   * M0 and all orbit-shape terms unchanged anchors the satellite to that old
-   * orbital phase, while the Omega0 compensation below preserves the same ECEF
-   * node rotation after the TOE is re-stamped to current GPS time.
+   * The scanner chooses a template whose TOE is the desired past state. The
+   * phase compensation below anchors the satellite to that old orbital phase,
+   * while the Omega0 compensation preserves the same ECEF node rotation after
+   * the TOE is re-stamped to current GPS time.
    */
   *modified = *templ;
 
   toe_now = alignGpsTimeToBroadcastQuantum(t_now_gps);
+  toe_delta_sec = subGpsTime(toe_now, templ->toe);
+  tk_at_now = subGpsTime(t_now_gps, toe_now);
+
   modified->toe = toe_now;
   modified->toc = toe_now;
   gps2date(&toe_now, &modified->t);
 
   /*
+   * TOE is broadcast in 16-second units. If t_now is not exactly on that
+   * boundary, the receiver evaluates this ephemeris at tk != 0. Shift the
+   * phase-at-TOE fields backward by that small tk so satpos(modified, t_now)
+   * still lands on satpos(template, template.toe).
+   */
+  modified->m0 = wrapToPi(templ->m0 - templ->n * tk_at_now);
+  modified->inc0 = templ->inc0 - templ->idot * tk_at_now;
+
+  /*
    * satpos() uses:
    *   Omega_k = Omega0 + (OmegaDot - OmegaEarth) * tk - OmegaEarth * toe
-   * At tk=0, preserving the old ECEF node rotation requires:
-   *   Omega0_new - OmegaEarth * toe_new
+   * Preserving the old ECEF node rotation at t_now requires:
+   *   Omega0_new + (OmegaDot - OmegaEarth) * tk - OmegaEarth * toe_new
    *       == Omega0_old - OmegaEarth * toe_old
    */
-  modified->omg0 = wrapToPi(templ->omg0 + OMEGA_EARTH * delta_sec);
+  modified->omg0 =
+      wrapToPi(templ->omg0 + OMEGA_EARTH * toe_delta_sec -
+               templ->omgkdot * tk_at_now);
 
   /*
    * Propagate the broadcast clock polynomial to the revived epoch. The

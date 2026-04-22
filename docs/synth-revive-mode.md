@@ -4,6 +4,9 @@
 
 Implemented — 2026-04-22
 
+Field status after dataset `processing/dataset/22-4/ver3`: see
+`docs/issues/synth-revive-ver3-current-state.md`.
+
 ## Goal
 
 Add a new synthetic satellite mode (`SYNTH_REVIVE`) that injects a GPS PRN which is not currently in the sky by **re-animating the target PRN's own past orbital state at the current simulation time**. The satellite appears at the az/el it occupied at a recent past TOE, with natural forward orbital motion thereafter.
@@ -224,25 +227,33 @@ void reviveEphemerisFromTemplate(
     modified->toc  = toe_aligned;
     modified->week = t_now_gps.week;
 
+    double tk_at_now = t_now_gps.sec - toe_aligned;
+    double toe_delta = toe_aligned - template->toe.sec;
+
+    /* If t_now is not exactly on the 16 s TOE boundary, the receiver will
+     * evaluate the ephemeris at tk != 0. Move the phase-at-TOE fields backward
+     * so the phase at t_now is still the template phase at t_past.
+     */
+    modified->M0   = template->M0   - n * tk_at_now;
+    modified->inc0 = template->inc0 - template->idot * tk_at_now;
+
     /* --- Right ascension of ascending node: compensate Earth rotation ---
      *
      * satpos() computes:
      *     Ω_k = Omega0 + (OmegaDot − Ω_E) * tk − Ω_E * toe
      *
-     * At tk = 0 (i.e., t = toe):
-     *     Ω_k = Omega0 − Ω_E * toe
-     *
      * For the receiver to place the satellite at the same ECEF node
-     * rotation as at the old toe_old, we need:
-     *     Omega0_new − Ω_E * toe_new == Omega0_old − Ω_E * toe_old
-     *  => Omega0_new = Omega0_old + Ω_E * (toe_new − toe_old)
-     *                = Omega0_old + Ω_E * Δt
+     * rotation as at the old toe_old when it evaluates at t_now, we need:
+     *     Omega0_new + (OmegaDot − Ω_E) * tk_at_now − Ω_E * toe_new
+     *         == Omega0_old − Ω_E * toe_old
      *
      * This is the single most important field in the transform. Without
      * this compensation, every revived satellite is rotated ~30°/2h off
      * its intended sky position.
      */
-    modified->omg0 = template->omg0 + OMEGA_EARTH * delta_sec;
+    modified->omg0 = template->omg0
+                   + OMEGA_EARTH * toe_delta
+                   - (template->omgdot - OMEGA_EARTH) * tk_at_now;
     while (modified->omg0 >  M_PI) modified->omg0 -= 2.0 * M_PI;
     while (modified->omg0 < -M_PI) modified->omg0 += 2.0 * M_PI;
 
@@ -287,17 +298,14 @@ void reviveEphemerisFromTemplate(
     modified->fit    = 1;
     modified->vflg   = 1;
 
-    /* --- UNCHANGED FIELDS ---
+    /* --- MOSTLY UNCHANGED FIELDS ---
      *
-     *   M0      — mean anomaly at toe. Keeping this anchors the satellite
-     *             to the same orbital phase it occupied at t_past. This
-     *             is the other critical piece: combined with the Omega0
-     *             compensation, it places the ECEF position at t_now
-     *             exactly where the real satellite was at t_past.
+     *   M0/inc0 — shifted only to compensate the 16 s TOE rounding. At t_now,
+     *             the evaluated mean anomaly and inclination match the
+     *             template's values at t_past.
      *
      *   sqrtA   — semi-major axis (orbit size)
      *   ecc     — eccentricity
-     *   inc0    — inclination at toe
      *   aop     — argument of perigee
      *   deltan  — mean motion correction (dN)
      *   idot    — inclination rate
@@ -305,43 +313,53 @@ void reviveEphemerisFromTemplate(
      *
      *   cuc, cus, cic, cis, crc, crs — perturbation corrections.
      *   These are empirically fit for the orbital phase around the
-     *   template's toe. We reuse them at the same orbital phase
-     *   (because M0 is unchanged), so they apply at the same phi_k
-     *   where they were tuned — arguably more accurate than a real
-     *   2-hour-later broadcast, which would have re-fit them to the
-     *   satellite's new phase.
+     *   template's toe. We reuse them at the same evaluated phase, so they
+     *   apply at the same phi_k where they were tuned — arguably more
+     *   accurate than a real 2-hour-later broadcast, which would have re-fit
+     *   them to the satellite's new phase.
      */
 }
 ```
 
-### Why M0 Stays Unchanged (Crucial)
+### Why M0 Stays Anchored To The Template Phase (Crucial)
 
 The naive approach would be to propagate M0 forward by `n · Δt` to reflect "where the satellite is now". That is wrong for this feature.
 
 Propagating M0 forward places the satellite at its real current orbital phase — which is the phase where the satellite is below horizon (by definition, since we picked a target not currently visible). The synthetic satellite would then appear at its real not-visible position.
 
-Keeping M0 unchanged freezes the satellite at the phase it occupied at `t_past`, which is the phase that the scan confirmed above 20° elevation.
+When `t_now` lands exactly on the broadcast TOE boundary, keeping the broadcast
+`M0` unchanged freezes the satellite at the phase it occupied at `t_past`, which
+is the phase that the scan confirmed above 20° elevation. When TOE is rounded to
+the nearest 16-second broadcast boundary, the receiver evaluates the ephemeris at
+`tk_at_now = t_now - toe_new`; in that case the broadcast `M0` is shifted by
+`-n * tk_at_now` so the evaluated phase at `t_now` is still the old template
+phase.
 
-### Why M0 Unchanged + Omega0 Shifted Works (Full Derivation)
+### Why Phase Anchoring + Omega0 Shift Works (Full Derivation)
 
-Evaluate `satpos()` with the modified ephemeris at sim time `t = toe_new` (i.e., `tk_new = 0`):
+Evaluate `satpos()` with the modified ephemeris at sim time `t_now`, where
+`tk_at_now = t_now - toe_new`:
 
 ```
-Mk  = M0_old + n * 0 = M0_old
+M0_new = M0_old − n * tk_at_now
+Mk  = M0_new + n * tk_at_now = M0_old
 Ek  = kepler(M0_old, e)                 ← same Ek as in template at t_past
 vk, φk = same                           ← orbit-plane coordinates unchanged
 uk, rk, ik = same after perturbations
 xp, yp = same in orbital plane
 
-Ω_k = Omega0_new − Ω_E * toe_new
-    = (Omega0_old + Ω_E * Δt) − Ω_E * (toe_old + Δt)
+Omega0_new = Omega0_old
+           + Ω_E * (toe_new − toe_old)
+           − (OmegaDot − Ω_E) * tk_at_now
+
+Ω_k = Omega0_new + (OmegaDot − Ω_E) * tk_at_now − Ω_E * toe_new
     = Omega0_old − Ω_E * toe_old
     = Ω_k_old                           ← same ECEF node rotation
 
 X, Y, Z = same as satpos(template, t_past)
 ```
 
-So the position at `t_new` using the revive ephemeris equals the real satellite's position at `t_past`.
+So the position at `t_now` using the revive ephemeris equals the real satellite's position at `t_past`.
 
 ### Forward Motion During the Simulation Run
 
@@ -653,13 +671,13 @@ Update `bladetx_usage()`:
 **2. `test_revive_transform.c`** — implemented
 
 - [x] Deterministic template with known (M0, Omega0, af0, af1, af2, iode) values
-- [x] Call `reviveEphemerisFromTemplate()` with `delta_sec = 7200`
+- [x] Call `reviveEphemerisFromTemplate()` with a non-16-second-aligned `delta_sec`
 - [x] Assertions:
   - `toe == toe_rounded_to_16s` and `toc == toe`
-  - `|Omega0_new − (Omega0_old + OMEGA_EARTH * 7200)| < 1e-10`
-  - `|af0_new − (af0_old + af1_old * 7200 + 0.5 * af2_old * 7200²)| < 1e-15`
-  - `iode_new == (iode_old + 1) & 0xFF`
-  - `M0, sqrtA, ecc, inc0, aop, deltan, idot, omgdot, cuc..cis, crc, crs` all byte-equal to template
+  - `Omega0_new` includes both Earth-rotation and nonzero-`tk` compensation
+  - `af0_new` matches the configured clock propagation model
+  - `iode_new == (iode_old + ceil(delta_sec / 7200)) & 0xFF`
+  - `M0` and `inc0` compensate TOE rounding; `sqrtA, ecc, aop, deltan, idot, omgdot, cuc..cis, crc, crs` remain byte-equal to template
   - Compute `satpos(modified, t_now)` and `satpos(template, t_past)`; assert `||P_new − P_past|| < 1.0 m`
 
 **3. `test_revive_scan.c`** — implemented basic scanner coverage

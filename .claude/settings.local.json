@@ -7,7 +7,9 @@
       "Bash(python3:*)",
       "Bash(./rtcm3_inspect --help)",
       "Bash(./rtcm3_inspect -h 127.0.0.1 -p 1)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(.venv/bin/python3 analyze_ver3.py)",
+      "Bash(tee /tmp/ver3_analysis.txt)"
     ]
   }
 }

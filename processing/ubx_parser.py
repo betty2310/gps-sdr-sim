@@ -9,16 +9,11 @@
 #
 # **Goal:** Plot pseudorange over time for every satellite tracked in the recording.
 
-# ## 1. Install Dependencies
-#
-# We use [`pyubx2`](https://github.com/semuconsulting/pyubx2) for parsing UBX binary protocol, and `matplotlib` + `pandas` for data wrangling and plotting.
-
-# In[1]:
-
 
 # ## 2. Imports
 
-# In[2]:
+# In[47]:
+
 
 # %%
 from pathlib import Path
@@ -43,7 +38,7 @@ from pyubx2 import UBXReader
 #
 # `pyubx2` parses the repeated measurement blocks and exposes fields with a `_XX` suffix (e.g. `prMes_01`, `gnssId_01`, …).
 
-# In[3]:
+# In[48]:
 
 
 # %%
@@ -71,7 +66,7 @@ DATA_DIR = Path("dataset")
 # HIGHLIGHT_PRNS = [ 4, 5, 10 ,11, 12, 15, 16]
 
 
-UBX_FILE = DATA_DIR / "21-4/1/COM3___9600_260421_074538.ubx"
+UBX_FILE = DATA_DIR / "22-4/ver4/COM3___9600_260422_084618.ubx"
 # HIGHLIGHT_PRNS = [ 7, 8]
 
 
@@ -128,7 +123,7 @@ def parse_rxm_rawx(filepath: Path) -> pd.DataFrame:
                 if isinstance(gnss_id, str):
                     constellation = gnss_id
                 else:
-                    constellation = GNSS_NAMES.get(gnss_id, f"GNSS{gnss_id}")
+                    constellation = GNSS_NAMES.get(gnss_id, f"GNSS{gnss_id}")  # ty:ignore[no-matching-overload]
 
                 if pr is not None and pr > 0:
                     records.append(
@@ -182,7 +177,7 @@ else:
 #
 # Pseudorange values are typically in the range **~20,000 km – 26,000 km** for MEO GNSS satellites.
 
-# In[4]:
+# In[49]:
 
 
 # Normalize time axis to start from 0
@@ -297,7 +292,7 @@ plt.show()
 #
 # Quick overview: measurement count, mean C/N0, and pseudorange range per satellite.
 
-# In[5]:
+# In[50]:
 
 
 summary = (
@@ -319,7 +314,7 @@ summary
 #
 # Carrier phase (`cpMes`) in cycles, plotted per satellite. Carrier phase is a much more precise (but ambiguous) range observable compared to pseudorange.
 
-# In[6]:
+# In[51]:
 
 
 t0 = df["rcvTow"].min()
@@ -369,7 +364,7 @@ plt.show()
 #
 # Carrier-to-noise density ratio (dB-Hz) per satellite. Higher C/N0 indicates a stronger, cleaner signal. Typical values range from ~25 dB-Hz (weak) to ~50 dB-Hz (strong, open sky).
 
-# In[7]:
+# In[52]:
 
 
 fig, ax = plt.subplots(figsize=(14, 7))
@@ -412,9 +407,10 @@ plt.show()
 #
 # `NAV-SIG` exposes per-signal solution-use flags such as `prUsed`, `doUsed`, and `crUsed`. `NAV-SAT` exposes per-satellite flags such as `svUsed` and ephemeris availability. Flattening both messages makes it easier to inspect which PRNs the receiver is actually using over time.
 
-# In[8]:
+# In[53]:
 
 
+# %%
 def _msg_attr(msg: dict, parsed, name: str):
     if name in msg:
         return msg[name]
@@ -566,7 +562,7 @@ else:
 #
 # The first two panels show how many signals and satellites are tracked versus actually used in the solution at each epoch. The heatmap at the bottom shows `NAV-SIG.prUsed` per highlighted PRN, where green means that PRN contributed pseudorange to the navigation solution at that epoch.
 
-# In[9]:
+# In[54]:
 
 
 if nav_sig_df.empty or nav_sat_df.empty:
@@ -635,6 +631,21 @@ else:
         .sort_values(["pr_used_epochs", "mean_cno"], ascending=[False, False])
     )
 
+    top_nav_sats = (
+        nav_sat_df.groupby("sat")["svUsed"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(16)
+        .index
+    )
+    nav_sat_heatmap = (
+        nav_sat_df[nav_sat_df["sat"].isin(top_nav_sats)]
+        .groupby(["sat", "t_sec"])["svUsed"]
+        .max()
+        .unstack(fill_value=0)
+        .sort_index()
+    )
+
     nav_sat_summary = (
         nav_sat_df.groupby("sat")
         .agg(
@@ -649,7 +660,7 @@ else:
     )
 
     fig, axes = plt.subplots(
-        3, 1, figsize=(14, 14), gridspec_kw={"height_ratios": [1.1, 1.1, 1.3]}
+        4, 1, figsize=(14, 14), gridspec_kw={"height_ratios": [1.1, 1.1, 1.3, 1.3]}
     )
 
     axes[0].step(
@@ -759,6 +770,47 @@ else:
         cbar = fig.colorbar(im, ax=axes[2], pad=0.01)
         cbar.set_label("prUsed")
 
+    if nav_sat_heatmap.empty:
+        axes[3].text(
+            0.5,
+            0.5,
+            "No highlighted PRNs found in NAV-SAT",
+            transform=axes[3].transAxes,
+            ha="center",
+            va="center",
+        )
+        axes[3].set_axis_off()
+    else:
+        im = axes[3].imshow(
+            nav_sat_heatmap.values,
+            aspect="auto",
+            interpolation="nearest",
+            cmap="Greens",
+            vmin=0,
+            vmax=1,
+        )
+        axes[3].set_yticks(range(len(nav_sat_heatmap.index)))
+        axes[3].set_yticklabels(nav_sat_heatmap.index)
+        axes[3].set_ylabel("Highlighted PRNs")
+        axes[3].set_title("NAV-SAT svUsed per highlighted PRN (green = used)")
+
+        num_cols = nav_sat_heatmap.shape[1]
+        last_idx = num_cols - 1
+        tick_idx = []
+        for i in range(7):
+            idx = last_idx * i // 6
+            if idx not in tick_idx:
+                tick_idx.append(idx)
+        if last_idx not in tick_idx:
+            tick_idx.append(last_idx)
+        tick_idx = sorted(tick_idx)
+
+        axes[3].set_xticks(tick_idx)
+        axes[3].set_xticklabels([f"{nav_sat_heatmap.columns[i]:.0f}" for i in tick_idx])
+        axes[3].set_xlabel("Time since start (s)")
+        cbar = fig.colorbar(im, ax=axes[2], pad=0.01)
+        cbar.set_label("svUsed")
+
     fig.suptitle(f"NAV-SIG / NAV-SAT Solution-Use Flags — {UBX_FILE.name}", y=0.995)
     fig.tight_layout()
     plt.show()
@@ -769,8 +821,9 @@ else:
     print("Top NAV-SAT satellites by svUsed epochs")
     print(nav_sat_summary.head(10).to_string())
 
+# %%
 
-# In[10]:
+# In[55]:
 
 
 # 10. PRN residual (prRes) over time from NAV-SIG and NAV-SAT
@@ -941,9 +994,9 @@ else:
 #
 # `SEC-SIG` reports receiver signal-security state. This scan keeps one row per `SEC-SIG` epoch, extracts `jammingState`, `spoofingState`, the detector enable bits, and v2 per-center-frequency `jammed_*` flags. `SEC-SIG` does not include its own `iTOW`, so the parser also records a sequential `sec_epoch` and attaches the latest preceding UBX time source when available.
 
-# In[11]:
+# In[56]:
 
-# %%
+
 SEC_JAMMING_STATE_LABELS = {
     0: "disabled_or_unknown",
     1: "not_indicated",
@@ -1198,4 +1251,91 @@ else:
     print("\nSEC-SIG contiguous state intervals")
     print(sec_sig_intervals.round(3).to_string(index=False))
 
-# %%
+    if not sec_sig_freq_df.empty:
+        sec_sig_freq_summary = (
+            sec_sig_freq_df.groupby(["freq_label", "cent_freq"])
+            .agg(
+                epochs=("sec_epoch", "count"),
+                jammed_epochs=("jammed", "sum"),
+                first_t_sec=("t_sec", "min"),
+                last_t_sec=("t_sec", "max"),
+            )
+            .assign(jammed_rate=lambda d: d["jammed_epochs"] / d["epochs"])
+            .round(3)
+            .reset_index()
+            .sort_values(["jammed_epochs", "freq_label"], ascending=[False, True])
+        )
+        print("\nSEC-SIG per-frequency jamming summary")
+        print(sec_sig_freq_summary.to_string(index=False))
+
+    plot_rows = 3 if not sec_sig_freq_df.empty else 2
+    fig, axes = plt.subplots(plot_rows, 1, figsize=(14, 4.2 * plot_rows), sharex=True)
+
+    axes[0].step(
+        sec_sig_epoch_scan["t_sec"],
+        sec_sig_epoch_scan["jammingState"],
+        where="post",
+        color="#d95f02",
+        linewidth=2.0,
+    )
+    jam_indicated = sec_sig_epoch_scan[sec_sig_epoch_scan["jamming_indicated"]]
+    if not jam_indicated.empty:
+        axes[0].scatter(
+            jam_indicated["t_sec"],
+            jam_indicated["jammingState"],
+            color="#b2182b",
+            s=20,
+            label="jamming indicated",
+            zorder=3,
+        )
+        axes[0].legend(loc="upper right")
+    axes[0].set_ylabel("Jamming state")
+    axes[0].set_yticks([0, 1, 2, 3])
+    axes[0].set_title("UBX-SEC-SIG jamming state by epoch")
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].step(
+        sec_sig_epoch_scan["t_sec"],
+        sec_sig_epoch_scan["spoofingState"],
+        where="post",
+        color="#7570b3",
+        linewidth=2.0,
+    )
+    spoof_indicated = sec_sig_epoch_scan[sec_sig_epoch_scan["spoofing_indicated"]]
+    if not spoof_indicated.empty:
+        axes[1].scatter(
+            spoof_indicated["t_sec"],
+            spoof_indicated["spoofingState"],
+            color="#542788",
+            s=20,
+            label="spoofing indicated",
+            zorder=3,
+        )
+        axes[1].legend(loc="upper right")
+    axes[1].set_ylabel("Spoofing state")
+    axes[1].set_yticks([0, 1, 2, 3])
+    axes[1].set_title("UBX-SEC-SIG spoofing state by epoch")
+    axes[1].grid(True, alpha=0.3)
+
+    if not sec_sig_freq_df.empty:
+        for freq_label, grp in sec_sig_freq_df.groupby("freq_label"):
+            grp = grp.sort_values("t_sec")
+            axes[2].step(
+                grp["t_sec"],
+                grp["jammed"],
+                where="post",
+                label=freq_label,
+                linewidth=1.8,
+            )
+        axes[2].set_ylabel("Jammed flag")
+        axes[2].set_yticks([0, 1])
+        axes[2].set_title("UBX-SEC-SIG per-frequency jammed flags")
+        axes[2].grid(True, alpha=0.3)
+        axes[2].legend(loc="upper right")
+
+    axes[-1].set_xlabel("Time since first SEC-SIG epoch (s)")
+    fig.suptitle(
+        f"UBX-SEC-SIG Jamming / Spoofing State Scan - {UBX_FILE.name}", y=0.995
+    )
+    fig.tight_layout()
+    plt.show()
