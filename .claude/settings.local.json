@@ -9,7 +9,9 @@
       "Bash(./rtcm3_inspect -h 127.0.0.1 -p 1)",
       "Bash(echo \"exit=$?\")",
       "Bash(.venv/bin/python3 analyze_ver3.py)",
-      "Bash(tee /tmp/ver3_analysis.txt)"
+      "Bash(tee /tmp/ver3_analysis.txt)",
+      "Bash(python -c 'from pyubx2 import UBXReader; f=open\\('\\\\''dataset/23-4/2/COM3___9600_260423_071907.ubx'\\\\'','\\\\''rb'\\\\''\\); r=UBXReader\\(f,protfilter=2\\); ids={} *)",
+      "Bash(uv run *)"
     ]
   }
 }
