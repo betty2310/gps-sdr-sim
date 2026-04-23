@@ -1,3 +1,4 @@
+#include "VariadicTable.h"
 #include "player/rtcm3_nav.hpp"
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -66,7 +68,8 @@ static void usage(const char *prog) {
       "  --rtcm-mount <name>          Optional NTRIP mount point\n"
       "  --rtcm-user <user[:pass]>    Optional NTRIP credentials\n"
       "  --rtcm-warmup-sec <sec>      Live sample duration (default 5)\n"
-      "  --rtcm-timeout-ms <ms>       RTCM read/connect timeout (default 3000)\n"
+      "  --rtcm-timeout-ms <ms>       RTCM read/connect timeout (default "
+      "3000)\n"
       "  --obs-prns <list>            Manual live-observed PRNs, e.g. 5,6,11\n"
       "  --top <n>                    Rows to print (default 12)\n"
       "  --all                        Print every PRN\n"
@@ -137,8 +140,7 @@ static bool parseOptions(int argc, char **argv, Options *opt) {
       opt->llh[2] = h;
       opt->have_llh = true;
     } else if (std::strcmp(arg, "-c") == 0 && i + 1 < argc) {
-      if (!parseDouble3(argv[++i], &opt->xyz[0], &opt->xyz[1],
-                        &opt->xyz[2])) {
+      if (!parseDouble3(argv[++i], &opt->xyz[0], &opt->xyz[1], &opt->xyz[2])) {
         std::fprintf(stderr, "ERROR: -c must be x,y,z.\n");
         return false;
       }
@@ -164,15 +166,15 @@ static bool parseOptions(int argc, char **argv, Options *opt) {
     } else if (std::strcmp(arg, "--obs-prns") == 0 && i + 1 < argc) {
       if (!parsePrnList(argv[++i], opt->manual_observed,
                         &opt->manual_observed_count)) {
-        std::fprintf(stderr, "ERROR: --obs-prns must be comma-separated PRNs.\n");
+        std::fprintf(stderr,
+                     "ERROR: --obs-prns must be comma-separated PRNs.\n");
         return false;
       }
     } else if (std::strcmp(arg, "--top") == 0 && i + 1 < argc) {
       opt->top = std::atoi(argv[++i]);
     } else if (std::strcmp(arg, "--all") == 0) {
       opt->show_all = true;
-    } else if (std::strcmp(arg, "--help") == 0 ||
-               std::strcmp(arg, "-h") == 0) {
+    } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage(argv[0]);
       std::exit(0);
     } else {
@@ -215,8 +217,7 @@ static gpstime_t currentGpsTime(int leap_sec) {
   using clock = std::chrono::system_clock;
   auto now = clock::now();
   auto sec = std::chrono::time_point_cast<std::chrono::seconds>(now);
-  double frac =
-      std::chrono::duration<double>(now - sec).count();
+  double frac = std::chrono::duration<double>(now - sec).count();
   std::time_t unix_sec = clock::to_time_t(sec);
   std::time_t gps_like = unix_sec + leap_sec;
   std::tm *gmt = std::gmtime(&gps_like);
@@ -301,7 +302,8 @@ static bool sampleRtcm(const Options &opt, rtcm3_nav_stream_t *stream,
   rtcm_opt.timeout_ms = opt.rtcm_timeout_ms;
   rtcm_opt.mount_point =
       opt.rtcm_mount.empty() ? nullptr : opt.rtcm_mount.c_str();
-  rtcm_opt.credentials = opt.rtcm_user.empty() ? nullptr : opt.rtcm_user.c_str();
+  rtcm_opt.credentials =
+      opt.rtcm_user.empty() ? nullptr : opt.rtcm_user.c_str();
 
   if (rtcm3_nav_open(stream, &rtcm_opt, err, sizeof(err)) != TRUE) {
     std::fprintf(stderr, "ERROR: RTCM open failed: %s\n", err);
@@ -351,11 +353,10 @@ static int sortBucket(const Candidate &c) {
   return 2;
 }
 
-static void printDouble(double value, const char *suffix = "") {
-  if (std::isnan(value))
-    std::printf("   nan%s", suffix);
-  else
-    std::printf("%6.1f%s", value, suffix);
+static std::string toeString(const gpstime_t &toe) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%d:%06.0f", toe.week, toe.sec);
+  return std::string(buf);
 }
 
 } // namespace
@@ -471,18 +472,18 @@ int main(int argc, char **argv) {
     rows.push_back(c);
   }
 
-  std::sort(rows.begin(), rows.end(), [](const Candidate &a,
-                                         const Candidate &b) {
-    int ba = sortBucket(a);
-    int bb = sortBucket(b);
-    if (ba != bb)
-      return ba < bb;
-    if (a.scan_ok && b.scan_ok && std::fabs(a.scan_el - b.scan_el) > 1.0e-9)
-      return a.scan_el > b.scan_el;
-    if (a.best_ok && b.best_ok && std::fabs(a.best_el - b.best_el) > 1.0e-9)
-      return a.best_el > b.best_el;
-    return a.prn < b.prn;
-  });
+  std::sort(
+      rows.begin(), rows.end(), [](const Candidate &a, const Candidate &b) {
+        int ba = sortBucket(a);
+        int bb = sortBucket(b);
+        if (ba != bb)
+          return ba < bb;
+        if (a.scan_ok && b.scan_ok && std::fabs(a.scan_el - b.scan_el) > 1.0e-9)
+          return a.scan_el > b.scan_el;
+        if (a.best_ok && b.best_ok && std::fabs(a.best_el - b.best_el) > 1.0e-9)
+          return a.best_el > b.best_el;
+        return a.prn < b.prn;
+      });
 
   std::printf("RINEX: %s  sets=%d\n", opt.navfile.c_str(), n_sets);
   std::printf("Time: GPS week %d tow %.3f\n", t_now.week, t_now.sec);
@@ -509,39 +510,43 @@ int main(int argc, char **argv) {
   std::printf("\n");
   std::printf("Recommended rows have status OK. LIVE_OBS means current RTCM "
               "observations already contain that PRN.\n");
-  std::printf("rank prn status    obs eph rinex_now rtcm_now scan_h scan_el "
-              "scan_toe     best_h best_el best_toe\n");
+  using CandidateTable =
+      VariadicTable<int, int, std::string, std::string, std::string, double,
+                    double, double, double, std::string, double, double,
+                    std::string>;
+  CandidateTable vt({"Rank", "Prn", "Status", "Obs", "Eph", "Rinex_now",
+                     "RTCM_now", "Scan_h", "Scan_EL", "Scan_TOE", "Best_h",
+                     "Best_EL", "Best_TOE"},
+                    10);
+  vt.setColumnFormat(
+      {VariadicTableColumnFormat::AUTO, VariadicTableColumnFormat::AUTO,
+       VariadicTableColumnFormat::AUTO, VariadicTableColumnFormat::AUTO,
+       VariadicTableColumnFormat::AUTO, VariadicTableColumnFormat::FIXED,
+       VariadicTableColumnFormat::FIXED, VariadicTableColumnFormat::FIXED,
+       VariadicTableColumnFormat::FIXED, VariadicTableColumnFormat::AUTO,
+       VariadicTableColumnFormat::FIXED, VariadicTableColumnFormat::FIXED,
+       VariadicTableColumnFormat::AUTO});
+  vt.setColumnPrecision({0, 0, 0, 0, 0, 1, 1, 2, 1, 0, 2, 1, 0});
 
   int printed = 0;
   for (const Candidate &c : rows) {
     if (!opt.show_all && printed >= opt.top)
       break;
 
-    std::printf("%4d %3d %-9s  %c   %c ",
-                printed + 1, c.prn, statusFor(c, have_live_obs),
-                c.live_obs ? 'Y' : '-', c.rtcm_eph ? 'Y' : '-');
-    printDouble(c.rinex_current_el);
-    std::printf(" ");
-    printDouble(c.rtcm_current_el);
-    std::printf(" ");
+    double scan_h = c.scan_ok ? c.scan_delta / 3600.0 : NAN;
+    double scan_el = c.scan_ok ? c.scan_el : NAN;
+    std::string scan_toe = c.scan_ok ? toeString(c.scan_toe) : "nan";
+    double best_h = c.best_ok ? c.best_delta / 3600.0 : NAN;
+    double best_el = c.best_ok ? c.best_el : NAN;
+    std::string best_toe = c.best_ok ? toeString(c.best_toe) : "nan";
 
-    if (c.scan_ok) {
-      std::printf("%6.2f %7.1f %4d:%06.0f", c.scan_delta / 3600.0, c.scan_el,
-                  c.scan_toe.week, c.scan_toe.sec);
-    } else {
-      std::printf("   nan     nan        nan");
-    }
-
-    if (c.best_ok) {
-      std::printf(" %6.2f %7.1f %4d:%06.0f", c.best_delta / 3600.0,
-                  c.best_el, c.best_toe.week, c.best_toe.sec);
-    } else {
-      std::printf("    nan     nan        nan");
-    }
-    std::printf("\n");
-
+    vt.addRow(printed + 1, c.prn, statusFor(c, have_live_obs),
+              c.live_obs ? "Y" : "-", c.rtcm_eph ? "Y" : "-",
+              c.rinex_current_el, c.rtcm_current_el, scan_h, scan_el, scan_toe,
+              best_h, best_el, best_toe);
     printed++;
   }
+  vt.print(std::cout);
 
   rtcm3_nav_close(&rtcm_stream);
   return 0;

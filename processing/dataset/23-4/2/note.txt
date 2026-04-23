@@ -1,0 +1,7 @@
+1,2,30
+
+COM3 mãi không fix được vị trí, tại sao?
+
+COM4 có vẻ ăn con 1, chuẩn luôn
+
+để chạy lâu 10 phút 

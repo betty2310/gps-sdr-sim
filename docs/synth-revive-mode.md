@@ -19,11 +19,11 @@ Because the receiver uses the same `satpos()` formula as the simulator, and both
 
 ## Relationship to Existing Modes
 
-| Mode | Orbit source | Position | Collision with live sky |
-|---|---|---|---|
-| SYNTH_AZEL | Synthesized circular orbit | User-chosen az/el | None, but ~1000 m residuals (see `issues/synth-azel-residual-divergence.md`) |
-| SYNTH_CLONE | Live donor PRN ephemeris | Co-located with donor | High if donor is visible; F9P flags `multi_spoof` |
-| **SYNTH_REVIVE** | Target PRN's own past RINEX ephemeris | Target's own past az/el | None — target chosen non-visible |
+| Mode             | Orbit source                          | Position                | Collision with live sky                                                      |
+| ---------------- | ------------------------------------- | ----------------------- | ---------------------------------------------------------------------------- |
+| SYNTH_AZEL       | Synthesized circular orbit            | User-chosen az/el       | None, but ~1000 m residuals (see `issues/synth-azel-residual-divergence.md`) |
+| SYNTH_CLONE      | Live donor PRN ephemeris              | Co-located with donor   | High if donor is visible; F9P flags `multi_spoof`                            |
+| **SYNTH_REVIVE** | Target PRN's own past RINEX ephemeris | Target's own past az/el | None — target chosen non-visible                                             |
 
 Revive is the minimum-divergence option for a cold-start F9P. No synthesis, no donor cross-wiring: every field of the broadcast ephemeris is either copied unchanged from a real broadcast or shifted with a closed-form transformation that preserves self-consistency with the simulator's ECEF output.
 
@@ -38,11 +38,13 @@ No dependency on `trimble-rtcm-ephemeris-sync.md`: revive uses the RINEX file lo
 ## Scope
 
 **In scope:**
+
 - `gpssim.h` — `SYNTH_REVIVE` enum entry, new constants, minor extensions to `synth_ephem_store_t`
 - `gpssim.c` — extend `parseSynthConfig()`; add `scanEphemerisForRevive()`; add `reviveEphemerisFromTemplate()`; branch in `refreshSyntheticEphemerisSet()`, `overlaySyntheticEphemerisSet()`, `allocateChannel()`
 - `player/bladetx.cpp` — CLI validation, startup scan, usage text
 
 **Out of scope (future or explicit non-goals):**
+
 - Per-PRN lookback override (`revive=-7200`) — all targets use the single global revive scan policy
 - Template PRN different from target PRN — cross-PRN templating is what clone mode is for
 - Automatic live-sky collision check — user responsibility to select non-visible targets
@@ -51,17 +53,17 @@ No dependency on `trimble-rtcm-ephemeris-sync.md`: revive uses the RINEX file lo
 
 ## Design Decisions
 
-| # | Decision | Choice |
-|---|---|---|
-| D1 | CLI grammar | `-S <prn>:revive` — no per-segment options |
-| D2 | Default lookback | 4 hours (14400 s) — avoids the too-fresh window that often only finds currently visible PRNs |
-| D3 | Template source | Target PRN's own ephemeris from the `-e` RINEX file |
-| D4 | Scan fallback if default doesn't place PRN visible | Expand outward in 15-minute steps up to 8h max; abort if still no hit |
-| D5 | Minimum elevation for template acceptance | 20° at `t_past` — avoids marginal rising/setting geometry |
-| D6 | Refresh cadence during long runs | 30 minutes (new constant `SYNTH_REVIVE_REFRESH_SEC`) |
-| D7 | IODE bump policy | `iode += ceil(Δt / 7200) & 0xFF` — matches real GPS 2h broadcast cycle |
-| D8 | Collision detection with live sky | Not automatic — user's responsibility |
-| D9 | Required flag | `-e` required; error if missing |
+| #   | Decision                                           | Choice                                                                                       |
+| --- | -------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| D1  | CLI grammar                                        | `-S <prn>:revive` — no per-segment options                                                   |
+| D2  | Default lookback                                   | 4 hours (14400 s) — avoids the too-fresh window that often only finds currently visible PRNs |
+| D3  | Template source                                    | Target PRN's own ephemeris from the `-e` RINEX file                                          |
+| D4  | Scan fallback if default doesn't place PRN visible | Expand outward in 15-minute steps up to 8h max; abort if still no hit                        |
+| D5  | Minimum elevation for template acceptance          | 20° at `t_past` — avoids marginal rising/setting geometry                                    |
+| D6  | Refresh cadence during long runs                   | 30 minutes (new constant `SYNTH_REVIVE_REFRESH_SEC`)                                         |
+| D7  | IODE bump policy                                   | `iode += ceil(Δt / 7200) & 0xFF` — matches real GPS 2h broadcast cycle                       |
+| D8  | Collision detection with live sky                  | Not automatic — user's responsibility                                                        |
+| D9  | Required flag                                      | `-e` required; error if missing                                                              |
 
 ## User Experience
 
@@ -176,13 +178,13 @@ This section is the heart of the feature. Everything else is plumbing.
 
 ### Notation
 
-| Symbol | Meaning |
-|---|---|
-| `template` | `ephem_t` copied from RINEX at past time `t_past` |
-| `modified` | Output ephemeris, time-shifted to `t_now` |
-| `Δt` | `t_now − t_past` (default 14400 s) |
-| `Ω_E` | `OMEGA_EARTH` = 7.2921151467e-5 rad/s |
-| `tk` | `t_rx − toe` as seen by the receiver when satpos() runs |
+| Symbol     | Meaning                                                 |
+| ---------- | ------------------------------------------------------- |
+| `template` | `ephem_t` copied from RINEX at past time `t_past`       |
+| `modified` | Output ephemeris, time-shifted to `t_now`               |
+| `Δt`       | `t_now − t_past` (default 14400 s)                      |
+| `Ω_E`      | `OMEGA_EARTH` = 7.2921151467e-5 rad/s                   |
+| `tk`       | `t_rx − toe` as seen by the receiver when satpos() runs |
 
 Implementation note: the scanner searches around the requested lookback, then
 uses the selected template's actual TOE as `t_past`. This keeps the closed-form
@@ -720,28 +722,28 @@ Update `bladetx_usage()`:
 
 Success criteria:
 
-| Criterion | Target |
-|---|---|
-| NAV-SAT `prRes` for revived PRNs | < 20 m (down from 1000 m in SYNTH_AZEL baseline) |
-| NAV-PVT `svUsed` | Contains both real-sky and revived PRNs in the same epoch |
-| NAV-STATUS `spoofDetState` | `no_spoof` for majority of epochs, not `multi_spoof` |
-| 30-minute run stability | Residuals bounded, no drift like COM4's ±60 m |
-| One refresh-tick transition | No tracking drop observed when ephemeris IODE bumps |
+| Criterion                        | Target                                                    |
+| -------------------------------- | --------------------------------------------------------- |
+| NAV-SAT `prRes` for revived PRNs | < 20 m (down from 1000 m in SYNTH_AZEL baseline)          |
+| NAV-PVT `svUsed`                 | Contains both real-sky and revived PRNs in the same epoch |
+| NAV-STATUS `spoofDetState`       | `no_spoof` for majority of epochs, not `multi_spoof`      |
+| 30-minute run stability          | Residuals bounded, no drift like COM4's ±60 m             |
+| One refresh-tick transition      | No tracking drop observed when ephemeris IODE bumps       |
 
 ## Failure Modes Handled Explicitly
 
-| Scenario | Handling |
-|---|---|
-| Revive spec + no `-e` | CLI validation error at startup |
-| Target PRN absent from RINEX at any past time | Abort with "no ephemeris found within %.1fh lookback" |
-| Target PRN present but never above 20° within lookback | Abort with "not above %.1f deg at any point in lookback window" |
-| Mixing revive with az/el | Parse error |
-| Mixing revive with clone | Parse error |
-| Multiple revive targets, one fails scan | Abort — user picks different PRN |
-| Target PRN rises into live sky mid-run | User responsibility; no automatic check |
-| Simulation runs longer than 4h | Refresh tick at 30 min picks fresh past window; IODE bumps naturally |
-| GPS week rollover between `t_past` and `t_now` | Handled: `modified.week = t_now.week`; `toe` is seconds-of-week, auto-wraps |
-| Template `af2` very large (unusual sat) | `af0` propagation includes the `½ * af2 * Δt²` term |
+| Scenario                                               | Handling                                                                    |
+| ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| Revive spec + no `-e`                                  | CLI validation error at startup                                             |
+| Target PRN absent from RINEX at any past time          | Abort with "no ephemeris found within %.1fh lookback"                       |
+| Target PRN present but never above 20° within lookback | Abort with "not above %.1f deg at any point in lookback window"             |
+| Mixing revive with az/el                               | Parse error                                                                 |
+| Mixing revive with clone                               | Parse error                                                                 |
+| Multiple revive targets, one fails scan                | Abort — user picks different PRN                                            |
+| Target PRN rises into live sky mid-run                 | User responsibility; no automatic check                                     |
+| Simulation runs longer than 4h                         | Refresh tick at 30 min picks fresh past window; IODE bumps naturally        |
+| GPS week rollover between `t_past` and `t_now`         | Handled: `modified.week = t_now.week`; `toe` is seconds-of-week, auto-wraps |
+| Template `af2` very large (unusual sat)                | `af0` propagation includes the `½ * af2 * Δt²` term                         |
 
 ## Verification Checklist
 
