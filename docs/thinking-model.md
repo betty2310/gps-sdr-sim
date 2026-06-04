@@ -22,14 +22,14 @@ The Mental Model
 The best way to think about it is:
 
 known receiver state + known satellite orbits
-    -> predicted measurements
-    -> predicted waveform
+-> predicted measurements
+-> predicted waveform
 
 A receiver does:
 
 measured waveform
-    -> measured pseudoranges/Dopplers
-    -> estimated receiver state
+-> measured pseudoranges/Dopplers
+-> estimated receiver state
 
 So the simulator is a forward physical model of GPS signal generation.
 
@@ -81,7 +81,7 @@ Next, computeCodePhase() turns geometry into signal parameters:
 carrier Doppler:
 chan->f_carr = -rhorate / LAMBDA_L1;
 code rate:
-chan->f_code = CODE_FREQ + chan->f_carr * CARR_TO_CODE;
+chan->f_code = CODE_FREQ + chan->f_carr \* CARR_TO_CODE;
 current C/A code phase
 current nav-bit index and word index
 
@@ -108,8 +108,8 @@ what carrier phase/frequency should be on air
 
 In the inner sample loop in main(), each sample is built as:
 
-ip = chan[i].dataBit * chan[i].codeCA * cosTable512[iTable] * gain[i];
-qp = chan[i].dataBit * chan[i].codeCA * sinTable512[iTable] * gain[i];
+ip = chan[i].dataBit _ chan[i].codeCA _ cosTable512[iTable] _ gain[i];
+qp = chan[i].dataBit _ chan[i].codeCA _ sinTable512[iTable] _ gain[i];
 
 That means each satellite contributes:
 

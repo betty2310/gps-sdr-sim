@@ -505,8 +505,8 @@ int parseSynthConfig(synth_config_t *cfg, const char *spec) {
         return (FALSE);
       }
       if (src_prn == prn) {
-        fprintf(stderr,
-                "ERROR: Clone target PRN cannot equal source PRN %d.\n", prn);
+        fprintf(stderr, "ERROR: Clone target PRN cannot equal source PRN %d.\n",
+                prn);
         return (FALSE);
       }
 
@@ -659,9 +659,8 @@ void reviveEphemerisFromTemplate(ephem_t *modified, const ephem_t *templ,
    *   Omega0_new + (OmegaDot - OmegaEarth) * tk - OmegaEarth * toe_new
    *       == Omega0_old - OmegaEarth * toe_old
    */
-  modified->omg0 =
-      wrapToPi(templ->omg0 + OMEGA_EARTH * toe_delta_sec -
-               templ->omgkdot * tk_at_now);
+  modified->omg0 = wrapToPi(templ->omg0 + OMEGA_EARTH * toe_delta_sec -
+                            templ->omgkdot * tk_at_now);
 
   /*
    * Propagate the broadcast clock polynomial to the revived epoch. The
@@ -726,8 +725,7 @@ static int findEphemerisForPrnNearTime(const ephem_t rinex_eph[][MAX_SAT],
 static int tryReviveDelta(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
                           int target_prn, gpstime_t t_now,
                           const double rx_ecef[3], double requested_delta,
-                          ephem_t *out_template,
-                          gpstime_t *out_template_toe,
+                          ephem_t *out_template, gpstime_t *out_template_toe,
                           double *out_delta_sec, double *out_elev_deg,
                           int *found_ephem) {
   gpstime_t target_time;
@@ -756,8 +754,7 @@ static int tryReviveDelta(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
       actual_delta > SYNTH_REVIVE_MAX_LOOKBACK_SEC)
     return (FALSE);
 
-  if (checkSatVisibility(templ, templ.toe, (double *)rx_ecef, -90.0, azel) !=
-      1)
+  if (checkSatVisibility(templ, templ.toe, (double *)rx_ecef, -90.0, azel) != 1)
     return (FALSE);
 
   if (out_elev_deg != NULL)
@@ -779,9 +776,8 @@ static int tryReviveDelta(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
 int scanEphemerisForRevive(const ephem_t rinex_eph[][MAX_SAT], int n_sets,
                            int target_prn, gpstime_t t_now,
                            const double rx_ecef[3], ephem_t *out_template,
-                           gpstime_t *out_template_toe,
-                           double *out_delta_sec, double *out_elev_deg,
-                           int *out_found_ephem) {
+                           gpstime_t *out_template_toe, double *out_delta_sec,
+                           double *out_elev_deg, int *out_found_ephem) {
   double offset;
   double delta;
   int found_ephem;
@@ -1151,8 +1147,7 @@ static void fitSynthClockTerms(ephem_t *eph, const ephem_t *donor,
 }
 
 int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
-                                 const ephem_t rinex_eph[][MAX_SAT],
-                                 int n_sets,
+                                 const ephem_t rinex_eph[][MAX_SAT], int n_sets,
                                  const ephem_t *real_set,
                                  const ionoutc_t *ionoutc,
                                  const synth_config_t *cfg,
@@ -1196,10 +1191,9 @@ int refreshSyntheticEphemerisSet(synth_ephem_store_t *store,
       int template_changed;
       int refresh_due;
 
-      refresh_due =
-          (store->valid[sv] != TRUE ||
-           fabs(subGpsTime(g_ref, store->eph[sv].toe)) >=
-               SYNTH_REVIVE_REFRESH_SEC);
+      refresh_due = (store->valid[sv] != TRUE ||
+                     fabs(subGpsTime(g_ref, store->eph[sv].toe)) >=
+                         SYNTH_REVIVE_REFRESH_SEC);
       if (refresh_due == FALSE)
         continue;
 

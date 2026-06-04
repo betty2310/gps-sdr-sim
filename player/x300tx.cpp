@@ -32,6 +32,8 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include "player/rtcm3_nav.hpp"
+
 extern "C" {
 #include "gpssim.h"
 }
@@ -54,6 +56,9 @@ extern "C" {
 #define TRIMBLE_TIMEOUT_MS_DEFAULT 30000
 #define TRIMBLE_LEAP_SEC_DEFAULT 18
 #define TRIMBLE_TX_CAL_NS_DEFAULT 0LL
+#define TRIMBLE_RTCM_PORT_DEFAULT 5018
+#define TRIMBLE_RTCM_WARMUP_DEFAULT 30
+#define TRIMBLE_RTCM_MIN_PRNS_DEFAULT 16
 
 ////////////////////////////////////////////////////////////
 // Signal handling
@@ -344,6 +349,24 @@ static double getEpochDurationSec(int sample_count, double sample_rate_hz) {
   return (double)sample_count / sample_rate_hz;
 }
 
+static int hasCloneMode(const synth_config_t *cfg) {
+  for (int sv = 0; sv < MAX_SAT; sv++) {
+    if (cfg->mode[sv] == SYNTH_CLONE)
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+static int hasReviveMode(const synth_config_t *cfg) {
+  for (int sv = 0; sv < MAX_SAT; sv++) {
+    if (cfg->mode[sv] == SYNTH_REVIVE)
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
 ////////////////////////////////////////////////////////////
 // Generate one 0.1-second epoch of SC16 IQ samples
 ////////////////////////////////////////////////////////////
@@ -475,6 +498,73 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
   }
 }
 
+static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
+                            const ephem_t synth_source[][MAX_SAT], int neph,
+                            int *ieph, ephem_t *active_eph,
+                            synth_ephem_store_t *synth_eph,
+                            const synth_config_t *synth_cfg,
+                            const ionoutc_t *ionoutc, gpstime_t grx,
+                            double elvmask, int trimble_rtcm_mode,
+                            int *trimble_rtcm_alive,
+                            rtcm3_nav_stream_t *trimble_rtcm_stream,
+                            const attack_config_t *attack_cfg) {
+  int i;
+  int eph_changed = FALSE;
+
+  if (trimble_rtcm_mode == TRUE && trimble_rtcm_alive != NULL &&
+      *trimble_rtcm_alive == TRUE && trimble_rtcm_stream != NULL) {
+    char err[RTCM3_NAV_ERR_SIZE];
+    int rtcm_updated = FALSE;
+
+    if (rtcm3_nav_pump(trimble_rtcm_stream, 0, &rtcm_updated, err,
+                       sizeof(err)) == FALSE) {
+      fprintf(stderr,
+              "\n[RTCM] WARNING: %s. Keeping last cached ephemerides.\n", err);
+      rtcm3_nav_close(trimble_rtcm_stream);
+      *trimble_rtcm_alive = FALSE;
+    } else if (rtcm_updated == TRUE) {
+      rtcm3_nav_copy_ephemeris(trimble_rtcm_stream, eph[0]);
+      eph_changed = TRUE;
+    }
+  }
+
+  if (*ieph + 1 < neph) {
+    gpstime_t next_toc;
+
+    if (getSetReferenceToc(eph[*ieph + 1], &next_toc) == TRUE &&
+        shouldAdvanceEphSet(next_toc, grx) == TRUE) {
+      (*ieph)++;
+      eph_changed = TRUE;
+    }
+  }
+
+  if (synth_cfg->enabled) {
+    gpstime_t synth_ref = quantizeSynthReferenceTime(grx);
+
+    if (refreshSyntheticEphemerisSet(synth_eph, synth_source, neph, eph[*ieph],
+                                     ionoutc, synth_cfg, xyz[0],
+                                     synth_ref) == TRUE)
+      eph_changed = TRUE;
+  }
+
+  if (eph_changed == TRUE) {
+    overlaySyntheticEphemerisSet(active_eph, eph[*ieph], synth_cfg, synth_eph);
+
+    for (i = 0; i < MAX_CHAN; i++) {
+      if (chan[i].prn != 0)
+        eph2sbf(active_eph[chan[i].prn - 1], *ionoutc, chan[i].sbf);
+    }
+  }
+
+  for (i = 0; i < MAX_CHAN; i++) {
+    if (chan[i].prn > 0)
+      generateNavMsg(grx, &chan[i], 0);
+  }
+
+  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask, attack_cfg,
+                  synth_cfg);
+}
+
 ////////////////////////////////////////////////////////////
 // Usage
 ////////////////////////////////////////////////////////////
@@ -485,14 +575,18 @@ static void x300_usage(void) {
       "Usage: x300tx [options]\n"
       "\n"
       "GPS simulation options:\n"
-      "  -e <rinex_nav>              Navigation RINEX file (required)\n"
+      "  -e <rinex_nav>              Navigation RINEX file\n"
       "  -l <lat,lon,alt>            Static location (deg,deg,m)\n"
       "  -c <x,y,z>                  Static ECEF position (m)\n"
       "  -t <YYYY/MM/DD,hh:mm:ss>   Start time (UTC)\n"
       "  -n                          Stream-now mode (wall clock)\n"
       "  -d <seconds>                Duration\n"
       "  -P <prn[,prn...]>           Partial constellation PRN list\n"
-      "  -S <synth_spec>             Synthetic satellite config\n"
+      "  -S <synth_spec>             Synthetic satellites. One family per -S:\n"
+      "                              classic: PRN:force | PRN:overhead | "
+      "PRN:az/el\n"
+      "                              clone:   PRN:clone=<src_prn>\n"
+      "                              revive:  PRN:revive (requires -e)\n"
       "  -A <attack_spec>            Attack config\n"
       "  -J <dB>                     Jammer-to-signal ratio\n"
       "  -G <dB>                     Power boost for partial mode\n"
@@ -507,6 +601,10 @@ static void x300_usage(void) {
       "  --tx-advance-ns <ns>        Future TX start lead (default 250000000)\n"
       "  --addr <ip>                 USRP address (default 192.168.10.2)\n"
       "  --gain <dB>                 TX gain (default 0)\n"
+      "  --txvga1 <dB>               Accepted BladeRF compatibility option; "
+      "use --gain for X300\n"
+      "  --txvga2 <dB>               Accepted BladeRF compatibility option; "
+      "use --gain for X300\n"
       "  --clock-source <src>        internal/external/gpsdo (default "
       "internal)\n"
       "  --time-source <src>         internal/external/gpsdo (default "
@@ -523,9 +621,19 @@ static void x300_usage(void) {
       "  --trimble-start-offset-sec <s>  Future offset from tag (default 2)\n"
       "  --trimble-tag-lead-ms <ms>      Tag-to-PPS lead estimate (default "
       "500)\n"
-      "  --trimble-timeout-ms <ms>       TCP read timeout (default 3000)\n"
+      "  --trimble-timeout-ms <ms>       TCP read timeout (default 30000)\n"
       "  --trimble-leap-sec <sec>        UTC-to-GPS leap offset (default 18)\n"
       "  --trimble-tx-cal-ns <ns>        Calibration term in ns (default 0)\n"
+      "\n"
+      "Trimble RTCM ephemeris options:\n"
+      "  --trimble-rtcm-host <host>      RTCM TCP/NTRIP host\n"
+      "  --trimble-rtcm-port <port>      RTCM port (default 5018)\n"
+      "  --trimble-rtcm-mount <name>     Optional NTRIP mount point\n"
+      "  --trimble-rtcm-user <u[:p]>     Optional NTRIP credentials\n"
+      "  --trimble-rtcm-timeout-ms <ms>  RTCM connect/read timeout (default "
+      "30000)\n"
+      "  --trimble-rtcm-warmup-sec <s>   Warmup before TX (default 30)\n"
+      "  --trimble-rtcm-min-prns <n>     Minimum GPS 1019 PRNs (default 16)\n"
       "\n"
       "Examples:\n"
       "  x300tx -e hour0910.26n -l 21.0047844,105.8460541,5 \\\n"
@@ -537,6 +645,13 @@ static void x300_usage(void) {
       "    --trimble-time-tag-host 192.168.5.245 \\\n"
       "    --trimble-time-tag-port 5017 \\\n"
       "    --trimble-start-offset-sec 2 --gain 0\n"
+      "\n"
+      "  x300tx -e hour1120.26n -l 21.0047844,105.8460541,22 \\\n"
+      "    -P 22,14,30 -S 22:revive,14:revive,30:revive \\\n"
+      "    --trimble-time-tag-host 192.168.5.245 \\\n"
+      "    --trimble-time-tag-port 5017 \\\n"
+      "    --trimble-start-offset-sec 2 --txvga1 -35 \\\n"
+      "    --trimble-tag-lead-ms 788 --trimble-tx-cal-ns 580000\n"
       "\n");
 }
 
@@ -548,6 +663,7 @@ int main(int argc, char *argv[]) {
   int sv, i;
   int neph, ieph;
   ephem_t eph[EPHEM_ARRAY_SIZE][MAX_SAT];
+  ephem_t revive_scan_eph[EPHEM_ARRAY_SIZE][MAX_SAT];
   ephem_t active_eph[MAX_SAT];
   synth_ephem_store_t synth_eph;
   gpstime_t g0;
@@ -595,6 +711,7 @@ int main(int argc, char *argv[]) {
   double current_epoch_duration = 0.0;
 
   int timeoverwrite = FALSE;
+  int has_revive_mode = FALSE;
   int attack_enabled = FALSE;
   unsigned int attack_noise_state[MAX_SAT];
   double jam_js_linear = 10.0;
@@ -612,6 +729,11 @@ int main(int argc, char *argv[]) {
   long long tx_advance_ns = TX_START_LEAD_DEFAULT_NS;
   char usrp_addr[64] = "192.168.10.2";
   double tx_gain = 0.0;
+  int tx_gain_set = FALSE;
+  int compat_txvga1_set = FALSE;
+  int compat_txvga2_set = FALSE;
+  int compat_txvga1 = 0;
+  int compat_txvga2 = 0;
   char clock_source[32] = "internal";
   char time_source[32] = "internal";
   int prebuffer_count = PREBUFFER_DEFAULT;
@@ -627,6 +749,18 @@ int main(int argc, char *argv[]) {
   int trimble_leap_sec = TRIMBLE_LEAP_SEC_DEFAULT;
   long long trimble_tx_cal_ns = TRIMBLE_TX_CAL_NS_DEFAULT;
   double trimble_tag_mono = -1.0;
+
+  // Trimble RTCM ephemeris mode
+  char trimble_rtcm_host[256] = "";
+  int trimble_rtcm_port = 0;
+  char trimble_rtcm_mount[256] = "";
+  char trimble_rtcm_user[256] = "";
+  int trimble_rtcm_mode = FALSE;
+  int trimble_rtcm_alive = FALSE;
+  int trimble_rtcm_timeout_ms = TRIMBLE_TIMEOUT_MS_DEFAULT;
+  int trimble_rtcm_warmup_sec = TRIMBLE_RTCM_WARMUP_DEFAULT;
+  int trimble_rtcm_min_prns = TRIMBLE_RTCM_MIN_PRNS_DEFAULT;
+  rtcm3_nav_stream_t trimble_rtcm_stream;
 
   epoch_plan_t epoch_plan;
   size_t max_samps = 0;
@@ -650,6 +784,7 @@ int main(int argc, char *argv[]) {
   initAttackNoiseState(attack_noise_state);
   initSynthConfig(&synth_cfg);
   initSynthEphemStore(&synth_eph);
+  rtcm3_nav_init(&trimble_rtcm_stream);
 
   if (argc == 2 &&
       (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
@@ -712,6 +847,25 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(opt, "gain") == 0) {
       tx_gain = atof(val);
+      tx_gain_set = TRUE;
+      continue;
+    }
+    if (strcmp(opt, "txvga1") == 0) {
+      compat_txvga1 = atoi(val);
+      compat_txvga1_set = TRUE;
+      if (compat_txvga1 < -35 || compat_txvga1 > -4) {
+        fprintf(stderr, "ERROR: --txvga1 must be -35..-4 dB.\n");
+        return 1;
+      }
+      continue;
+    }
+    if (strcmp(opt, "txvga2") == 0) {
+      compat_txvga2 = atoi(val);
+      compat_txvga2_set = TRUE;
+      if (compat_txvga2 < 0 || compat_txvga2 > 25) {
+        fprintf(stderr, "ERROR: --txvga2 must be 0..25 dB.\n");
+        return 1;
+      }
       continue;
     }
     if (strcmp(opt, "clock-source") == 0) {
@@ -786,6 +940,55 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(opt, "trimble-tx-cal-ns") == 0) {
       trimble_tx_cal_ns = atoll(val);
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-host") == 0) {
+      strncpy(trimble_rtcm_host, val, sizeof(trimble_rtcm_host) - 1);
+      trimble_rtcm_host[sizeof(trimble_rtcm_host) - 1] = '\0';
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-port") == 0) {
+      trimble_rtcm_port = atoi(val);
+      if (trimble_rtcm_port <= 0 || trimble_rtcm_port > 65535) {
+        fprintf(stderr, "ERROR: --trimble-rtcm-port must be 1-65535.\n");
+        return 1;
+      }
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-mount") == 0) {
+      strncpy(trimble_rtcm_mount, val, sizeof(trimble_rtcm_mount) - 1);
+      trimble_rtcm_mount[sizeof(trimble_rtcm_mount) - 1] = '\0';
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-user") == 0) {
+      strncpy(trimble_rtcm_user, val, sizeof(trimble_rtcm_user) - 1);
+      trimble_rtcm_user[sizeof(trimble_rtcm_user) - 1] = '\0';
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-timeout-ms") == 0) {
+      trimble_rtcm_timeout_ms = atoi(val);
+      if (trimble_rtcm_timeout_ms < 100 || trimble_rtcm_timeout_ms > 30000) {
+        fprintf(stderr,
+                "ERROR: --trimble-rtcm-timeout-ms must be 100-30000.\n");
+        return 1;
+      }
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-warmup-sec") == 0) {
+      trimble_rtcm_warmup_sec = atoi(val);
+      if (trimble_rtcm_warmup_sec < 1 || trimble_rtcm_warmup_sec > 300) {
+        fprintf(stderr, "ERROR: --trimble-rtcm-warmup-sec must be 1-300.\n");
+        return 1;
+      }
+      continue;
+    }
+    if (strcmp(opt, "trimble-rtcm-min-prns") == 0) {
+      trimble_rtcm_min_prns = atoi(val);
+      if (trimble_rtcm_min_prns < 1 || trimble_rtcm_min_prns > MAX_SAT) {
+        fprintf(stderr, "ERROR: --trimble-rtcm-min-prns must be 1-%d.\n",
+                MAX_SAT);
+        return 1;
+      }
       continue;
     }
 
@@ -904,11 +1107,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (navfile[0] == 0) {
-    fprintf(stderr, "ERROR: Navigation RINEX file is required (-e).\n");
-    return 1;
-  }
-
   // Explicit GPS week/TOW overrides -t and -n
   if (gps_week_set && gps_tow_set) {
     g0.week = explicit_gps_week;
@@ -934,6 +1132,51 @@ int main(int argc, char *argv[]) {
             "ERROR: --trimble-time-tag-host and --trimble-time-tag-port "
             "must both be specified.\n");
     return 1;
+  }
+
+  // Activate Trimble RTCM mode
+  if (trimble_rtcm_host[0] != '\0') {
+    trimble_rtcm_mode = TRUE;
+    if (trimble_rtcm_port == 0)
+      trimble_rtcm_port = TRIMBLE_RTCM_PORT_DEFAULT;
+  } else if (trimble_rtcm_port > 0 || trimble_rtcm_mount[0] != '\0' ||
+             trimble_rtcm_user[0] != '\0') {
+    fprintf(stderr, "ERROR: --trimble-rtcm-host is required for RTCM mode.\n");
+    return 1;
+  }
+
+  if (trimble_rtcm_user[0] != '\0' && trimble_rtcm_mount[0] == '\0') {
+    fprintf(stderr,
+            "ERROR: --trimble-rtcm-user requires --trimble-rtcm-mount.\n");
+    return 1;
+  }
+
+  if (hasCloneMode(&synth_cfg) == TRUE && trimble_rtcm_mode == FALSE) {
+    fprintf(stderr, "ERROR: Clone mode requires --trimble-rtcm-host.\n");
+    return 1;
+  }
+
+  has_revive_mode = hasReviveMode(&synth_cfg);
+  if (has_revive_mode == TRUE) {
+    if (navfile[0] == 0) {
+      fprintf(stderr, "ERROR: Revive mode requires -e ephemeris file.\n");
+      return 1;
+    }
+    if (trimble_rtcm_mode == TRUE) {
+      fprintf(stderr, "ERROR: Revive mode cannot use live RTCM ephemeris; "
+                      "provide -e without --trimble-rtcm-host.\n");
+      return 1;
+    }
+  }
+
+  if (navfile[0] == 0 && trimble_rtcm_mode == FALSE) {
+    fprintf(stderr, "ERROR: Navigation RINEX file is required (-e) unless "
+                    "--trimble-rtcm-host is set.\n");
+    return 1;
+  }
+  if (navfile[0] != 0 && trimble_rtcm_mode == TRUE) {
+    fprintf(stderr, "WARNING: Ignoring navigation RINEX file because live RTCM "
+                    "ephemeris is enabled.\n");
   }
 
   // Mutual exclusion: Trimble vs -n vs explicit GPS epoch
@@ -983,36 +1226,147 @@ int main(int argc, char *argv[]) {
   // Read ephemeris
   ////////////////////////////////////////////////////////////
 
-  neph = readRinexNavAll(eph, &ionoutc, navfile);
-  if (neph == 0) {
-    fprintf(stderr, "ERROR: No ephemeris available.\n");
-    return 1;
-  } else if (neph == -1) {
-    fprintf(stderr, "ERROR: Ephemeris file not found.\n");
-    return 1;
-  }
+  if (trimble_rtcm_mode == TRUE) {
+    char err[RTCM3_NAV_ERR_SIZE];
+    rtcm3_nav_options_t rtcm_opt;
+    double warmup_deadline;
 
-  for (sv = 0; sv < MAX_SAT; sv++) {
-    if (eph[0][sv].vflg == 1) {
-      gmin = eph[0][sv].toc;
-      tmin = eph[0][sv].t;
-      break;
+    memset(&rtcm_opt, 0, sizeof(rtcm_opt));
+    rtcm_opt.host = trimble_rtcm_host;
+    rtcm_opt.port = trimble_rtcm_port;
+    rtcm_opt.timeout_ms = trimble_rtcm_timeout_ms;
+    rtcm_opt.mount_point =
+        trimble_rtcm_mount[0] != '\0' ? trimble_rtcm_mount : NULL;
+    rtcm_opt.credentials =
+        trimble_rtcm_user[0] != '\0' ? trimble_rtcm_user : NULL;
+
+    fprintf(stderr, "\n[RTCM] Connecting to %s:%d ...\n", trimble_rtcm_host,
+            trimble_rtcm_port);
+    if (rtcm_opt.mount_point != NULL) {
+      fprintf(stderr, "[RTCM] NTRIP mount: %s\n", trimble_rtcm_mount);
+      if (rtcm_opt.credentials != NULL)
+        fprintf(stderr, "[RTCM] NTRIP auth: enabled\n");
     }
-  }
 
-  gmax.sec = 0;
-  gmax.week = 0;
-  tmax.sec = 0;
-  tmax.mm = 0;
-  tmax.hh = 0;
-  tmax.d = 0;
-  tmax.m = 0;
-  tmax.y = 0;
-  for (sv = 0; sv < MAX_SAT; sv++) {
-    if (eph[neph - 1][sv].vflg == 1) {
-      gmax = eph[neph - 1][sv].toc;
-      tmax = eph[neph - 1][sv].t;
-      break;
+    if (rtcm3_nav_open(&trimble_rtcm_stream, &rtcm_opt, err, sizeof(err)) ==
+        FALSE) {
+      fprintf(stderr, "ERROR: %s\n", err);
+      return 1;
+    }
+
+    trimble_rtcm_alive = TRUE;
+    warmup_deadline = getMonotonicSeconds() + (double)trimble_rtcm_warmup_sec;
+    fprintf(stderr,
+            "[RTCM] Warming up up to %d s for at least %d GPS PRNs...\n",
+            trimble_rtcm_warmup_sec, trimble_rtcm_min_prns);
+
+    while (rtcm3_nav_valid_prns(&trimble_rtcm_stream) < trimble_rtcm_min_prns &&
+           getMonotonicSeconds() < warmup_deadline) {
+      int updated = FALSE;
+      int wait_ms = (int)((warmup_deadline - getMonotonicSeconds()) * 1000.0);
+
+      if (wait_ms < 0)
+        wait_ms = 0;
+      if (wait_ms > 1000)
+        wait_ms = 1000;
+
+      if (rtcm3_nav_pump(&trimble_rtcm_stream, wait_ms, &updated, err,
+                         sizeof(err)) == FALSE) {
+        fprintf(stderr, "ERROR: %s\n", err);
+        rtcm3_nav_close(&trimble_rtcm_stream);
+        return 1;
+      }
+    }
+
+    if (rtcm3_nav_valid_prns(&trimble_rtcm_stream) < trimble_rtcm_min_prns) {
+      fprintf(stderr,
+              "ERROR: Only %d GPS ephemerides available from RTCM after %d s "
+              "warmup (need %d).\n",
+              rtcm3_nav_valid_prns(&trimble_rtcm_stream),
+              trimble_rtcm_warmup_sec, trimble_rtcm_min_prns);
+      rtcm3_nav_close(&trimble_rtcm_stream);
+      return 1;
+    }
+
+    fprintf(stderr, "[RTCM] Warmup complete: %d GPS PRNs loaded.\n",
+            rtcm3_nav_valid_prns(&trimble_rtcm_stream));
+
+    memset(eph, 0, sizeof(eph));
+    rtcm3_nav_copy_ephemeris(&trimble_rtcm_stream, eph[0]);
+    neph = 1;
+
+    {
+      int iono_enable = ionoutc.enable;
+
+      memset(&ionoutc, 0, sizeof(ionoutc));
+      ionoutc.enable = iono_enable;
+      ionoutc.leapen = FALSE;
+      ionoutc.vflg = FALSE;
+      ionoutc.dtls = trimble_leap_sec;
+    }
+
+    if (getSetReferenceToc(eph[0], &gmin) == FALSE) {
+      fprintf(stderr, "ERROR: No RTCM ephemeris available after warmup.\n");
+      rtcm3_nav_close(&trimble_rtcm_stream);
+      return 1;
+    }
+    gps2date(&gmin, &tmin);
+    gmax = gmin;
+    tmax = tmin;
+
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      if (synth_cfg.mode[sv] != SYNTH_CLONE)
+        continue;
+
+      if (rtcm3_nav_has_prn(&trimble_rtcm_stream, synth_cfg.source_prn[sv]) !=
+          TRUE) {
+        fprintf(stderr,
+                "ERROR: Clone donor PRN %d not found in RTCM cache after %d s "
+                "warmup.\n",
+                synth_cfg.source_prn[sv], trimble_rtcm_warmup_sec);
+        rtcm3_nav_close(&trimble_rtcm_stream);
+        return 1;
+      }
+
+      fprintf(stderr, "Clone PRN %02d <- donor PRN %02d (IODE=%d)\n", sv + 1,
+              synth_cfg.source_prn[sv],
+              eph[0][synth_cfg.source_prn[sv] - 1].iode);
+    }
+  } else {
+    neph = readRinexNavAll(eph, &ionoutc, navfile);
+    if (neph == 0) {
+      fprintf(stderr, "ERROR: No ephemeris available.\n");
+      return 1;
+    } else if (neph == -1) {
+      fprintf(stderr, "ERROR: Ephemeris file not found.\n");
+      return 1;
+    }
+
+    if (has_revive_mode == TRUE)
+      memcpy(revive_scan_eph, eph, sizeof(revive_scan_eph));
+
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      if (eph[0][sv].vflg == 1) {
+        gmin = eph[0][sv].toc;
+        tmin = eph[0][sv].t;
+        break;
+      }
+    }
+
+    gmax.sec = 0;
+    gmax.week = 0;
+    tmax.sec = 0;
+    tmax.mm = 0;
+    tmax.hh = 0;
+    tmax.d = 0;
+    tmax.m = 0;
+    tmax.y = 0;
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      if (eph[neph - 1][sv].vflg == 1) {
+        gmax = eph[neph - 1][sv].toc;
+        tmax = eph[neph - 1][sv].t;
+        break;
+      }
     }
   }
 
@@ -1044,6 +1398,39 @@ int main(int argc, char *argv[]) {
   usrp->set_tx_freq(tune_req, 0);
   fprintf(stderr, "[UHD] TX freq:    %.0f Hz (actual %.0f Hz)\n", TX_FREQUENCY,
           usrp->get_tx_freq(0));
+
+  if (compat_txvga1_set || compat_txvga2_set) {
+    fprintf(stderr,
+            "[UHD] BladeRF gain option(s) accepted for CLI compatibility:");
+    if (compat_txvga1_set)
+      fprintf(stderr, " txvga1=%d", compat_txvga1);
+    if (compat_txvga2_set)
+      fprintf(stderr, " txvga2=%d", compat_txvga2);
+    fprintf(stderr, ". X300 RF gain is controlled by --gain");
+    if (tx_gain_set == FALSE)
+      fprintf(stderr, " (using default %.1f dB)", tx_gain);
+    fprintf(stderr, ".\n");
+  }
+
+  {
+    uhd::gain_range_t gain_range = usrp->get_tx_gain_range(0);
+    double min_gain = gain_range.start();
+    double max_gain = gain_range.stop();
+
+    if (tx_gain < min_gain) {
+      fprintf(stderr,
+              "[UHD] WARNING: requested TX gain %.1f dB is below device "
+              "minimum %.1f dB; clamping.\n",
+              tx_gain, min_gain);
+      tx_gain = min_gain;
+    } else if (tx_gain > max_gain) {
+      fprintf(stderr,
+              "[UHD] WARNING: requested TX gain %.1f dB is above device "
+              "maximum %.1f dB; clamping.\n",
+              tx_gain, max_gain);
+      tx_gain = max_gain;
+    }
+  }
 
   usrp->set_tx_gain(tx_gain, 0);
   fprintf(stderr, "[UHD] TX gain:    %.1f dB (actual %.1f dB)\n", tx_gain,
@@ -1155,7 +1542,10 @@ int main(int argc, char *argv[]) {
   }
 
   if (g0.week >= 0) {
-    if (timeoverwrite == TRUE) {
+    if (trimble_rtcm_mode == TRUE) {
+      ionoutc.wnt = gmin.week;
+      ionoutc.tot = (int)gmin.sec;
+    } else if (timeoverwrite == TRUE) {
       gpstime_t gtmp;
       datetime_t ttmp;
       double dsec;
@@ -1208,18 +1598,22 @@ int main(int argc, char *argv[]) {
   // Select ephemeris set
   ////////////////////////////////////////////////////////////
 
-  ieph = -1;
-  for (i = 0; i < neph; i++) {
-    gpstime_t ref_toc;
-    if (getSetReferenceToc(eph[i], &ref_toc) == TRUE &&
-        shouldAdvanceEphSet(ref_toc, g0) == TRUE) {
-      ieph = i;
-      break;
+  if (trimble_rtcm_mode == TRUE) {
+    ieph = 0;
+  } else {
+    ieph = -1;
+    for (i = 0; i < neph; i++) {
+      gpstime_t ref_toc;
+      if (getSetReferenceToc(eph[i], &ref_toc) == TRUE &&
+          shouldAdvanceEphSet(ref_toc, g0) == TRUE) {
+        ieph = i;
+        break;
+      }
     }
-  }
-  if (ieph == -1) {
-    fprintf(stderr, "ERROR: No current ephemeris set found.\n");
-    return 1;
+    if (ieph == -1) {
+      fprintf(stderr, "ERROR: No current ephemeris set found.\n");
+      return 1;
+    }
   }
 
   ////////////////////////////////////////////////////////////
@@ -1227,11 +1621,36 @@ int main(int argc, char *argv[]) {
   ////////////////////////////////////////////////////////////
 
   if (synth_cfg.enabled) {
-    gpstime_t synth_ref = g0;
-    synth_ref.sec = floor(synth_ref.sec / 16.0) * 16.0;
+    gpstime_t synth_ref = quantizeSynthReferenceTime(g0);
+    const ephem_t(*synth_source)[MAX_SAT] =
+        has_revive_mode == TRUE ? revive_scan_eph : eph;
 
     for (sv = 0; sv < MAX_SAT; sv++) {
-      if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
+      if (synth_cfg.mode[sv] == SYNTH_REVIVE) {
+        ephem_t revive_template;
+        gpstime_t template_toe;
+        double delta_sec;
+        double elev_deg;
+        int found_ephem = FALSE;
+
+        if (scanEphemerisForRevive(synth_source, neph, sv + 1, synth_ref,
+                                   xyz[0], &revive_template, &template_toe,
+                                   &delta_sec, &elev_deg,
+                                   &found_ephem) == FALSE) {
+          if (found_ephem == TRUE) {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: not above %.1f deg at any point "
+                    "in lookback window.\n",
+                    sv + 1, SYNTH_REVIVE_MIN_ELEVATION_DEG);
+          } else {
+            fprintf(stderr,
+                    "ERROR: Revive PRN %d: no ephemeris found within %.1fh "
+                    "lookback.\n",
+                    sv + 1, SYNTH_REVIVE_MAX_LOOKBACK_SEC / 3600.0);
+          }
+          return 1;
+        }
+      } else if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
           synth_cfg.mode[sv] == SYNTH_AZEL) {
         double az, el;
 
@@ -1244,17 +1663,18 @@ int main(int argc, char *argv[]) {
         }
 
         {
-          double max_z = GPS_ORBIT_RADIUS * sin(GPS_INCLINATION) * 0.9999;
           double test_sat[3];
-          azel2satpos(xyz[0], az, el, test_sat);
-          if (fabs(test_sat[2]) > max_z)
-            fprintf(stderr, "WARNING: PRN %d exceeds GPS inclination band.\n",
-                    sv + 1);
-        }
 
-        synthEphemeris(&synth_eph.eph[sv], xyz[0], az, el, synth_ref,
-                       synth_ref);
-        synth_eph.valid[sv] = TRUE;
+          if (synthAzelReachable(xyz[0], az, el, test_sat) == FALSE) {
+            fprintf(stderr,
+                    "WARNING: PRN %d az=%.1f el=%.1f deg lies outside the "
+                    "synthetic GPS inclination envelope at this location. "
+                    "Skipping.\n",
+                    sv + 1, az * R2D, el * R2D);
+            synth_cfg.mode[sv] = SYNTH_NONE;
+            continue;
+          }
+        }
 
         fprintf(stderr, "Synthetic PRN %02d: az=%.1f el=%.1f deg\n", sv + 1,
                 az * R2D, el * R2D);
@@ -1269,6 +1689,9 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+
+    refreshSyntheticEphemerisSet(&synth_eph, synth_source, neph, eph[ieph],
+                                 &ionoutc, &synth_cfg, xyz[0], synth_ref);
   }
 
   overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg, &synth_eph);
@@ -1362,26 +1785,11 @@ int main(int argc, char *argv[]) {
 
     // 30-second nav/channel refresh
     igrx = (int)(grx.sec * 10.0 + 0.5);
-    if (igrx % 300 == 0) {
-      for (i = 0; i < MAX_CHAN; i++)
-        if (chan[i].prn > 0)
-          generateNavMsg(grx, &chan[i], 0);
-
-      if (ieph + 1 < neph) {
-        gpstime_t next_toc;
-        if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
-            shouldAdvanceEphSet(next_toc, grx) == TRUE) {
-          ieph++;
-          overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
-                                       &synth_eph);
-          for (i = 0; i < MAX_CHAN; i++)
-            if (chan[i].prn != 0)
-              eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
-        }
-      }
-      allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
-                      &attack_cfg, &synth_cfg);
-    }
+    if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0)
+      refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
+                      neph, &ieph, active_eph, &synth_eph, &synth_cfg,
+                      &ionoutc, grx, elvmask, trimble_rtcm_mode,
+                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
 
     ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
     current_epoch_duration =
@@ -1547,25 +1955,11 @@ int main(int argc, char *argv[]) {
 
     // 30-second nav/channel refresh
     igrx = (int)(grx.sec * 10.0 + 0.5);
-    if (igrx % 300 == 0) {
-      for (i = 0; i < MAX_CHAN; i++)
-        if (chan[i].prn > 0)
-          generateNavMsg(grx, &chan[i], 0);
-
-      if (ieph + 1 < neph) {
-        gpstime_t next_toc;
-        if (getSetReferenceToc(eph[ieph + 1], &next_toc) == TRUE &&
-            shouldAdvanceEphSet(next_toc, grx) == TRUE) {
-          ieph++;
-          overlaySyntheticEphemerisSet(active_eph, eph[ieph], &synth_cfg,
-                                       &synth_eph);
-          for (i = 0; i < MAX_CHAN; i++)
-            if (chan[i].prn != 0)
-              eph2sbf(active_eph[chan[i].prn - 1], ionoutc, chan[i].sbf);
-        }
-      }
-      allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
-                      &attack_cfg, &synth_cfg);
+    if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0) {
+      refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
+                      neph, &ieph, active_eph, &synth_eph, &synth_cfg,
+                      &ionoutc, grx, elvmask, trimble_rtcm_mode,
+                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
 
       if (verb) {
         fprintf(stderr, "\n");
@@ -1614,6 +2008,7 @@ int main(int argc, char *argv[]) {
   free(ring);
   free(ring_sample_counts);
   free(iq_buff);
+  rtcm3_nav_close(&trimble_rtcm_stream);
 
   return 0;
 }

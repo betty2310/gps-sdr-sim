@@ -32,8 +32,8 @@ gpssim-lib.o: gpssim.c gpssim.h .user-motion-size
 player/rtcm3_nav.o: player/rtcm3_nav.cpp player/rtcm3_nav.hpp gpssim.h
 	${CXX} ${CXXFLAGS} -isystem . -c player/rtcm3_nav.cpp -o $@
 
-x300tx: player/x300tx.cpp gpssim-lib.o gpssim.h
-	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp gpssim-lib.o ${UHD_LIBS} ${LDFLAGS} -o $@
+x300tx: player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o gpssim.h
+	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o ${UHD_LIBS} ${LDFLAGS} -o $@
 
 BLADE_CFLAGS=$(shell pkg-config --cflags libbladeRF 2>/dev/null)
 BLADE_LIBS=$(shell pkg-config --libs libbladeRF 2>/dev/null || echo "-lbladeRF")

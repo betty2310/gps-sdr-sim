@@ -1,7 +1,7 @@
 # GPS-SDR-SIM
 
-GPS-SDR-SIM generates GPS baseband signal data streams, which can be converted 
-to RF using software-defined radio (SDR) platforms, such as 
+GPS-SDR-SIM generates GPS baseband signal data streams, which can be converted
+to RF using software-defined radio (SDR) platforms, such as
 [ADALM-Pluto](https://wiki.analog.com/university/tools/pluto), [bladeRF](http://nuand.com/), [HackRF](https://github.com/mossmann/hackrf/wiki), and [USRP](http://www.ettus.com/).
 
 ### Windows build instructions
@@ -36,37 +36,37 @@ $ gcc gpssim.c -lm -O3 -o gps-sdr-sim -DUSER_MOTION_SIZE=4000
 
 ### Generating the GPS signal file
 
-A user-defined trajectory can be specified in either a CSV file, which contains 
+A user-defined trajectory can be specified in either a CSV file, which contains
 the Earth-centered Earth-fixed (ECEF) user positions, or an NMEA GGA stream.
 The sampling rate of the user motion has to be 10Hz.
 The user is also able to assign a static location directly through the command line.
 
-The user specifies the GPS satellite constellation through a GPS broadcast 
+The user specifies the GPS satellite constellation through a GPS broadcast
 ephemeris file. The daily GPS broadcast ephemeris file (brdc) is a merge of the
-individual site navigation files into one. The archive for the daily file can 
-be downloaded from: https://cddis.nasa.gov/archive/gnss/data/daily/. Access 
+individual site navigation files into one. The archive for the daily file can
+be downloaded from: https://cddis.nasa.gov/archive/gnss/data/daily/. Access
 to this site requires registration, which is free.
 
 These files are then used to generate the simulated pseudorange and
-Doppler for the GPS satellites in view. This simulated range data is 
+Doppler for the GPS satellites in view. This simulated range data is
 then used to generate the digitized I/Q samples for the GPS signal.
 
-The bladeRF and ADALM-Pluto command line interface requires I/Q pairs stored as signed 
+The bladeRF and ADALM-Pluto command line interface requires I/Q pairs stored as signed
 16-bit integers, while the hackrf_transfer and gps-sdr-sim-uhd.py
 support signed bytes.
 
-HackRF, bladeRF and ADALM-Pluto can accept the default sample rate of 2.6MHz, 
+HackRF, bladeRF and ADALM-Pluto can accept the default sample rate of 2.6MHz,
 while the USRP2 requires an even integral decimator of 100 MHz, i.e. 2.5MHz.
 
 The simulation start time can be specified if the corresponding set of ephemerides
 is available. Otherwise the first time of ephemeris in the RINEX navigation file
 is selected.
 
-The maximum simulation duration time is defined by USER_MOTION_SIZE to 
+The maximum simulation duration time is defined by USER_MOTION_SIZE to
 prevent the output file from getting too large.
 
-The output file size can be reduced by using "-b 1" option to store 
-four 1-bit I/Q samples into a single byte. 
+The output file size can be reduced by using "-b 1" option to store
+four 1-bit I/Q samples into a single byte.
 You can use [bladeplayer](https://github.com/osqzss/gps-sdr-sim/tree/master/player)
 for bladeRF to playback the compressed file.
 
@@ -130,7 +130,7 @@ The user motion can be specified in either dynamic or static mode:
 
 ### Transmitting the samples
 
-The TX port of a particular SDR platform is connected to the GPS receiver 
+The TX port of a particular SDR platform is connected to the GPS receiver
 under test through a DC block and a fixed 50-60dB attenuator.
 
 #### BladeRF:
@@ -150,6 +150,7 @@ tx start
 ```
 
 You can also execute these commands via the `bladeRF-cli` script option as below:
+
 ```
 > bladeRF-cli -s bladerf.script
 ```
@@ -162,10 +163,12 @@ For untimed consumers such as `gps-sdr-sim-uhd.py`, set `-r 0` in
 #### HackRF:
 
 The output data have to be 8-bit signed I/Q samples.
+
 ```
 > gps-sdr-sim -e brdc0010.22n -b 8
 ```
-You can use `hackrf_transfer` tool in the HackRF host software. 
+
+You can use `hackrf_transfer` tool in the HackRF host software.
 
 ```
 > hackrf_transfer -t gpssim.bin -f 1575420000 -s 2600000 -a 1 -x 0
@@ -178,6 +181,7 @@ You can use `hackrf_transfer` tool in the HackRF host software.
 ```
 
 You can also use `tx_samples_from_file` tool included in the UHD examples:
+
 ```
 > tx_samples_from_file --file gpssim.bin --type short --rate 2500000 --freq 1575420000 --gain 0
 ```
@@ -194,19 +198,25 @@ The ADALM-Pluto device is expected to have its network interface up and running 
 via "pluto.local" by default.
 
 Default settings:
+
 ```
 > plutoplayer -t gpssim.bin
 ```
+
 Set TX attenuation:
+
 ```
 > plutoplayer -t gpssim.bin -a -30.0
 ```
+
 Default -20.0dB. Applicable range 0.0dB to -80.0dB in 0.25dB steps.
 
 Set RF bandwidth:
+
 ```
 > plutoplayer -t gpssim.bin -b 3.0
 ```
+
 Default 3.0MHz. Applicable range 1.0MHz to 5.0MHz.
 
 ### License
