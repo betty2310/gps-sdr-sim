@@ -11,7 +11,20 @@
       "Bash(.venv/bin/python3 analyze_ver3.py)",
       "Bash(tee /tmp/ver3_analysis.txt)",
       "Bash(python -c 'from pyubx2 import UBXReader; f=open\\('\\\\''dataset/23-4/2/COM3___9600_260423_071907.ubx'\\\\'','\\\\''rb'\\\\''\\); r=UBXReader\\(f,protfilter=2\\); ids={} *)",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Bash(open *)",
+      "Bash(adb devices *)",
+      "Bash(adb shell *)",
+      "Bash(rtk git *)",
+      "Bash(rtk ls *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk read *)",
+      "Bash(uhd_find_devices)",
+      "Bash(clang++ -std=c++17 -O2 tx_samples_from_file.cpp -o tx_samples_from_file -I/opt/homebrew/opt/uhd/include -I/opt/homebrew/opt/boost/include -L/opt/homebrew/opt/uhd/lib -luhd -L/opt/homebrew/opt/boost/lib -lboost_program_options)",
+      "Bash(./tx_samples_from_file --help)",
+      "Bash(otool -L tx_samples_from_file)",
+      "Bash(uhd_usrp_probe --args \"addr=192.168.10.2\")",
+      "Bash(grep -iA3 \"TX Dboard\\\\|RX Dboard\\\\|Subdev\\\\|RF Frontend\\\\|Antennas\")"
     ]
   }
 }

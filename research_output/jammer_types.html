@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GNSS Jammer Types — Evidence Map Visualization</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #131a30;
+    --panel-2: #1a2240;
+    --ink: #e8ecf8;
+    --muted: #9aa6c7;
+    --accent: #6ee7ff;
+    --accent-2: #ffd166;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --gap: #475569;
+    --grid: #233055;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Segoe UI, sans-serif;
+    background: radial-gradient(1200px 800px at 10% -10%, #1a2455 0%, transparent 60%),
+                radial-gradient(1000px 700px at 110% 10%, #2a1a55 0%, transparent 60%),
+                var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+  }
+  header {
+    padding: 48px 32px 24px;
+    text-align: center;
+    border-bottom: 1px solid var(--grid);
+  }
+  h1 {
+    font-size: 2.0rem;
+    margin: 0 0 8px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub { color: var(--muted); max-width: 760px; margin: 0 auto; }
+  main { max-width: 1200px; margin: 0 auto; padding: 32px; }
+  section { margin-bottom: 48px; }
+  h2 {
+    font-size: 1.3rem;
+    border-left: 4px solid var(--accent);
+    padding-left: 10px;
+    margin: 0 0 16px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--grid);
+    border-radius: 14px;
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .card h3 {
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+  .pill.cw { background: #1e3a8a; color: #bfdbfe; }
+  .pill.nb { background: #155e75; color: #a5f3fc; }
+  .pill.wb { background: #7c2d12; color: #fed7aa; }
+  .pill.chirp { background: #581c87; color: #e9d5ff; }
+  .pill.pulsed { background: #064e3b; color: #6ee7b7; }
+  .card .desc { color: var(--muted); font-size: 0.94rem; margin: 8px 0 12px; }
+  canvas.viz {
+    width: 100%;
+    height: 120px;
+    background: #060914;
+    border-radius: 10px;
+    border: 1px solid #0e1530;
+    display: block;
+  }
+  .specs {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 12px;
+    margin-top: 12px;
+    font-size: 0.85rem;
+  }
+  .specs dt { color: var(--muted); }
+  .specs dd { margin: 0; }
+
+  table.evmap {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    background: var(--panel);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  table.evmap th, table.evmap td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--grid);
+    text-align: center;
+  }
+  table.evmap th {
+    background: var(--panel-2);
+    font-weight: 600;
+    color: var(--accent);
+    position: sticky; top: 0;
+  }
+  table.evmap td:first-child, table.evmap th:first-child {
+    text-align: left;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .cell { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.78rem; display: inline-block; min-width: 80px; }
+  .strong { background: #14532d; color: #86efac; }
+  .moderate { background: #1e3a8a; color: #bfdbfe; }
+  .single { background: #78350f; color: #fde68a; }
+  .sim { background: #581c87; color: #e9d5ff; }
+  .gap { background: #1f2937; color: #94a3b8; }
+
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; font-size: 0.82rem; }
+  .legend span { padding: 4px 10px; border-radius: 6px; }
+
+  .summary-table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 12px; overflow: hidden; }
+  .summary-table th, .summary-table td { padding: 10px 12px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; font-size: 0.88rem; }
+  .summary-table th { background: var(--panel-2); color: var(--accent); }
+  .summary-table td:first-child { font-weight: 600; }
+
+  .threat-bar { height: 8px; background: #0e1530; border-radius: 4px; overflow: hidden; margin-top: 6px; }
+  .threat-bar > div { height: 100%; background: linear-gradient(90deg, var(--good), var(--warn), var(--bad)); }
+
+  footer { color: var(--muted); text-align: center; padding: 24px; font-size: 0.82rem; border-top: 1px solid var(--grid); }
+
+  details > summary { cursor: pointer; color: var(--accent); margin-top: 8px; font-size: 0.85rem; }
+  details p { color: var(--muted); font-size: 0.88rem; margin: 8px 0 0; }
+
+  .fadein { animation: fadein 0.6s ease both; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>GNSS Jammer Types — Evidence Map</h1>
+  <p class="sub">Five jammer classes referenced in <em>04_paper_draft.md</em> Section 5 (Table 1).
+  Each class shown with animated spectral signature, threat profile, and mitigation evidence strength.</p>
+</header>
+
+<main>
+
+<section class="fadein">
+  <h2>1. Jammer Class Gallery</h2>
+  <div class="grid">
+
+    <div class="card">
+      <h3><span class="pill cw">CW</span> Continuous Wave</h3>
+      <div class="desc">Single sinusoidal carrier at one frequency. Simplest interference signature — narrow spectral spike, constant amplitude.</div>
+      <canvas class="viz" data-type="cw"></canvas>
+      <dl class="specs">
+        <dt>Spectrum</dt><dd>Single tone, ~zero bandwidth</dd>
+        <dt>Source</dt><dd>Unintentional emitters, lab signal generators</dd>
+        <dt>Best mitigation</dt><dd>Adaptive Notch Filter (ANF) — <strong>Strong</strong> evidence</dd>
+        <dt>L1C/E1 CBOC gain</dt><dd>3–5 dB over L1 C/A (Jafarnia-Jahromi 2015)</dd>
+      </dl>
+      <details><summary>Why it matters</summary><p>CW is benchmark case. ANF cancel single tone optimally. Most controlled-lab anti-jamming demos use CW because behavior tractable analytically.</p></details>
+    </div>
+
+    <div class="card">
+      <h3><span class="pill nb">NB</span> Narrowband Multi-tone</h3>
+      <div class="desc">Multiple closely spaced tones. Bandwidth small relative to GNSS spreading code (~2 MHz for L1 C/A).</div>
+      <canvas class="viz" data-type="nb"></canvas>
+      <dl class="specs">
+        <dt>Spectrum</dt><dd>Cluster of tones, &lt; 500 kHz BW</dd>
+        <dt>Source</dt><dd>Spurious emissions, harmonics, intermod products</dd>
+        <dt>Best mitigation</dt><dd>FDAF, ANF (multi-notch) — <strong>Moderate</strong> evidence</dd>
+        <dt>Failure point</dt><dd>ANF order limit when tones &gt; notches available</dd>
+      </dl>
+      <details><summary>Why it matters</summary><p>Real spurious emitters rarely pure CW. NB tests algorithm scaling under more than one interferer. Eigenspace decomp (Broumandan 2016) targets this case.</p></details>
+    </div>
+
+    <div class="card">
+      <h3><span class="pill wb">WB</span> Wideband Gaussian</h3>
+      <div class="desc">Flat-spectrum noise-like jammer spanning GNSS band. Worst-case noise-floor elevator. Drives high-power outages.</div>
+      <canvas class="viz" data-type="wb"></canvas>
+      <dl class="specs">
+        <dt>Spectrum</dt><dd>Flat across &gt; 2 MHz</dd>
+        <dt>Source</dt><dd>High-power military-adjacent emitters, regional outages</dd>
+        <dt>Best mitigation</dt><dd>CRPA spatial nulling + INS bridging</dd>
+        <dt>INS limit</dt><dd>MEMS bridges only ~35 s (Lashley &amp; Bevly 2015)</dd>
+      </dl>
+      <details><summary>Why it matters</summary><p>Source of Eastern Mediterranean / Baltic outages (Murrian 2021, Osechas 2022). No corpus study demonstrates full mitigation against WB at field level — biggest deployment gap.</p></details>
+    </div>
+
+    <div class="card">
+      <h3><span class="pill chirp">Chirp</span> Swept FM (PPD)</h3>
+      <div class="desc">Linear frequency-modulated sweep across GNSS band. <strong>Dominant commercial threat</strong> — all 18 PPDs in Mitch 2011 use chirp.</div>
+      <canvas class="viz" data-type="chirp"></canvas>
+      <dl class="specs">
+        <dt>Spectrum</dt><dd>Sweep, ~10 MHz BW, sub-ms period</dd>
+        <dt>Source</dt><dd>Personal Privacy Devices (PPD), $20–$50 USD</dd>
+        <dt>Best mitigation</dt><dd>Pulse blanking after band-limit — <strong>Strong</strong></dd>
+        <dt>Mechanism</dt><dd>Front-end BW converts sweep → duty-cycled pulses</dd>
+        <dt>Blanking gain</dt><dd>10–15 dB J/N (Borio 2016)</dd>
+      </dl>
+      <details><summary>Why it matters</summary><p>Newark GBAS outage (Pullen &amp; Gao 2012) caused by single chirp PPD. Vector tracking row has <em>no</em> chirp entry — corpus gap despite chirp being top real-world threat.</p></details>
+    </div>
+
+    <div class="card">
+      <h3><span class="pill pulsed">Pulsed</span> DME / TACAN</h3>
+      <div class="desc">Aeronautical radionavigation pulse pairs in L5/E5a band (960–1215 MHz). Not malicious — legitimate signals that interfere with civil GNSS L5.</div>
+      <canvas class="viz" data-type="pulsed"></canvas>
+      <dl class="specs">
+        <dt>Spectrum</dt><dd>Pulse pairs, 12 μs spacing, MHz BW</dd>
+        <dt>Source</dt><dd>DME/TACAN ground stations (legal aviation infra)</dd>
+        <dt>Best mitigation</dt><dd>Pulse blanking — <strong>Strong</strong> (Bastide 2004, Gao 2013)</dd>
+        <dt>Threshold</dt><dd>&gt; 60% duty cycle → L5 parity with L1 C/A (Kim 2025)</dd>
+      </dl>
+      <details><summary>Why it matters</summary><p>Persistent over dense European airspace. CRPA row vs pulsed = <strong>Gap</strong> — spatial null steering untested against broadband DME signature.</p></details>
+    </div>
+
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>2. Side-by-Side Characteristic Table</h2>
+  <table class="summary-table">
+    <thead>
+      <tr><th>Class</th><th>Bandwidth</th><th>Time Behavior</th><th>Real-World Source</th><th>Operational Threat</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CW</td><td>~0 Hz</td><td>Constant</td><td>Lab, spurious emissions</td><td>Low — easy to mitigate <div class="threat-bar"><div style="width:20%"></div></div></td></tr>
+      <tr><td>NB</td><td>&lt; 500 kHz</td><td>Constant / slow</td><td>Harmonics, intermod</td><td>Low–Med <div class="threat-bar"><div style="width:35%"></div></div></td></tr>
+      <tr><td>WB</td><td>&gt; 2 MHz flat</td><td>Continuous noise</td><td>High-power state-level emitters</td><td><strong>Highest</strong> — caused field outages <div class="threat-bar"><div style="width:95%"></div></div></td></tr>
+      <tr><td>Chirp</td><td>~10 MHz swept</td><td>Sub-ms periodic</td><td>Commercial PPDs</td><td>High — most common commercial threat <div class="threat-bar"><div style="width:75%"></div></div></td></tr>
+      <tr><td>Pulsed</td><td>~MHz pulse</td><td>Pulse pairs, low duty</td><td>DME/TACAN aviation infra</td><td>Med — persistent in airspace <div class="threat-bar"><div style="width:55%"></div></div></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="fadein">
+  <h2>3. Evidence Map — Technique × Jammer Type (Table 1 from paper)</h2>
+  <div class="legend">
+    <span class="cell strong">Strong</span>
+    <span class="cell moderate">Moderate</span>
+    <span class="cell single">Single-group</span>
+    <span class="cell sim">Sim only</span>
+    <span class="cell gap">Gap</span>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="evmap">
+    <thead>
+      <tr>
+        <th>Technique Stage</th>
+        <th>Metric</th>
+        <th>CW</th><th>NB</th><th>WB</th><th>Chirp</th><th>Pulsed (DME)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>RF/Antenna (CRPA MVDR)</td><td>Null depth, SINR</td>
+        <td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>RF/Antenna (sparse array)</td><td>SINR, DoA</td>
+        <td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>RF/Antenna (DL beamforming)</td><td>SINR</td>
+        <td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>ADC/Pre-corr (pulse blanking)</td><td>C/N0, acq. prob.</td>
+        <td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell strong">Strong</span></td><td><span class="cell strong">Strong</span></td></tr>
+      <tr><td>ADC/Pre-corr (FDAF)</td><td>C/N0</td>
+        <td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td></tr>
+      <tr><td>Baseband (ANF)</td><td>C/N0, psrange bias</td>
+        <td><span class="cell strong">Strong</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Baseband (RIM/ZMNL signum)</td><td>C/N0, position err</td>
+        <td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td></tr>
+      <tr><td>Baseband (wavelet excision)</td><td>Acq. prob.</td>
+        <td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Baseband (TF/STFT excision)</td><td>SINR, classif.</td>
+        <td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Tracking (adaptive bandwidth)</td><td>Phase tracking err</td>
+        <td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Tracking (vector tracking)</td><td>JSR, J/N</td>
+        <td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Navigation (INS deep coupling)</td><td>Position err</td>
+        <td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Navigation (multi-layer FDE+RAIM)</td><td>Position err</td>
+        <td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell moderate">Moderate</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>ML classification</td><td>Classif. accuracy</td>
+        <td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell sim">Sim</span></td><td><span class="cell gap">Gap</span></td></tr>
+      <tr><td>Multi-constellation (passive)</td><td>Position err</td>
+        <td><span class="cell single">Single</span></td><td><span class="cell single">Single</span></td><td><span class="cell single">Single</span></td><td><span class="cell single">Single</span></td><td><span class="cell gap">Gap</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>4. Five Structural Gaps (Section 5.2)</h2>
+  <ol style="line-height:1.8;">
+    <li><strong>Pulsed (DME) vs CRPA spatial processing</strong> — entire row Gap.</li>
+    <li><strong>WB vs wavelet / STFT excision</strong> — no above-Sim entries.</li>
+    <li><strong>Chirp vs vector tracking</strong> — Gap despite chirp being dominant commercial threat.</li>
+    <li><strong>Any technique vs &gt; 60% duty-cycle DME</strong> — Gao 2013 last flight test, &gt; 10 years old.</li>
+    <li><strong>ML / DL vs real jammer signals</strong> — entire ML row stuck at Sim.</li>
+  </ol>
+</section>
+
+</main>
+
+<footer>
+  Source: research_output/04_paper_draft.md §4.1, §5.1, §5.2.
+  Visualization rendered client-side; no external dependencies.
+</footer>
+
+<script>
+// Spectral signature animations per jammer class
+const canvases = document.querySelectorAll('canvas.viz');
+
+function setup(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawGrid(ctx, w, h) {
+  ctx.strokeStyle = '#11203f';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const y = (h / 4) * i;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  for (let i = 0; i < 9; i++) {
+    const x = (w / 8) * i;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+}
+
+function renderers() {
+  return {
+    cw: (ctx, w, h, t) => {
+      drawGrid(ctx, w, h);
+      // single tall spike in spectrum view
+      const cx = w * 0.5 + Math.sin(t * 0.001) * 2;
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, '#bfdbfe'); grad.addColorStop(1, '#1e3a8a');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cx - 3, h * 0.15, 6, h * 0.8);
+      // baseline noise
+      ctx.fillStyle = 'rgba(100,150,200,0.25)';
+      for (let x = 0; x < w; x++) {
+        const n = Math.random() * 6;
+        ctx.fillRect(x, h - n, 1, n);
+      }
+    },
+    nb: (ctx, w, h, t) => {
+      drawGrid(ctx, w, h);
+      const tones = [0.35, 0.42, 0.5, 0.58, 0.65];
+      tones.forEach((p, i) => {
+        const cx = w * p + Math.sin(t * 0.002 + i) * 1.5;
+        const ht = h * (0.55 + 0.2 * Math.sin(t * 0.003 + i * 2));
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, '#a5f3fc'); grad.addColorStop(1, '#155e75');
+        ctx.fillStyle = grad;
+        ctx.fillRect(cx - 2, h - ht, 4, ht);
+      });
+      ctx.fillStyle = 'rgba(100,200,220,0.2)';
+      for (let x = 0; x < w; x++) { const n = Math.random() * 5; ctx.fillRect(x, h - n, 1, n); }
+    },
+    wb: (ctx, w, h, t) => {
+      drawGrid(ctx, w, h);
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, 'rgba(254,215,170,0.85)');
+      grad.addColorStop(1, 'rgba(124,45,18,0.85)');
+      ctx.fillStyle = grad;
+      for (let x = 0; x < w; x++) {
+        const base = h * 0.4;
+        const wob = Math.sin(x * 0.05 + t * 0.005) * 6 + (Math.random() - 0.5) * 14;
+        const top = base + wob;
+        ctx.fillRect(x, h - (h - top), 1, h - top);
+      }
+    },
+    chirp: (ctx, w, h, t) => {
+      drawGrid(ctx, w, h);
+      // sweep: a frequency that moves across the spectrum window
+      const phase = (t * 0.0008) % 1;
+      const cx = w * phase;
+      // bright sweep bar
+      const grad = ctx.createLinearGradient(cx - 30, 0, cx + 30, 0);
+      grad.addColorStop(0, 'rgba(233,213,255,0)');
+      grad.addColorStop(0.5, 'rgba(233,213,255,0.9)');
+      grad.addColorStop(1, 'rgba(88,28,135,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(cx - 30, h * 0.15, 60, h * 0.8);
+      // afterglow trail
+      ctx.fillStyle = 'rgba(168,85,247,0.15)';
+      for (let i = 1; i < 8; i++) {
+        const tx = (cx - i * 18 + w) % w;
+        ctx.fillRect(tx - 4, h * 0.3, 8, h * 0.5);
+      }
+      ctx.fillStyle = 'rgba(180,140,220,0.2)';
+      for (let x = 0; x < w; x++) { const n = Math.random() * 4; ctx.fillRect(x, h - n, 1, n); }
+    },
+    pulsed: (ctx, w, h, t) => {
+      drawGrid(ctx, w, h);
+      // time-domain pulse pairs scrolling
+      const period = 80;
+      const offset = (t * 0.15) % period;
+      ctx.fillStyle = '#6ee7b7';
+      for (let x = -offset; x < w; x += period) {
+        // pulse pair (DME)
+        const env = (p) => {
+          const sigma = 4;
+          return Math.exp(-(p * p) / (2 * sigma * sigma));
+        };
+        for (let dx = -10; dx <= 10; dx++) {
+          const a1 = env(dx);
+          const a2 = env(dx - 12);
+          const ht = h * 0.85 * Math.max(a1, a2);
+          if (ht > 1) ctx.fillRect(x + dx, h - ht, 1, ht);
+        }
+      }
+      ctx.fillStyle = 'rgba(110,231,183,0.2)';
+      for (let x = 0; x < w; x++) { const n = Math.random() * 3; ctx.fillRect(x, h - n, 1, n); }
+    }
+  };
+}
+
+const R = renderers();
+const states = [];
+canvases.forEach(c => {
+  const s = setup(c);
+  states.push({ canvas: c, ...s, type: c.dataset.type });
+});
+
+function frame(t) {
+  states.forEach(s => {
+    s.ctx.fillStyle = '#060914';
+    s.ctx.fillRect(0, 0, s.w, s.h);
+    R[s.type](s.ctx, s.w, s.h, t);
+  });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+window.addEventListener('resize', () => {
+  states.forEach(s => {
+    const r = setup(s.canvas);
+    s.ctx = r.ctx; s.w = r.w; s.h = r.h;
+  });
+});
+</script>
+
+</body>
+</html>

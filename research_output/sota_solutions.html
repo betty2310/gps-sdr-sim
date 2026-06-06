@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GNSS Anti-Jamming SOTA Solutions — Receiver Chain Mitigations</title>
+<style>
+  :root {
+    --bg: #0a1024;
+    --panel: #131a36;
+    --panel-2: #1a2447;
+    --ink: #e8ecf8;
+    --muted: #9aa6c7;
+    --accent: #6ee7ff;
+    --accent-2: #ffd166;
+    --accent-3: #c084fc;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --grid: #233055;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Segoe UI, sans-serif;
+    background:
+      radial-gradient(1200px 800px at 0% 0%, #1a2455 0%, transparent 55%),
+      radial-gradient(1000px 700px at 110% 10%, #4a1d6a 0%, transparent 55%),
+      radial-gradient(900px 600px at 50% 110%, #0a3a55 0%, transparent 60%),
+      var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+  }
+  header {
+    padding: 48px 32px 24px;
+    text-align: center;
+    border-bottom: 1px solid var(--grid);
+  }
+  h1 {
+    font-size: 2.1rem;
+    margin: 0 0 8px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-3), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub { color: var(--muted); max-width: 820px; margin: 0 auto; }
+  main { max-width: 1240px; margin: 0 auto; padding: 32px; }
+  section { margin-bottom: 56px; }
+  h2 {
+    font-size: 1.4rem;
+    border-left: 4px solid var(--accent);
+    padding-left: 12px;
+    margin: 0 0 6px;
+  }
+  h2 .sublabel { color: var(--muted); font-size: 0.85rem; font-weight: 400; margin-left: 10px; }
+
+  /* Receiver chain diagram */
+  .chain {
+    background: var(--panel);
+    border: 1px solid var(--grid);
+    border-radius: 16px;
+    padding: 24px;
+    margin-top: 12px;
+    overflow-x: auto;
+  }
+  .chain-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 12px;
+    min-width: 880px;
+    align-items: stretch;
+  }
+  .stage {
+    background: linear-gradient(180deg, var(--panel-2), #0e1530);
+    border: 1px solid var(--grid);
+    border-radius: 12px;
+    padding: 14px;
+    position: relative;
+  }
+  .stage h4 { margin: 0 0 6px; color: var(--accent); font-size: 0.95rem; }
+  .stage .tag { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+  .stage ul { margin: 8px 0 0; padding-left: 18px; font-size: 0.82rem; color: #cbd5e1; }
+  .stage ul li { margin: 3px 0; }
+  .arrow {
+    position: absolute;
+    top: 50%;
+    right: -10px;
+    transform: translateY(-50%);
+    z-index: 2;
+    color: var(--accent);
+    font-size: 18px;
+  }
+  .stage:last-child .arrow { display: none; }
+
+  /* Signal flow canvas */
+  .flow-canvas-wrap { position: relative; margin-top: 18px; }
+  canvas#flow {
+    width: 100%;
+    height: 100px;
+    background: #060914;
+    border-radius: 10px;
+    border: 1px solid var(--grid);
+    display: block;
+  }
+  .flow-labels {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* Theme cards */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--grid);
+    border-radius: 14px;
+    padding: 18px;
+    position: relative;
+  }
+  .card h3 { margin: 0 0 4px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .card h3 .badge {
+    font-size: 0.7rem; padding: 3px 8px; border-radius: 999px; font-weight: 700; letter-spacing: 0.5px;
+  }
+  .b-strong { background: #14532d; color: #86efac; }
+  .b-modstrong { background: #064e3b; color: #6ee7b7; }
+  .b-mod { background: #1e3a8a; color: #bfdbfe; }
+  .b-emerg { background: #78350f; color: #fde68a; }
+
+  .card .stage-tag { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .desc { color: #cbd5e1; font-size: 0.9rem; margin: 8px 0 12px; }
+  .specs { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 0.84rem; }
+  .specs dt { color: var(--muted); }
+  .specs dd { margin: 0; }
+  .num { color: var(--accent-2); font-weight: 700; }
+
+  details > summary { cursor: pointer; color: var(--accent); margin-top: 10px; font-size: 0.85rem; }
+  details p { color: var(--muted); font-size: 0.86rem; margin: 8px 0 0; }
+
+  /* Quantitative table */
+  table.quant {
+    width: 100%; border-collapse: collapse; background: var(--panel);
+    border-radius: 12px; overflow: hidden; font-size: 0.86rem;
+  }
+  table.quant th, table.quant td { padding: 10px 12px; border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+  table.quant th { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+  table.quant td:first-child { font-weight: 600; }
+  .lvl { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.74rem; font-weight: 600; }
+  .lvl-II { background: #14532d; color: #86efac; }
+  .lvl-III { background: #064e3b; color: #6ee7b7; }
+  .lvl-V { background: #581c87; color: #e9d5ff; }
+
+  /* Platform stack */
+  .platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .platform {
+    background: linear-gradient(180deg, var(--panel-2), #0e1530);
+    border: 1px solid var(--grid);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .platform h3 { margin: 0 0 6px; color: var(--accent-2); }
+  .platform .sw { font-size: 0.74rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stack-list { margin: 12px 0 0; padding: 0; list-style: none; }
+  .stack-list li {
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border-left: 3px solid var(--accent);
+    background: rgba(110, 231, 255, 0.05);
+    border-radius: 0 6px 6px 0;
+    font-size: 0.86rem;
+  }
+  .stack-list li.disabled { border-left-color: var(--bad); background: rgba(248, 113, 113, 0.06); color: #fca5a5; text-decoration: line-through; opacity: 0.7; }
+  .stack-list li small { display: block; color: var(--muted); font-size: 0.74rem; margin-top: 2px; text-decoration: none; }
+
+  footer { color: var(--muted); text-align: center; padding: 24px; font-size: 0.82rem; border-top: 1px solid var(--grid); }
+
+  .pulse { animation: pulse 2.4s infinite ease-in-out; }
+  @keyframes pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
+  .fadein { animation: fadein 0.6s ease both; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>State-of-the-Art Anti-Jamming Solutions</h1>
+  <p class="sub">Mitigation techniques across receiver chain (RF → ADC → Baseband → Tracking → Navigation) plus deployment-ready stacks per platform.
+  Source: <em>04_paper_draft.md</em> §4.2–4.6 (Themes T2–T6) + §7.3 (SOTA architecture 2026).</p>
+</header>
+
+<main>
+
+<section class="fadein">
+  <h2>1. Receiver Chain — Where Each Mitigation Sits <span class="sublabel">animated signal flow</span></h2>
+  <div class="chain">
+    <div class="chain-row">
+      <div class="stage">
+        <span class="tag">Stage 1</span>
+        <h4>RF / Antenna</h4>
+        <ul>
+          <li>CRPA MVDR null-steering</li>
+          <li>Sparse arrays (nested/coprime)</li>
+          <li>DL beamforming (CNN, Bi-LSTM)</li>
+        </ul>
+        <span class="arrow">→</span>
+      </div>
+      <div class="stage">
+        <span class="tag">Stage 2</span>
+        <h4>ADC / Pre-correlation</h4>
+        <ul>
+          <li>Pulse blanking (chirp, DME)</li>
+          <li>FDAF (frequency-domain adaptive)</li>
+          <li>Wavelet excision (WPT)</li>
+        </ul>
+        <span class="arrow">→</span>
+      </div>
+      <div class="stage">
+        <span class="tag">Stage 3</span>
+        <h4>Baseband Correlator</h4>
+        <ul>
+          <li>ANF (adaptive notch)</li>
+          <li>RIM / ZMNL (signum, Huber)</li>
+          <li>STFT / TFD excision</li>
+        </ul>
+        <span class="arrow">→</span>
+      </div>
+      <div class="stage">
+        <span class="tag">Stage 4</span>
+        <h4>Tracking Loops</h4>
+        <ul>
+          <li>Adaptive bandwidth (LBCA)</li>
+          <li>DSKF (Kalman tracking)</li>
+          <li>Vector tracking (VDLL/VFLL)</li>
+        </ul>
+        <span class="arrow">→</span>
+      </div>
+      <div class="stage">
+        <span class="tag">Stage 5</span>
+        <h4>Navigation Filter</h4>
+        <ul>
+          <li>INS deep coupling (MEMS)</li>
+          <li>Multi-layer FDE + RAIM</li>
+          <li>Multi-constellation fusion</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flow-canvas-wrap">
+      <canvas id="flow"></canvas>
+      <div class="flow-labels">
+        <div>raw RF + jammer</div>
+        <div>jammer attenuated</div>
+        <div>residuals excised</div>
+        <div>tracking-stable</div>
+        <div>position fixed</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>2. Five Mitigation Themes (T2–T6) <span class="sublabel">evidence strength + key numbers</span></h2>
+  <div class="grid">
+
+    <div class="card">
+      <h3>T2. Spatial / Antenna Array <span class="badge b-strong">Strong</span></h3>
+      <span class="stage-tag">RF Stage · 10 sources · Levels III–VII</span>
+      <div class="desc">Most mature theme. CRPA replaces single antenna with array; complex weights steer pattern nulls onto jammers while keeping gain toward satellites. Three independent 2016 groups converged on MVDR.</div>
+      <dl class="specs">
+        <dt>Null depth (ideal)</dt><dd><span class="num">&gt; 40 dB</span> HIL (Fernández-Prades, Broumandan, Cuntz 2016)</dd>
+        <dt>Null depth (real)</dt><dd><span class="num">20–25 dB</span> after calibration drift</dd>
+        <dt>J/N reduction</dt><dd><span class="num">30–40 dB</span> at antenna for directional jammers</dd>
+        <dt>DL beamforming</dt><dd><span class="num">+10 dB</span> SINR vs classical (Sim only, Ramezanpour 2020)</dd>
+        <dt>Sparse array gain</dt><dd>N² virtual aperture (Sim, Amin/Zhang 2016)</dd>
+      </dl>
+      <details><summary>Failure mode</summary><p>Phase/amplitude calibration binds real performance — mutual coupling, cable mismatch, thermal drift. Blind beamforming injects carrier-phase bias (RTK/PPP-relevant). Pulsed/DME column = Gap.</p></details>
+    </div>
+
+    <div class="card">
+      <h3>T3. Pre-Correlation Excision <span class="badge b-modstrong">Mod–Strong</span></h3>
+      <span class="stage-tag">ADC Stage · 9 sources · Levels II–VII</span>
+      <div class="desc">Only theme with field-level evidence for chirp and pulsed jammers. Operates before code correlation — imperfections propagate downstream. Three substreams: pulse blanking, FDAF, wavelet.</div>
+      <dl class="specs">
+        <dt>Blanking + FDAF</dt><dd>C/N0 within <span class="num">2 dB</span> of interference-free (Gao 2013, Level II flight test, Frankfurt DME)</dd>
+        <dt>Blanking for chirp</dt><dd><span class="num">10–15 dB</span> J/N (Borio 2016, Sim)</dd>
+        <dt>RIM/ZMNL acq</dt><dd>Within <span class="num">2 dB</span> of clean ref at J/N ≤ 30 dB</dd>
+        <dt>Signum ZMNL</dt><dd>Reduces pulse to <span class="num">~3 dB</span> noise elevation (vs 20–30 dB unmitigated)</dd>
+        <dt>WPT dual-stage</dt><dd><span class="num">+15 dB</span> over single-stage (Sim)</dd>
+      </dl>
+      <details><summary>Key threshold</summary><p>Above <span class="num">60% blanking duty cycle</span> L5/E5a correlation degrades to L1 C/A parity (Kim 2025) — kills L5 advantage exactly in dense DME airspace where most needed.</p></details>
+    </div>
+
+    <div class="card">
+      <h3>T4. Baseband (ANF, STFT, RIM) <span class="badge b-mod">Moderate</span></h3>
+      <span class="stage-tag">Correlator Stage · 10 sources · Levels III–VII</span>
+      <div class="desc">Most theoretically unified theme — Borio &amp; Closas (2019) RIM/ZMNL framework subsumes ANF, blanking, wavelet. Direct ANF-vs-RIM comparison reveals operational asymmetry.</div>
+      <dl class="specs">
+        <dt>ANF bias</dt><dd><span class="num">1–5 m</span> common-mode pseudorange delay under strong jamming (Borio &amp; Gioia 2021, USRP2 HIL)</dd>
+        <dt>RIM bias</dt><dd><span class="num">No</span> pseudorange bias (same setup)</dd>
+        <dt>ANF breakdown</dt><dd>Linear approx fails at J/N &gt; <span class="num">40 dB</span></dd>
+        <dt>STFT vs ANF</dt><dd>STFT wins for chirp/FMCW (resolves sweep in TF plane)</dd>
+        <dt>Multi-constellation</dt><dd>~<span class="num">50% position-err</span> reduction under RIM (single-group JRC HIL)</dd>
+      </dl>
+      <details><summary>Operational implication</summary><p>For RTK, PPP, timing receivers, dual-freq iono correction: <strong>do NOT use ANF as sole mitigation</strong> at J/N &gt; 30 dB. Use RIM (signum / Huber ZMNL). Critical for railway signalling, maritime, aviation precision approach.</p></details>
+    </div>
+
+    <div class="card">
+      <h3>T5. Tracking + Navigation Filter <span class="badge b-mod">Moderate</span></h3>
+      <span class="stage-tag">Tracking + Nav Stages · 9 sources · Levels II–VII</span>
+      <div class="desc">Widest architectural range — correlator bandwidth → vector tracking → tightly/deeply coupled GNSS/INS. Cumulative gains when stages integrated; cascade failures when not.</div>
+      <dl class="specs">
+        <dt>LBCA / DSKF</dt><dd>Phase tracking err ↓ <span class="num">30–50%</span>; lock <span class="num">6 dB longer</span> at J/N=30 dB (Cortés 2021/2023, Sim)</dd>
+        <dt>Vector tracking</dt><dd><span class="num">+3–5 dB</span> J/N over scalar (Lashley &amp; Bevly 2010, legacy)</dd>
+        <dt>Deep INS coupling</dt><dd><span class="num">+5–8 dB</span> beyond vector (legacy, 2010)</dd>
+        <dt>MEMS bridging limit</dt><dd><span class="num">~35 s</span> max; drift <span class="num">1–2 m/s</span></dd>
+        <dt>Cascaded layers</dt><dd>RIM+FDE+RAIM survives any single layer fail (Gioia &amp; Borio 2023)</dd>
+      </dl>
+      <details><summary>Vector-tracking risk</summary><p>Inter-channel coupling propagates corrupted data from partially jammed channel to all others — "contamination" failure mode. Chirp column = Gap despite chirp being top commercial threat.</p></details>
+    </div>
+
+    <div class="card">
+      <h3>T6. ML / DL Cross-Cutting <span class="badge b-emerg">Emerging</span></h3>
+      <span class="stage-tag">All stages · 8 sources · Levels V–VII (ALL Sim)</span>
+      <div class="desc">Fastest-growing theme, weakest evidence tier. Zero HIL or field validation. Sim-to-reality gap = field's #1 open problem (Radoš 2024).</div>
+      <dl class="specs">
+        <dt>SVM classification</dt><dd><span class="num">94.9%</span> across 6 jammer classes (Morales-Ferre 2019, Sim)</dd>
+        <dt>CNN classification</dt><dd><span class="num">91.4%</span> (same study)</dd>
+        <dt>VGG16 transfer</dt><dd>High accuracy on Zenodo Sim dataset (Swinney &amp; Woods 2021)</dd>
+        <dt>DL beamforming</dt><dd><span class="num">+10 dB</span> SINR vs classical at 100 snapshots (Sim)</dd>
+        <dt>Misclass rate</dt><dd><span class="num">5–9%</span> → wrong technique 1× per 10–20 encounters</dd>
+      </dl>
+      <details><summary>Failure modes invisible to Sim</summary><p>(a) AGC compression alters feature statistics; (b) multipath time-varying amplitude/phase; (c) front-end IF waveform variability across receivers; (d) ImageNet transfer mismatch (RF spectrograms ≠ natural images); (e) open-set failure — novel SDR jammer gets confidently misclassified.</p></details>
+    </div>
+
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>3. Quantitative Performance Anchors <span class="sublabel">named numbers from corpus</span></h2>
+  <table class="quant">
+    <thead>
+      <tr><th>Technique</th><th>Metric</th><th>Value</th><th>Source</th><th>Level</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CRPA MVDR null</td><td>Null depth (ideal)</td><td>&gt; 40 dB</td><td>Fernández-Prades / Broumandan / Cuntz 2016</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>CRPA MVDR null</td><td>Null depth (calibrated)</td><td>20–25 dB</td><td>Fernández-Prades / Cuntz 2016</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>DL beamforming</td><td>SINR gain</td><td>+10 dB</td><td>Ramezanpour 2020a/b</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>Blanking + FDAF (L5)</td><td>C/N0 vs clean</td><td>within 2 dB</td><td>Gao 2013 (Frankfurt flight)</td><td><span class="lvl lvl-II">II</span></td></tr>
+      <tr><td>Pulse blanking (chirp)</td><td>J/N gain</td><td>10–15 dB</td><td>Borio 2016</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>Signum ZMNL</td><td>Effective noise floor</td><td>~3 dB vs 20–30 dB</td><td>Borio &amp; Closas 2017</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>ANF (sole)</td><td>Pseudorange bias</td><td>1–5 m @ J/N ≥ 30 dB</td><td>Borio &amp; Gioia 2021 USRP2</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>RIM / Huber ZMNL</td><td>Pseudorange bias</td><td>0 m (same setup)</td><td>Borio &amp; Gioia 2021</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>LBCA</td><td>Phase tracking err</td><td>↓ 30–50%</td><td>Cortés 2021</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>DSKF tracking</td><td>Lock margin</td><td>+6 dB @ J/N=30 dB</td><td>Cortés 2023</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>Vector tracking</td><td>J/N over scalar</td><td>+3–5 dB</td><td>Lashley &amp; Bevly 2010 (legacy)</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>Deep INS coupling</td><td>Additional gain</td><td>+5–8 dB</td><td>Lashley &amp; Bevly 2010 (legacy)</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>MEMS INS bridging</td><td>Drift / max bridge</td><td>1–2 m/s · ~35 s</td><td>Lashley &amp; Bevly 2015</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>L5 vs L1 C/A (CBOC)</td><td>CW advantage</td><td>+3–5 dB</td><td>Jafarnia-Jahromi 2015</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>L5 blanking threshold</td><td>Duty-cycle ceiling</td><td>60% → parity w/ L1</td><td>Kim 2025</td><td><span class="lvl lvl-V">V</span></td></tr>
+      <tr><td>Multi-constellation</td><td>Position err reduction</td><td>~50% (single-group)</td><td>Borio &amp; Gioia 2021</td><td><span class="lvl lvl-III">III</span></td></tr>
+      <tr><td>SVM / CNN classify</td><td>Accuracy (Sim)</td><td>94.9% / 91.4%</td><td>Morales-Ferre 2019</td><td><span class="lvl lvl-V">V</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="fadein">
+  <h2>4. Platform-Differentiated Deployment Stack <span class="sublabel">§7.3 — matched to SWaP + accuracy</span></h2>
+  <div class="platforms">
+
+    <div class="platform">
+      <h3>Handheld / Consumer</h3>
+      <span class="sw">tiny SWaP, single antenna, sub-m goal</span>
+      <ul class="stack-list">
+        <li>RIM (signum ZMNL) at baseband <small>highest rejection, no pseudorange bias</small></li>
+        <li>Multi-constellation passive diversity <small>GPS + Galileo + BeiDou</small></li>
+        <li class="disabled">ANF as sole mitigation <small>introduces 1–5 m bias</small></li>
+      </ul>
+    </div>
+
+    <div class="platform">
+      <h3>Vehicular</h3>
+      <span class="sw">multi-freq feasible, MEMS available</span>
+      <ul class="stack-list">
+        <li>RIM at baseband</li>
+        <li>LBCA or DSKF tracking <small>30–50% phase err reduction</small></li>
+        <li>MEMS INS tight coupling <small>bridge brief outages</small></li>
+        <li>L1/L5 multi-freq + multi-constellation</li>
+        <li>L5 blanking duty-cycle monitor <small>watch &gt; 60% near DME</small></li>
+      </ul>
+    </div>
+
+    <div class="platform">
+      <h3>Avionics (highest stakes)</h3>
+      <span class="sw">GBAS, SBAS, precision approach</span>
+      <ul class="stack-list">
+        <li>CRPA null-steering at antenna <small>30–40 dB J/N reduction</small></li>
+        <li>Hybrid blanking + FDAF <small>Gao 2013 flight-proven for DME</small></li>
+        <li>RIM at correlator</li>
+        <li>Vector tracking</li>
+        <li>Tightly coupled INS <small>bridging during outage</small></li>
+        <li class="disabled">ANF sole baseband mitigation <small>fails precision approach bias budget</small></li>
+      </ul>
+    </div>
+
+    <div class="platform">
+      <h3>Timing (telecom, grid)</h3>
+      <span class="sw">absolute pseudorange = clock</span>
+      <ul class="stack-list">
+        <li>RIM over ANF <small>ANF common-mode bias corrupts clock</small></li>
+        <li>Multi-constellation holdover</li>
+        <li>Oscillator holdover at high J/N <small>front-end saturation regime</small></li>
+        <li class="disabled">ANF in known jamming regions <small>Borio &amp; Gioia GPS Solutions 2021</small></li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>5. Cumulative-Gain Principle <span class="sublabel">§7.1 — receiver chain as coupled system</span></h2>
+  <div class="chain">
+    <p style="margin: 0 0 14px; color: #cbd5e1;">No single technique is sufficient across full civilian threat spectrum (Morales-Ferre 2020). Each stage extends composite operating range. <strong>Gains compound when stages integrated.</strong></p>
+    <div style="display:grid; grid-template-columns: 1fr; gap: 8px;">
+      <div style="background: rgba(110,231,255,0.06); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 0 8px 8px 0;">
+        <strong>Stage 1 — Spatial CRPA</strong> reduces J/N by <span class="num">30–40 dB</span> for directional jammers
+      </div>
+      <div style="background: rgba(192,132,252,0.06); border-left: 3px solid var(--accent-3); padding: 10px 14px; border-radius: 0 8px 8px 0;">
+        <strong>Stage 2 — Pre-correlation blanking + FDAF</strong> handles residual pulsed/chirp energy
+      </div>
+      <div style="background: rgba(255,209,102,0.06); border-left: 3px solid var(--accent-2); padding: 10px 14px; border-radius: 0 8px 8px 0;">
+        <strong>Stage 3 — RIM at correlator</strong> addresses narrowband residuals, no pseudorange bias
+      </div>
+      <div style="background: rgba(110,231,255,0.06); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 0 8px 8px 0;">
+        <strong>Stage 4 — Vector tracking</strong> maintains lock through inter-channel state sharing
+      </div>
+      <div style="background: rgba(192,132,252,0.06); border-left: 3px solid var(--accent-3); padding: 10px 14px; border-radius: 0 8px 8px 0;">
+        <strong>Stage 5 — INS aiding</strong> bridges brief outages (≤ 35 s MEMS)
+      </div>
+      <div style="background: rgba(248,113,113,0.08); border-left: 3px solid var(--bad); padding: 12px 14px; border-radius: 0 8px 8px 0; margin-top: 10px;">
+        <strong style="color: #fca5a5;">⚠ Gap:</strong> No corpus study demonstrates full architecture vs high-power wideband at field level. Most consequential experimental gap in 2026 SOTA.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="fadein">
+  <h2>6. Failure Mode Map <span class="sublabel">§6 — what breaks each technique</span></h2>
+  <table class="quant">
+    <thead>
+      <tr><th>Failure mode</th><th>Affects</th><th>Provenance</th><th>Hard limit</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Front-end saturation</td><td>All baseband mitigation</td><td>Observed + Theory</td><td>AGC dynamic range 40–50 dB; no algorithm bypasses</td></tr>
+      <tr><td>Phase/amp calibration drift</td><td>CRPA, sparse array</td><td>HIL-demonstrated</td><td>Null depth 40→20 dB in practice</td></tr>
+      <tr><td>Threshold dependency</td><td>Blanking, ANF</td><td>HIL + Theory</td><td>ANF linear breaks &gt; 40 dB J/N; no real-time embedded demo</td></tr>
+      <tr><td>ML sim-only validation</td><td>All T6 techniques</td><td>Theory-predicted</td><td>5–9% misclass rate untested in real RF</td></tr>
+      <tr><td>MEMS INS drift</td><td>Deep coupling</td><td>HIL-demonstrated</td><td>35 s max bridge; sensor physics intrinsic</td></tr>
+      <tr><td>Open-set ML classification</td><td>Jammer-type classifier</td><td>Theory-predicted</td><td>Novel SDR jammer → confident wrong class → wrong mitigation</td></tr>
+      <tr><td>ANF common-mode delay bias</td><td>RTK, PPP, timing</td><td>HIL single-group</td><td>1–5 m silent bias; absorbed by clock but corrupts dual-freq + differential</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+
+<footer>
+  Source: research_output/04_paper_draft.md §4.2–4.6, §5.1, §6, §7.3.
+  Numbers labelled with evidence tier (II=field, III=HIL, V=Sim) per source-grading rubric §2.4.
+</footer>
+
+<script>
+// Signal flow visualization: jammer + GNSS signal piped through 5 stages
+const canvas = document.getElementById('flow');
+function setup() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, w: rect.width, h: rect.height };
+}
+let { ctx, w, h } = setup();
+window.addEventListener('resize', () => { ({ ctx, w, h } = setup()); });
+
+function draw(t) {
+  ctx.fillStyle = '#060914';
+  ctx.fillRect(0, 0, w, h);
+
+  // 5 stage dividers
+  ctx.strokeStyle = 'rgba(110,231,255,0.15)';
+  for (let i = 1; i < 5; i++) {
+    const x = (w / 5) * i;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+
+  const stages = 5;
+  for (let x = 0; x < w; x++) {
+    const stage = Math.floor((x / w) * stages);
+    const stageProg = (x / w) * stages - stage;
+
+    // GNSS desired signal — sine wave amplitude stays roughly constant
+    const gnss = Math.sin(x * 0.05 + t * 0.005) * 6 + 3;
+
+    // Jammer amplitude shrinks at each stage boundary
+    const jammerAmp = [22, 12, 6, 3, 1.5][stage];
+    const jammer = (Math.sin(x * 0.18 + t * 0.012) * 0.5 + 0.5) * jammerAmp +
+                   (Math.random() - 0.5) * (jammerAmp * 0.4);
+
+    const total = h / 2 + gnss - jammer;
+    const totalHi = h / 2 + gnss + jammer;
+
+    // jammer envelope (red shaded)
+    ctx.fillStyle = `rgba(248,113,113,${0.15 + 0.1 * (1 - stage / 5)})`;
+    ctx.fillRect(x, total, 1, totalHi - total);
+
+    // GNSS clean signal (green)
+    ctx.fillStyle = '#4ade80';
+    ctx.fillRect(x, h / 2 + gnss - 1, 1, 2);
+  }
+
+  // animated waveheads
+  for (let i = 0; i < 6; i++) {
+    const phase = (t * 0.0003 + i * 0.16) % 1;
+    const x = phase * w;
+    const stage = Math.floor((x / w) * stages);
+    const amp = [10, 6, 3, 1.5, 0.8][stage];
+    ctx.fillStyle = '#6ee7ff';
+    ctx.beginPath();
+    ctx.arc(x, h / 2 + Math.sin(t * 0.005 + i) * amp, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function frame(t) {
+  draw(t);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+
+</body>
+</html>

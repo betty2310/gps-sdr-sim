@@ -48,6 +48,49 @@ X300 hardware test later, using a FIFO:
 uv run tools/ubx_bladetx_cal.py processing/dataset/COM4___9600_260408_034137.ubx --inject 3,4,7,8 --trimble-tag-lead-ms 790 --trimble-start-offset-sec 2
 ```
 
+# Recommended X300 timing alignment, PRN 3 and 30
+
+Use this for the current X300 revive path with Trimble time-tag scheduling.
+The timing values below come from `processing/dataset/05-06/ver1` with injected
+PRNs `3,30`.
+
+```bash
+./x300tx -l 21.0047844,105.8460541,22 \
+    -e hour1560.26n \
+    -P 3,30 \
+    -S 3:revive,30:revive \
+    --addr 192.168.5.111 \
+    --antenna TX/RX \
+    --gain 10 \
+    --channel 1 \
+    --trimble-time-tag-host 192.168.5.245 \
+    --trimble-time-tag-port 5017 \
+    --trimble-start-offset-sec 2 \
+    --trimble-tag-lead-ms 788 \
+    --trimble-tx-cal-ns 580047 \
+    --gps-time-ppm 0.002894118
+```
+
+After a new UBX capture, re-estimate the timing offset and drift:
+
+```bash
+uv run tools/ubx_bladetx_cal.py \
+    processing/dataset/05-06/ver1/COM3___9600_260605_025844.ubx \
+    processing/dataset/05-06/ver1/COM4___9600_260605_025726.ubx \
+    --inject 3,30 \
+    --current-trimble-tx-cal-ns 580000 \
+    --current-gps-time-ppm 0 \
+    --trimble-tag-lead-ms 788 \
+    --trimble-start-offset-sec 2
+```
+
+Current dataset result:
+
+```text
+recommended next --trimble-tx-cal-ns: 580047
+recommended next --gps-time-ppm: +0.002894118
+```
+
 # Tue 7 2026 ngon
 
 ```bash
@@ -82,4 +125,32 @@ revive_candidates \
            --trimble-time-tag-host 192.168.5.245 \
            --trimble-time-tag-port 5017 \
            --trimble-start-offset-sec 2 --txvga1 -35 --trimble-tag-lead-ms 788 --trimble-tx-cal-ns 580000
+```
+
+```bash
+./x300tx -l 21.0047844,105.8460541,22 \
+    -e hour1120.26n \
+    -P 22,14,30 \
+    -S 22:revive,14:revive,30:revive \
+    --addr 192.168.10.2 \
+    --antenna TX/RX \
+    --gain 0 \
+    --trimble-time-tag-host 192.168.5.245 \
+    --trimble-time-tag-port 5017 \
+    --trimble-start-offset-sec 2 \
+    --trimble-tag-lead-ms 788 \
+    --trimble-tx-cal-ns 580000
+```
+
+
+```bash
+./tx_samples_from_file \
+           --file gpssim.bin \
+           --type short \
+           --rate 2500000 \
+           --freq 1575420000 \
+           --gain 20 \
+           --ant TX/RX \
+           --args "addr=192.168.10.2" \
+           --repeat --channel 1
 ```

@@ -1,0 +1,64 @@
+/x300tx -l 21.0047844,105.8460541,22 \
+                  -e hour1560.26n \
+                  -P 17,3,30 \
+                  -S 17:revive,3:revive,30:revive \
+                  --addr 192.168.5.111 \
+                  --antenna TX/RX \
+                  --gain 10 --channel 1 \
+                  --trimble-time-tag-host 192.168.5.245 \
+                  --trimble-time-tag-port 5017 \
+                  --trimble-start-offset-sec 2 \
+                  --trimble-tag-lead-ms 788 \
+                  --trimble-tx-cal-ns 580000
+xyz =  -1626551.8,   5730526.8,   2271897.4
+llh =   21.004784,  105.846054,        22.0
+
+[UHD] Configuring USRP X300 at 192.168.5.111 ...
+[INFO] [UHD] Mac OS; Clang version 21.0.0 (clang-2100.0.123.102); Boost_109000; UHD_4.10.0.0
+[INFO] [X300] X300 initialization sequence...
+[INFO] [X300] Maximum frame size: 1472 bytes.
+[INFO] [GPS] No GPSDO found
+[INFO] [X300] Radio 1x clock: 200 MHz
+[UHD] TX channel: 1
+[UHD] TX rate:    2500000 Hz (actual 2500000 Hz)
+[UHD] TX freq:    1575420000 Hz (actual 1575420000 Hz)
+[UHD] TX gain:    10.0 dB (actual 10.0 dB)
+[UHD] TX antenna: TX/RX
+[UHD] Clock src:  internal
+[UHD] Time src:   internal
+[WARNING] [0/Radio#1] Attempting to set tick rate to 0. Skipping.
+[UHD] Max samples per send: 364
+[TIMING] Generator sample rate locked to actual TX rate: 2500000.000000 Hz
+[TIMING] Epoch sample count: 250000 samples every 100.0 ms
+
+[TRIMBLE] Connecting to 192.168.5.245:5017 ...
+[TRIMBLE] Connected.
+[TRIMBLE] Tag received: UTC 2026-06-05 02:57:00
+[TRIMBLE] Config: start-offset=2 s  leap=18 s  tag-lead=788 ms  cal=580000 ns
+[TRIMBLE] Applied calibration: +580.000 us
+[TRIMBLE] Target GPS epoch: week 2421  tow 442640.001000000
+[TRIMBLE] Target datetime:  2026/06/05,02:57:20.001
+Start time = 2026/06/05,02:57:20.001 (2421:442640.001)
+Duration = streaming until interrupted
+Revive PRN 03: template from t-10640s (toe=2421:432000), el=32.4 deg at t_past
+Revive PRN 17: template from t-10640s (toe=2421:432000), el=46.8 deg at t_past
+Revive PRN 30: template from t-10640s (toe=2421:432000), el=38.1 deg at t_past
+03   74.9  32.4  22453259.9  10.0
+17  350.9  46.8  21839478.6   7.5
+30  205.0  38.1  21948261.4   8.4
+Partial constellation mode: rendering only PRNs 3 17 30
+
+[TX] Pre-buffering 5 epochs (0.5 s) ...
+[TX] Pre-buffer complete.
+[TRIMBLE] Tag lead estimate:     0.788 s
+[TRIMBLE] Planned delay (lead + offset): 2.788 s
+[TRIMBLE] Prep elapsed since tag: 11.406 ms
+[TRIMBLE] Remaining delay:        2776.594 ms
+[TRIMBLE] Accepted: scheduling TX at +2776.594 ms
+[TX] Scheduling first TX at hardware time +2776.594 ms
+[TX] First epoch sent (timed). Streaming ...
+
+Time into run = 565.2^C
+
+[TX] Shutting down ...
+[TX] Done. Total underflows: 1

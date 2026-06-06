@@ -69,6 +69,7 @@ Requires UHD library (`pkg-config --exists uhd`).
 | `--clock-source <src>` | `internal` | Clock source: `internal`, `external`, `gpsdo` |
 | `--time-source <src>` | `internal` | Time source: `internal`, `external`, `gpsdo` |
 | `--prebuffer <N>` | `5` | Pre-buffer epochs before TX start (1-50) |
+| `--channel <N>` | `0` | TX channel index; use `1` for RF B when the X300 maps A:0 to channel 0 and B:0 to channel 1 |
 | `--antenna <name>` | `TX/RX` | TX antenna port |
 
 ## How It Works
@@ -139,3 +140,6 @@ Verify the device is reachable:
 ```bash
 uhd_usrp_probe --args addr=192.168.10.2
 ```
+
+For an antenna connected to `RF B TX/RX`, use `--channel 1 --antenna TX/RX`
+when both A and B daughterboards are exposed by UHD.

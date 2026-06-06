@@ -4,7 +4,9 @@
 This tool is built for mixed real-sky plus injected-satellite validation runs.
 It looks for a common pseudorange residual between injected PRNs and the real
 PRNs that the receiver actually used in the navigation solution, then converts
-that residual into a recommended `--trimble-tx-cal-ns` adjustment.
+that residual into a recommended `--trimble-tx-cal-ns` adjustment. When enough
+epochs are available, it also estimates residual slope and maps that to the
+X300 `--gps-time-ppm` drift-compensation knob.
 
 The strongest path uses `UBX-NAV-SAT`:
 - real anchor group: GPS PRNs with `svUsed=Y` and not in `--inject`
@@ -293,6 +295,30 @@ def recommendation_from_real_minus_injected_m(real_minus_injected_m: float) -> i
     return int(round(-residual_sec * 1.0e9))
 
 
+def residual_slope_ns_per_s(residual_epochs: list[ResidualEpoch]) -> float | None:
+    if len(residual_epochs) < 2:
+        return None
+
+    x = [epoch.itow_sec - residual_epochs[0].itow_sec for epoch in residual_epochs]
+    y = [
+        epoch.real_minus_injected_m / C_LIGHT * 1.0e9
+        for epoch in residual_epochs
+    ]
+    x_mean = sum(x) / len(x)
+    y_mean = sum(y) / len(y)
+    denom = sum((value - x_mean) ** 2 for value in x)
+    if denom <= 0.0:
+        return None
+    return sum((xi - x_mean) * (yi - y_mean) for xi, yi in zip(x, y)) / denom
+
+
+def recommendation_ppm_delta(residual_epochs: list[ResidualEpoch]) -> float | None:
+    slope = residual_slope_ns_per_s(residual_epochs)
+    if slope is None:
+        return None
+    return -slope / 1000.0
+
+
 def classify_confidence(residual_epochs: list[ResidualEpoch], used_injected_prns: set[int]) -> str:
     count = len(residual_epochs)
     if count >= 50 and len(used_injected_prns) >= 2:
@@ -440,6 +466,7 @@ def print_capture_report(
     estimate: CaptureEstimate,
     inject_prns: set[int],
     current_trimble_tx_cal_ns: int,
+    current_gps_time_ppm: float,
     trimble_tag_lead_ms: int | None,
     trimble_start_offset_sec: int | None,
 ) -> list[int]:
@@ -521,6 +548,15 @@ def print_capture_report(
             f" min={min(residual_ns):+.2f} ns"
             f" max={max(residual_ns):+.2f} ns"
         )
+        slope_ns_s = residual_slope_ns_per_s(estimate.residual_epochs)
+        ppm_delta = recommendation_ppm_delta(estimate.residual_epochs)
+        if slope_ns_s is not None and ppm_delta is not None:
+            print(f"    residual slope: {slope_ns_s:+.6f} ns/s")
+            print(f"    recommended delta --gps-time-ppm: {ppm_delta:+.9f}")
+            print(
+                "    recommended next --gps-time-ppm:"
+                f" {current_gps_time_ppm + ppm_delta:+.9f}"
+            )
     print(f"    recommended delta --trimble-tx-cal-ns: {best_delta_ns:+d}")
     print(f"    recommended next --trimble-tx-cal-ns: {next_trimble_tx_cal_ns}")
     if trimble_tag_lead_ms is not None:
@@ -564,6 +600,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Current --trimble-tx-cal-ns value in your command (default: 0)",
     )
     parser.add_argument(
+        "--current-gps-time-ppm",
+        type=float,
+        default=0.0,
+        help="Current --gps-time-ppm value in your command (default: 0)",
+    )
+    parser.add_argument(
         "--trimble-tag-lead-ms",
         type=int,
         default=None,
@@ -584,17 +626,22 @@ def main() -> int:
 
     inject_prns = set(args.inject)
     all_delta_ns: list[int] = []
+    all_ppm_delta: list[float] = []
 
     for raw_path in args.ubx_logs:
         path = Path(raw_path)
         if not path.exists():
             parser.error(f"{path} does not exist")
         estimate = analyze_capture(path, inject_prns)
+        ppm_delta = recommendation_ppm_delta(estimate.residual_epochs)
+        if ppm_delta is not None:
+            all_ppm_delta.append(ppm_delta)
         all_delta_ns.extend(
             print_capture_report(
                 estimate,
                 inject_prns,
                 current_trimble_tx_cal_ns=args.current_trimble_tx_cal_ns,
+                current_gps_time_ppm=args.current_gps_time_ppm,
                 trimble_tag_lead_ms=args.trimble_tag_lead_ms,
                 trimble_start_offset_sec=args.trimble_start_offset_sec,
             )
@@ -614,7 +661,15 @@ def main() -> int:
         print(f"  keep --trimble-tag-lead-ms: {args.trimble_tag_lead_ms}")
     if args.trimble_start_offset_sec is not None:
         print(f"  keep --trimble-start-offset-sec: {args.trimble_start_offset_sec}")
+    if all_ppm_delta:
+        overall_ppm_delta = float(median(all_ppm_delta))
+        print(f"  best delta --gps-time-ppm: {overall_ppm_delta:+.9f}")
+        print(
+            "  best next --gps-time-ppm:"
+            f" {args.current_gps_time_ppm + overall_ppm_delta:+.9f}"
+        )
     print("  sign convention: positive trimble-tx-cal-ns advances the injected epoch")
+    print("  sign convention: positive gps-time-ppm advances generated GPS time over the run")
     return 0
 
 
