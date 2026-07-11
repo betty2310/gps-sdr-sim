@@ -89,14 +89,14 @@ Options:
   -r <lead_sec>    Stream lead time for -n timed start (default: 1.0)
   -i               Disable ionospheric delay for spacecraft scenario
   -p [fixed_gain]  Disable path loss and hold power level constant
-  -A <attack_spec> Attack config PRN:method[,PRN:method...]
+  -A <attack_spec> Legacy experimental config PRN:method[,PRN:method...]
                    Methods: normal,jam_drop,jam_noise,spoof_delay,spoof_nav
                    (Currently implemented: jam_drop,jam_noise)
   -n               Stream-now mode: use precise GPS time with stream lead
   -v               Show details about simulated channels
 ```
 
-### Jamming/Spoofing Scenario Input (Experimental)
+### Legacy Experimental Scenario Controls
 
 Use `-A` to set a method per PRN.
 
@@ -104,11 +104,17 @@ Use `-A` to set a method per PRN.
 > gps-sdr-sim -e brdc0010.22n -l 35.681298,139.766247,10 -A 3:jam_drop,11:jam_drop
 ```
 
-In the current implementation, `jam_drop` is applied by setting channel gain to zero for selected PRNs.
-`jam_noise` is applied by replacing selected PRN symbols with deterministic pseudo-random noise-like I/Q samples.
-Other methods (`spoof_delay`, `spoof_nav`) are accepted as placeholders for scenario planning.
+These controls modify simulated satellite channels; they do not implement independent RF jammer sources.
+`jam_drop` sets the selected simulated channel gain to zero and is therefore an oracle
+constellation-ablation baseline. `jam_noise` replaces selected PRN samples with deterministic
+pseudo-random noise-like I/Q, but fresh noise is generated at every output sample, so multiplying
+it by a C/A-code sign does not establish PRN selectivity. Other methods (`spoof_delay`,
+`spoof_nav`) are accepted as placeholders for scenario planning.
 
-See [docs/jamming-spoofing-scenarios.md](docs/jamming-spoofing-scenarios.md) for full scenario catalog.
+Do not use `jam_noise` to claim matched-code target/non-target rejection. See the
+[jamming mitigation architecture](docs/jamming-mitigation-architecture.md) for the planned
+independent `jammergen` and `iqmix` tools, and the
+[interference mitigation scenario catalog](docs/jamming-spoofing-scenarios.md) for valid research scenarios.
 
 The user motion can be specified in either dynamic or static mode:
 

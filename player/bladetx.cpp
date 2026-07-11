@@ -69,6 +69,12 @@ extern "C" {
 #define TX_START_LEAD_MAX_SEC 60.0
 #define TX_START_LEAD_MIN_SEC 0.02
 
+// GPS time-scale calibration knob (see docs/x300-timing-review-understanding.md,
+// Phase 4).  Scales generated GPS elapsed time to compensate a known TX
+// oscillator error.  Correct sign is ppm ~ -oscillator_error_ppm.
+#define GPS_TIME_PPM_DEFAULT 0.0
+#define GPS_TIME_PPM_MAX_ABS 1000.0
+
 ////////////////////////////////////////////////////////////
 // Signal handling
 ////////////////////////////////////////////////////////////
@@ -330,8 +336,49 @@ static int nextEpochSampleCount(epoch_plan_t *plan) {
   return sample_count;
 }
 
-static double getEpochDurationSec(int sample_count, double sample_rate_hz) {
-  return (double)sample_count / sample_rate_hz;
+// Increment GPS time WITHOUT the millisecond quantization that gpssim's
+// incGpsTime() applies (it does round(sec*1000)/1000).  Sub-millisecond
+// precision is essential for the --trimble-tx-cal-ns term and for deriving
+// block times from the sample count.
+static gpstime_t incGpsTimePrecise(gpstime_t g0, double dt) {
+  gpstime_t g1;
+
+  g1.week = g0.week;
+  g1.sec = g0.sec + dt;
+
+  while (g1.sec >= SECONDS_IN_WEEK) {
+    g1.sec -= SECONDS_IN_WEEK;
+    g1.week++;
+  }
+
+  while (g1.sec < 0.0) {
+    g1.sec += SECONDS_IN_WEEK;
+    g1.week--;
+  }
+
+  return g1;
+}
+
+static double getGpsTimeScale(double gps_time_ppm) {
+  return 1.0 + gps_time_ppm * 1.0e-6;
+}
+
+static double getGpsElapsedFromSamples(long long sample_offset,
+                                       double sample_rate_hz,
+                                       double gps_time_ppm) {
+  return ((double)sample_offset / sample_rate_hz) *
+         getGpsTimeScale(gps_time_ppm);
+}
+
+// GPS time of an arbitrary sample, computed from the ABSOLUTE sample index so
+// there is no per-epoch accumulation drift (Phase 3).
+static gpstime_t getGpsTimeAtSampleOffset(gpstime_t first_sample_gps_time,
+                                          long long sample_offset,
+                                          double sample_rate_hz,
+                                          double gps_time_ppm) {
+  return incGpsTimePrecise(
+      first_sample_gps_time,
+      getGpsElapsedFromSamples(sample_offset, sample_rate_hz, gps_time_ppm));
 }
 
 static int hasCloneMode(const synth_config_t *cfg) {
@@ -583,6 +630,9 @@ static void bladetx_usage(void) {
       "  --gps-week <N>              GPS week number\n"
       "  --gps-tow <sec>             GPS time of week (seconds)\n"
       "  --tx-advance-ns <ns>        Future TX start lead (default 250000000)\n"
+      "  --gps-time-ppm <ppm>        Scale generated GPS elapsed time "
+      "(default 0)\n"
+      "  --tx-time-scale-ppm <ppm>   Alias for --gps-time-ppm\n"
       "  --txvga1 <dB>               TX VGA1 gain [-35..-4] (default %d)\n"
       "  --txvga2 <dB>               TX VGA2 gain [0..25] (default %d)\n"
       "  --device <devstr>           bladeRF device string (default: auto)\n"
@@ -693,6 +743,7 @@ int main(int argc, char *argv[]) {
   int stream_forever = FALSE;
   double wall_clock_latch_sec = -1.0;
   double current_epoch_duration = 0.0;
+  double gps_time_ppm = GPS_TIME_PPM_DEFAULT;
 
   int timeoverwrite = FALSE;
   int has_revive_mode = FALSE;
@@ -742,6 +793,9 @@ int main(int argc, char *argv[]) {
   rtcm3_nav_stream_t trimble_rtcm_stream;
 
   epoch_plan_t epoch_plan;
+  gpstime_t first_sample_gps_time;
+  long long generated_samples = 0;
+  long long emitted_samples = 0;
 
   (void)path_loss;
   (void)ant_gain;
@@ -816,6 +870,22 @@ int main(int argc, char *argv[]) {
                 TX_START_LEAD_MAX_SEC);
         return 1;
       }
+      continue;
+    }
+    if (strcmp(opt, "gps-time-ppm") == 0 ||
+        strcmp(opt, "tx-time-scale-ppm") == 0) {
+      char *end = NULL;
+      errno = 0;
+      double parsed = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(parsed) || fabs(parsed) > GPS_TIME_PPM_MAX_ABS) {
+        fprintf(stderr,
+                "ERROR: --%s must be a finite ppm value in the range "
+                "-%.0f..%.0f.\n",
+                opt, GPS_TIME_PPM_MAX_ABS, GPS_TIME_PPM_MAX_ABS);
+        return 1;
+      }
+      gps_time_ppm = parsed;
       continue;
     }
     if (strcmp(opt, "txvga1") == 0) {
@@ -1358,13 +1428,25 @@ int main(int argc, char *argv[]) {
   }
   fprintf(stderr, "[BLADE] TX frequency: %u Hz\n", TX_FREQUENCY);
 
-  status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX, TX_SAMPLERATE, NULL);
-  if (status != 0) {
-    fprintf(stderr, "ERROR: Failed to set TX sample rate: %s\n",
-            bladerf_strerror(status));
-    goto cleanup_dev;
+  {
+    // Lock the generator to the ACTUAL device rate (Phase 1: exact rate
+    // contract).  The bladeRF derives its sample clock from a fractional-N
+    // synthesizer, so the achieved rate can differ from the request; feeding
+    // the requested value into the GPS-time model would leak a rate error
+    // straight into pseudorange.  Block-scoped so the goto cleanup paths do
+    // not cross its initialization.
+    unsigned int actual_samplerate = TX_SAMPLERATE;
+    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX, TX_SAMPLERATE,
+                                     &actual_samplerate);
+    if (status != 0) {
+      fprintf(stderr, "ERROR: Failed to set TX sample rate: %s\n",
+              bladerf_strerror(status));
+      goto cleanup_dev;
+    }
+    samp_freq = (double)actual_samplerate;
+    fprintf(stderr, "[BLADE] TX sample rate: %u sps (requested %u sps)\n",
+            actual_samplerate, (unsigned int)TX_SAMPLERATE);
   }
-  fprintf(stderr, "[BLADE] TX sample rate: %u sps\n", TX_SAMPLERATE);
 
   status = bladerf_set_bandwidth(dev, BLADERF_MODULE_TX, TX_BANDWIDTH, NULL);
   if (status != 0) {
@@ -1407,13 +1489,14 @@ int main(int argc, char *argv[]) {
     goto cleanup_dev;
   }
 
-  // Lock sample rate and epoch plan to device actual rate
-  samp_freq = (double)TX_SAMPLERATE;
+  // Epoch plan locked to the actual device rate captured above.
   delt = 1.0 / samp_freq;
   initEpochPlan(&epoch_plan, samp_freq);
   iq_buff_size = epoch_plan.max_samples;
 
   fprintf(stderr, "[TIMING] Generator sample rate: %.6f Hz\n", samp_freq);
+  fprintf(stderr, "[TIMING] GPS time scale: %.9f (%+.6f ppm)\n",
+          getGpsTimeScale(gps_time_ppm), gps_time_ppm);
   if (epoch_plan.max_samples == epoch_plan.base_samples) {
     fprintf(stderr, "[TIMING] Epoch sample count: %d samples every %.1f ms\n",
             epoch_plan.base_samples, EPOCH_TARGET_SEC * 1000.0);
@@ -1475,7 +1558,7 @@ int main(int argc, char *argv[]) {
     // Apply calibration term
     if (trimble_tx_cal_ns != 0) {
       double cal_sec = (double)trimble_tx_cal_ns * 1.0e-9;
-      g0 = incGpsTime(g0, cal_sec);
+      g0 = incGpsTimePrecise(g0, cal_sec);
       gps2date(&g0, &t0);
       fprintf(stderr, "[TRIMBLE] Applied calibration: %+.3f us\n",
               cal_sec * 1.0e6);
@@ -1671,7 +1754,7 @@ int main(int argc, char *argv[]) {
   for (sv = 0; sv < MAX_SAT; sv++)
     allocatedSat[sv] = -1;
 
-  grx = incGpsTime(g0, 0.0);
+  grx = g0;
   allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
                   &synth_cfg);
 
@@ -1725,25 +1808,47 @@ int main(int argc, char *argv[]) {
 
     installSignalHandlers();
 
-    // Advance to first epoch
-    ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
-    current_epoch_duration =
-        getEpochDurationSec(ring_sample_counts[ring_write], samp_freq);
-    grx = incGpsTime(grx, current_epoch_duration);
+    // The GPS time of the first RF sample IS g0.  Every block's time is then
+    // derived from the absolute sample index (Phase 3), so there is no
+    // per-epoch accumulation drift.  generated_samples tracks generation
+    // progress; emitted_samples (below) tracks what has been handed to the
+    // device.  They diverge by exactly the pre-buffer depth.
+    first_sample_gps_time = g0;
+    generated_samples = 0;
+    emitted_samples = 0;
 
     // Generate pre-buffer epochs
     for (int pb = 0; pb < prebuffer_count && !stop_requested; pb++) {
-      int sample_count = ring_sample_counts[ring_write];
+      int sample_count = nextEpochSampleCount(&epoch_plan);
+      gpstime_t block_start_gps_time = getGpsTimeAtSampleOffset(
+          first_sample_gps_time, generated_samples, samp_freq, gps_time_ppm);
+      gpstime_t block_end_gps_time =
+          getGpsTimeAtSampleOffset(first_sample_gps_time,
+                                   generated_samples + sample_count, samp_freq,
+                                   gps_time_ppm);
 
+      current_epoch_duration =
+          subGpsTime(block_end_gps_time, block_start_gps_time);
+      grx = block_end_gps_time;
+
+      // generateEpoch() expects the GPS time at the END of the block.
+      if (generated_samples == 0) {
+        fprintf(stderr, "[TIMING] First RF sample GPS epoch: week %d tow %.9f\n",
+                first_sample_gps_time.week, first_sample_gps_time.sec);
+        fprintf(stderr, "[TIMING] First generated epoch end: week %d tow %.9f\n",
+                block_end_gps_time.week, block_end_gps_time.sec);
+        fprintf(stderr, "[TIMING] TX sample clock: %.6f Hz\n", samp_freq);
+      }
+
+      ring_sample_counts[ring_write] = sample_count;
       generateEpoch(ring[ring_write], sample_count, chan, gain, active_eph,
                     &ionoutc, grx, staticLocationMode, current_epoch_duration,
                     delt, path_loss_enable, fixed_gain, ant_pat, attack_enabled,
                     &attack_cfg, attack_noise_state, jam_js_linear);
+      generated_samples += sample_count;
 
       ring_write = (ring_write + 1) % ring_size;
       ring_count++;
-      ring_sample_counts[(ring_write - 1 + ring_size) % ring_size] =
-          sample_count;
 
       // 30-second nav/channel refresh
       igrx = (int)(grx.sec * 10.0 + 0.5);
@@ -1754,10 +1859,6 @@ int main(int argc, char *argv[]) {
                         grx, elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
                         &trimble_rtcm_stream, &attack_cfg);
 
-      ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
-      current_epoch_duration =
-          getEpochDurationSec(ring_sample_counts[ring_write], samp_freq);
-      grx = incGpsTime(grx, current_epoch_duration);
       iumd = pb + 2;
     }
 
@@ -1914,6 +2015,8 @@ int main(int argc, char *argv[]) {
         goto cleanup_module;
       }
     }
+    // First RF sample is now committed to the device at tx_start_ts.
+    emitted_samples += (long long)ring_sample_counts[ring_read];
     ring_read = (ring_read + 1) % ring_size;
     ring_count--;
 
@@ -1932,6 +2035,7 @@ int main(int argc, char *argv[]) {
                 bladerf_strerror(status));
         break;
       }
+      emitted_samples += (long long)ring_sample_counts[ring_read];
       ring_read = (ring_read + 1) % ring_size;
       ring_count--;
     }
@@ -1944,13 +2048,24 @@ int main(int argc, char *argv[]) {
 
     while (status == 0 && !stop_requested &&
            (stream_forever == TRUE || iumd < numd)) {
-      int sample_count = ring_sample_counts[ring_write];
+      int sample_count = nextEpochSampleCount(&epoch_plan);
+      gpstime_t block_start_gps_time = getGpsTimeAtSampleOffset(
+          first_sample_gps_time, generated_samples, samp_freq, gps_time_ppm);
+      gpstime_t block_end_gps_time = getGpsTimeAtSampleOffset(
+          first_sample_gps_time, generated_samples + sample_count, samp_freq,
+          gps_time_ppm);
+
+      current_epoch_duration =
+          subGpsTime(block_end_gps_time, block_start_gps_time);
+      grx = block_end_gps_time;
+      ring_sample_counts[ring_write] = sample_count;
 
       // Generate next epoch into ring buffer
       generateEpoch(ring[ring_write], sample_count, chan, gain, active_eph,
                     &ionoutc, grx, staticLocationMode, current_epoch_duration,
                     delt, path_loss_enable, fixed_gain, ant_pat, attack_enabled,
                     &attack_cfg, attack_noise_state, jam_js_linear);
+      generated_samples += sample_count;
       ring_write = (ring_write + 1) % ring_size;
       ring_count++;
 
@@ -1969,6 +2084,7 @@ int main(int argc, char *argv[]) {
                     bladerf_strerror(status));
           break;
         }
+        emitted_samples += (long long)ring_sample_counts[ring_read];
         ring_read = (ring_read + 1) % ring_size;
         ring_count--;
       }
@@ -1992,13 +2108,11 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      ring_sample_counts[ring_write] = nextEpochSampleCount(&epoch_plan);
-      current_epoch_duration =
-          getEpochDurationSec(ring_sample_counts[ring_write], samp_freq);
-      grx = incGpsTime(grx, current_epoch_duration);
       iumd++;
 
-      fprintf(stderr, "\rTime into run = %4.1f", subGpsTime(grx, g0));
+      fprintf(stderr, "\rTime into run = %7.3f",
+              getGpsElapsedFromSamples(emitted_samples, samp_freq,
+                                       gps_time_ppm));
       fflush(stderr);
     }
 
