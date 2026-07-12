@@ -1,7 +1,7 @@
 # Makefile for Linux etc.
 
 .PHONY: all clean time test
-all: gps-sdr-sim
+all: gps-sdr-sim jammergen iqmix
 
 rtcm3_inspect: tools/rtcm3_inspect.c
 	${CC} ${CFLAGS} tools/rtcm3_inspect.c ${LDFLAGS} -o $@
@@ -19,9 +19,19 @@ LDFLAGS=-lm
 UHD_LIBS=$(shell pkg-config --libs uhd)
 BOOST_LIBDIRS=$(wildcard /opt/homebrew/lib /usr/local/lib)
 BOOST_LIBS=$(addprefix -L,$(BOOST_LIBDIRS)) -lboost_program_options -lboost_thread
+JAMMER_SOURCE_OBJ=tools/jammer_source.o
 
 gps-sdr-sim: gpssim.o
 	${CC} $< ${LDFLAGS} -o $@
+
+$(JAMMER_SOURCE_OBJ): tools/jammer_source.c tools/jammer_source.h
+	${CC} ${CFLAGS} -c tools/jammer_source.c -o $@
+
+jammergen: tools/jammergen.c $(JAMMER_SOURCE_OBJ)
+	${CC} ${CFLAGS} tools/jammergen.c $(JAMMER_SOURCE_OBJ) ${LDFLAGS} -o $@
+
+iqmix: tools/iqmix.c
+	${CC} ${CFLAGS} $< ${LDFLAGS} -o $@
 
 gpssim.o: .user-motion-size gpssim.h
 
@@ -34,6 +44,9 @@ player/rtcm3_nav.o: player/rtcm3_nav.cpp player/rtcm3_nav.hpp gpssim.h
 
 x300tx: player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o gpssim.h
 	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o ${UHD_LIBS} ${LDFLAGS} -o $@
+
+jammertx: player/jammertx.cpp $(JAMMER_SOURCE_OBJ) tools/jammer_source.h
+	${CXX} ${CXXFLAGS} -isystem . player/jammertx.cpp $(JAMMER_SOURCE_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
 
 BLADE_CFLAGS=$(shell pkg-config --cflags libbladeRF 2>/dev/null)
 BLADE_LIBS=$(shell pkg-config --libs libbladeRF 2>/dev/null || echo "-lbladeRF")
@@ -55,10 +68,15 @@ tests/test_revive_transform: tests/test_revive_transform.c gpssim.c gpssim.h
 tests/test_revive_scan: tests/test_revive_scan.c gpssim.c gpssim.h
 	${CC} ${CFLAGS} -DGPS_SDR_SIM_LIB -isystem . tests/test_revive_scan.c gpssim.c ${LDFLAGS} -o $@
 
-test: tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan
+tests/test_jammer_source: tests/test_jammer_source.c $(JAMMER_SOURCE_OBJ) tools/jammer_source.h
+	${CC} ${CFLAGS} -isystem . tests/test_jammer_source.c $(JAMMER_SOURCE_OBJ) ${LDFLAGS} -o $@
+
+test: jammergen iqmix tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan tests/test_jammer_source
 	tests/test_parse_synth_revive
 	tests/test_revive_transform
 	tests/test_revive_scan
+	tests/test_jammer_source
+	cd processing && uv run python ../tests/test_cw_dataset.py
 
 tx: tx_samples_from_file.cpp
 	${CXX} ${CXXFLAGS} $< ${UHD_LIBS} ${BOOST_LIBS} ${LDFLAGS} -o $@
@@ -74,7 +92,7 @@ tx: tx_samples_from_file.cpp
 	fi;
 
 clean:
-	rm -f gpssim.o gpssim-lib.o player/rtcm3_nav.o gps-sdr-sim x300tx bladetx revive_candidates tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan *.bin .user-motion-size
+	rm -f gpssim.o gpssim-lib.o player/rtcm3_nav.o tools/jammer_source.o gps-sdr-sim jammergen iqmix jammertx x300tx bladetx revive_candidates tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan tests/test_jammer_source *.bin .user-motion-size
 
 time: gps-sdr-sim
 	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 1

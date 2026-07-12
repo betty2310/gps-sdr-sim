@@ -1,0 +1,649 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inside jam_noise — from xorshift to a buried correlator</title>
+<style>
+  :root{
+    --serif: Bookerly, Georgia, Cambria, "Times New Roman", serif;
+    --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --bg:#faf8f3; --surface:#ffffff; --ink:#211d17; --muted:#6b6454;
+    --line:#e7e0d3; --accent:#b3541e; --accent-soft:#f6e9df;
+    --teal:#2f6f6a; --teal-soft:#e3efee; --danger:#9e2f1c; --danger-soft:#f8e6e1;
+    --code-bg:#f4f1ea; --code-line:#e5ddcd; --ok:#2f7d4f; --warn:#8a6d1f;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--serif); line-height:1.62; font-size:18px;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:56px 22px 120px}
+  header.hd{margin-bottom:8px}
+  .kicker{font-family:var(--mono); font-size:12.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 14px}
+  h1{font-size:38px; line-height:1.14; margin:0 0 12px; font-weight:600; letter-spacing:-.01em}
+  h2{font-size:26px; line-height:1.2; margin:56px 0 14px; font-weight:600; letter-spacing:-.01em}
+  h3{font-size:19.5px; margin:30px 0 8px; font-weight:600}
+  .lead{font-size:20px; color:#38332a}
+  p{margin:14px 0}
+  a{color:var(--accent)}
+  .measure{max-width:720px}
+  .muted{color:var(--muted)}
+  code{font-family:var(--mono); font-size:.86em; background:var(--code-bg);
+    border:1px solid var(--code-line); border-radius:5px; padding:.06em .34em}
+  pre{font-family:var(--mono); font-size:14px; line-height:1.55; background:var(--code-bg);
+    border:1px solid var(--code-line); border-radius:12px; padding:16px 18px; overflow-x:auto; margin:16px 0}
+  pre code{background:none; border:none; padding:0; font-size:inherit}
+  .cmt{color:#8a8270; font-style:italic}
+  .kw{color:#9a3b8f}
+  .fn{color:#2f6f6a}
+  .num{color:#b3541e}
+  .str{color:#5a7d2a}
+  .hl-change{background:#ffe7b8; border-radius:3px; padding:.02em .18em}
+  .hl-same{background:#dff0ee; border-radius:3px; padding:.02em .18em}
+
+  .why{background:linear-gradient(180deg,#fff8f1, #fdefe2);
+    border:1px solid #eec7ac; border-left:5px solid var(--accent);
+    border-radius:14px; padding:22px 24px; margin:26px 0}
+  .why h2{margin:0 0 6px; font-size:20px; color:#8a3d12}
+  .why p{margin:10px 0}
+
+  .card{background:var(--surface); border:1px solid var(--line);
+    border-radius:16px; padding:22px 24px; margin:22px 0;
+    box-shadow:0 1px 0 rgba(0,0,0,.02), 0 8px 30px -22px rgba(60,40,10,.25)}
+  .card h3:first-child{margin-top:0}
+  .fig-cap{font-size:14.5px; color:var(--muted); margin:10px 2px 0; font-family:var(--serif)}
+  .fig-cap b{color:#4a4437}
+
+  /* pipeline */
+  .pipe{display:flex; flex-wrap:wrap; gap:8px; align-items:stretch; margin:8px 0 2px}
+  .stage{flex:1 1 120px; min-width:118px; background:#fff; border:1px solid var(--line);
+    border-radius:12px; padding:12px 12px; position:relative}
+  .stage .n{font-family:var(--mono); font-size:11px; color:var(--accent); letter-spacing:.1em}
+  .stage .t{font-weight:600; font-size:15px; margin-top:3px}
+  .stage .d{font-size:13px; color:var(--muted); margin-top:4px; line-height:1.4}
+  .stage.on{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft)}
+  .stage{transition:border-color .15s, box-shadow .15s, transform .15s}
+  .stage:hover{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); transform:translateY(-2px)}
+
+  /* controls */
+  .ctl{display:flex; flex-wrap:wrap; gap:16px 22px; align-items:center; margin:6px 0 14px}
+  .ctl label{font-size:14px; color:var(--muted); font-family:var(--mono)}
+  input[type=range]{width:230px; accent-color:var(--accent); vertical-align:middle}
+  .readout{font-family:var(--mono); font-size:14px}
+  .big{font-family:var(--mono); font-weight:700; font-size:15px; color:var(--ink)}
+  .pill{display:inline-block; font-family:var(--mono); font-size:12.5px; padding:2px 9px;
+    border-radius:999px; background:var(--accent-soft); color:#8a3d12; border:1px solid #eec7ac}
+  button{font-family:var(--serif); font-size:15px; cursor:pointer; background:#fff;
+    border:1px solid var(--line); border-radius:9px; padding:7px 14px; color:var(--ink)}
+  button:hover{border-color:var(--accent); color:#8a3d12}
+  button.seg{border-radius:0}
+  .seggrp{display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden}
+  .seggrp button{border:none; border-right:1px solid var(--line); border-radius:0; background:#fff}
+  .seggrp button:last-child{border-right:none}
+  .seggrp button.active{background:var(--accent); color:#fff}
+  .seggrp.teal button.active{background:var(--teal); color:#fff}
+
+  canvas{max-width:100%; display:block}
+  .barwrap{display:flex; align-items:flex-end; gap:26px; height:190px; padding:10px 6px 0;
+    border-bottom:2px solid var(--line)}
+  .bar{width:88px; background:var(--teal); border-radius:8px 8px 0 0; position:relative;
+    transition:height .45s cubic-bezier(.2,.7,.2,1); min-height:2px}
+  .bar.jam{background:var(--danger)}
+  .bar .cap{position:absolute; top:-24px; left:0; right:0; text-align:center;
+    font-family:var(--mono); font-size:12.5px; color:var(--ink)}
+  .barlbl{width:88px; text-align:center; font-size:13.5px; color:var(--muted); margin-top:8px}
+  .barrow{display:flex; gap:26px; padding-left:6px}
+
+  /* quiz */
+  .q{margin:20px 0}
+  .q .stem{font-weight:600; margin-bottom:10px}
+  .opt{display:block; width:100%; text-align:left; margin:8px 0; padding:11px 14px;
+    border:1px solid var(--line); border-radius:10px; background:#fff}
+  .opt:hover{border-color:var(--accent)}
+  .opt.correct{border-color:var(--ok); background:#eef7f0}
+  .opt.wrong{border-color:var(--danger); background:#fbeae6}
+  .opt.dim{opacity:.55}
+  .fb{display:none; margin:10px 0 0; padding:12px 14px; border-radius:10px;
+    background:#f4f1ea; border:1px solid var(--code-line); font-size:15.5px}
+  .fb.show{display:block}
+  .fb.good{background:#eef7f0; border-color:#bfe0c8}
+  .fb.bad{background:#fbeae6; border-color:#e8c4ba}
+  details{margin:12px 0; border:1px solid var(--line); border-radius:10px; padding:2px 16px; background:#fff}
+  summary{cursor:pointer; font-weight:600; padding:12px 0}
+  details[open] summary{border-bottom:1px solid var(--line); margin-bottom:10px}
+
+  .sharp{background:linear-gradient(180deg,#fdf1ee,#fae7e1);
+    border:1px solid #e6b7ab; border-left:5px solid var(--danger); border-radius:14px;
+    padding:20px 24px; margin:26px 0}
+  .sharp h2{color:#8a2a17; margin-top:0}
+  .tag{font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.12em;
+    color:var(--teal); background:var(--teal-soft); border:1px solid #bcdcd8;
+    padding:2px 8px; border-radius:999px}
+  ul.tight li{margin:7px 0}
+  hr{border:none; border-top:1px solid var(--line); margin:44px 0}
+  .foot{color:var(--muted); font-size:14.5px; margin-top:40px}
+  table.mini{border-collapse:collapse; font-size:14.5px; margin:14px 0; width:100%}
+  table.mini th,table.mini td{border:1px solid var(--line); padding:8px 11px; text-align:left}
+  table.mini th{background:#f4f1ea; font-weight:600}
+  table.mini td.mono,table.mini th.mono{font-family:var(--mono); font-size:13px}
+  @media (max-width:600px){ body{font-size:17px} h1{font-size:30px} input[type=range]{width:160px} }
+</style>
+
+<div class="wrap">
+<header class="hd">
+  <p class="kicker">gps-sdr-sim · signal internals</p>
+  <h1>Inside <code>jam_noise</code>: from a 32-bit integer to a buried correlator</h1>
+  <p class="lead measure">One PRN under attack, traced end to end — the xorshift PRNG, the
+  Central-Limit Gaussian, the mysterious constant <code>72.31</code>, the dB→linear J/S,
+  and what actually reaches the receiver's correlator. Written for someone who already
+  knows what a despreader is.</p>
+</header>
+
+<div class="why measure">
+  <h2>Why trace this at all?</h2>
+  <p>You are building a spoofing/jamming <em>detector</em>. A detector is only as trustworthy as
+  your ground truth, and your ground truth is whatever waveform the simulator actually radiates —
+  not what the comment says it radiates. If you feed your classifier "jammed" samples that carry a
+  hidden fingerprint (a deterministic PRNG, a light-tailed distribution, a spectrum that doesn't
+  match the textbook), your detector may be learning the fingerprint instead of the physics.</p>
+  <p>So we follow a single attacked satellite from the eight lines of C that make its noise, all the
+  way to the correlator that's supposed to bury it — and we stop at every place where
+  <b>intent and implementation diverge</b>, because each divergence is a detection cue.</p>
+</div>
+
+<h2>The pipeline in one glance</h2>
+<p class="measure">Everything below is one PRN's journey through these seven stages. The first four are
+pure arithmetic on a 32-bit register; the last three are where it becomes RF.</p>
+
+<div class="card">
+  <div class="pipe" id="pipe">
+    <div class="stage" data-s="0"><div class="n">01</div><div class="t">xorshift32</div><div class="d">uniform int in [−250, 250]</div></div>
+    <div class="stage" data-s="1"><div class="n">02</div><div class="t">sum 4 ÷ 4</div><div class="d">CLT → bell curve</div></div>
+    <div class="stage" data-s="2"><div class="n">03</div><div class="t">÷ 72.31</div><div class="d">normalize to unit RMS</div></div>
+    <div class="stage" data-s="3"><div class="n">04</div><div class="t">× J/S</div><div class="d">dB → linear amplitude</div></div>
+    <div class="stage" data-s="4"><div class="n">05</div><div class="t">× code × carrier</div><div class="d">"matched-code" stamp</div></div>
+    <div class="stage" data-s="5"><div class="n">06</div><div class="t">Σ accumulate</div><div class="d">into shared I/Q stream</div></div>
+    <div class="stage" data-s="6"><div class="n">07</div><div class="t">correlator</div><div class="d">receiver despreads</div></div>
+  </div>
+  <p class="fig-cap"><b>Figure 0.</b> The seven stages. Hover a stage to preview its one-line role.
+  We'll build each one; the last stage is where the surprise lives.</p>
+</div>
+
+<h2>Stage 1 — xorshift32: the cheap uniform</h2>
+<p class="measure">The engine is a classic xorshift32 PRNG. It mangles a 32-bit state with three shift-XOR
+steps and returns a uniform integer in <code>[−250, +250]</code>. Every attacked PRN gets its own
+state, seeded deterministically from the golden-ratio constant — so the "noise" is byte-for-byte
+reproducible across runs.</p>
+
+<pre><code><span class="cmt">// gpssim.c:212 — the uniform engine (one call = one sample)</span>
+<span class="kw">int</span> <span class="fn">nextNoiseValue</span>(<span class="kw">unsigned int</span> *state) {
+  <span class="kw">unsigned int</span> x = *state;
+  x ^= x &lt;&lt; <span class="num">13</span>;
+  x ^= x &gt;&gt; <span class="num">17</span>;
+  x ^= x &lt;&lt; <span class="num">5</span>;
+  *state = x;
+  <span class="kw">return</span> ((<span class="kw">int</span>)(x % <span class="num">501</span>U) - <span class="num">250</span>);   <span class="cmt">// uniform on [-250, 250]</span>
+}
+
+<span class="cmt">// gpssim.c:203 — deterministic per-PRN seed (reproducible!)</span>
+noise_state[sv] = <span class="num">0x9e3779b9</span>U ^ ((<span class="kw">unsigned int</span>)(sv + <span class="num">1</span>) * <span class="num">0x45d9f3b</span>U);</code></pre>
+
+<p class="measure">On its own this is a flat distribution — every value from −250 to +250 is about equally likely.
+Flat is <em>not</em> what real noise looks like, which is why there's a Stage 2.</p>
+
+<h2>Stage 2 — the Central Limit trick makes it Gaussian</h2>
+<p class="measure">Real RF interference and thermal noise are <b>Gaussian</b> (the "AWGN" every receiver textbook
+assumes). A flat distribution is an unrealistically peaky, structured interferer. The fix is the
+oldest trick in Monte-Carlo: <b>add several uniforms together</b> and the sum drifts toward a bell
+curve by the Central Limit Theorem. The code sums exactly four and divides by four.</p>
+
+<pre><code><span class="cmt">// gpssim.c:237 — approximate Gaussian by summing 4 uniforms</span>
+<span class="kw">int</span> <span class="fn">nextGaussianNoise</span>(<span class="kw">unsigned int</span> *state) {
+  <span class="kw">int</span> sum = <span class="fn">nextNoiseValue</span>(state) + <span class="fn">nextNoiseValue</span>(state)
+          + <span class="fn">nextNoiseValue</span>(state) + <span class="fn">nextNoiseValue</span>(state);
+  <span class="kw">return</span> (sum / <span class="num">4</span>);
+}</code></pre>
+
+<div class="card">
+  <div class="ctl">
+    <label for="kSlider">uniforms summed&nbsp;<b>K</b> =</label>
+    <input type="range" id="kSlider" min="1" max="8" step="1" value="1">
+    <span class="readout">K = <span class="big" id="kVal">1</span></span>
+    <span class="readout">measured RMS ≈ <span class="big" id="kStd">–</span></span>
+    <span class="pill" id="kNote">flat — a bad jammer</span>
+  </div>
+  <canvas id="hist" width="760" height="230"></canvas>
+  <p class="fig-cap"><b>Figure 1.</b> Histogram of <span class="mono">20,000</span> samples from the real
+  xorshift engine, summing <b>K</b> uniforms and dividing by K. Drag from <b>K=1</b> (flat) to
+  <b>K=4</b> — the shape the code actually ships. Watch the flat top collapse into a bell and the
+  spread shrink. Push past 4 and it barely improves: four is the pragmatic stopping point.</p>
+</div>
+
+<p class="measure">Notice two things happen at once as K grows: the <em>shape</em> becomes Gaussian, and the
+<em>width</em> shrinks (a single uniform has RMS ≈ 144.6; four averaged have RMS ≈ 72.3). That
+shrinking width is the whole reason Stage 3 exists.</p>
+
+<h2>Stage 3 — why divide by exactly <code>72.31</code>?</h2>
+<p class="measure">This magic number is not tuned by hand — it's the theoretical standard deviation of the Stage 2
+output, computed from first principles:</p>
+
+<div class="card">
+  <table class="mini">
+    <tr><th>step</th><th class="mono">variance</th><th>reasoning</th></tr>
+    <tr><td>one uniform on [−250,250]</td><td class="mono">≈ 501²⁄12 ≈ 20 917</td><td>discrete-uniform variance</td></tr>
+    <tr><td>sum of 4 (independent)</td><td class="mono">× 4 = 83 667</td><td>variances add</td></tr>
+    <tr><td>÷ 4 scaling (the <code>/4</code>)</td><td class="mono">÷ 16 = 5 229</td><td>scaling squares</td></tr>
+    <tr><td><b>std dev = √5229</b></td><td class="mono"><b>= 72.31</b></td><td>← the constant</td></tr>
+  </table>
+  <div class="ctl" style="margin-top:8px">
+    <button id="resample">↻ draw 20,000 fresh samples</button>
+    <span class="readout">raw RMS <span class="big" id="rmsRaw">–</span> &nbsp;→&nbsp; after ÷72.31 <span class="big" id="rmsNorm">–</span></span>
+  </div>
+  <p class="fig-cap"><b>Figure 2.</b> Measured against theory. Dividing the noise by its own standard
+  deviation <b>standardizes it to unit RMS</b> (≈ 1.00). That's the point of the constant.</p>
+</div>
+
+<pre><code><span class="cmt">// gpssim.h:106</span>
+<span class="kw">#define</span> JAM_NOISE_RMS_SCALE <span class="num">72.31</span>
+
+<span class="cmt">// gpssim.c:3693 — standardize I and Q to unit RMS</span>
+ni = (<span class="kw">double</span>)<span class="fn">nextGaussianNoise</span>(state) / JAM_NOISE_RMS_SCALE;
+nq = (<span class="kw">double</span>)<span class="fn">nextGaussianNoise</span>(state) / JAM_NOISE_RMS_SCALE;</code></pre>
+
+<p class="measure"><b>Why unit RMS matters:</b> once the noise has RMS ≈ 1, the amplitude you multiply it by
+<em>is</em> its true RMS level. That makes the requested jammer-to-signal ratio <b>calibrated</b> —
+ask for 20 dB and you get 20 dB, not "20 dB times whatever leftover scale the PRNG happened to have."</p>
+
+<h2>Stage 4 — J/S: decibels become a multiplier</h2>
+<p class="measure">The command-line <code>-J</code> flag is in decibels. It becomes a linear <em>amplitude</em>
+multiplier — note the divide-by-20, not 10, because we're scaling voltage, not power.</p>
+
+<pre><code><span class="cmt">// gpssim.c:3181</span>
+jam_js_linear = <span class="fn">pow</span>(<span class="num">10.0</span>, attack_cfg.jam_js_db / <span class="num">20.0</span>);   <span class="cmt">// dB → amplitude</span></code></pre>
+
+<div class="card">
+  <div class="ctl">
+    <label for="jsSlider">−J&nbsp;</label>
+    <input type="range" id="jsSlider" min="0" max="40" step="1" value="20">
+    <span class="readout"><span class="big" id="jsDb">20</span> dB</span>
+    <span class="readout">amplitude ×<span class="big" id="jsAmp">10.0</span></span>
+    <span class="readout">power ×<span class="big" id="jsPow">100</span></span>
+  </div>
+  <div class="barrow">
+    <div style="display:flex; flex-direction:column; align-items:center">
+      <div class="barwrap" style="border:none; height:150px; align-items:flex-end">
+        <div class="bar" id="barSig" style="height:16px; background:var(--teal)"><span class="cap">signal ×1</span></div>
+        <div class="bar jam" id="barJam" style="height:150px"><span class="cap" id="barJamCap">jam ×10</span></div>
+      </div>
+      <div style="display:flex; gap:26px"><div class="barlbl">authentic</div><div class="barlbl">jammer</div></div>
+    </div>
+  </div>
+  <p class="fig-cap"><b>Figure 3.</b> Amplitude ratio (heights) at the chosen J/S. The default
+  <code>-J 20</code> makes the jammer 10× the signal amplitude — which is 100× the power. Drag toward
+  40 dB and the signal bar all but vanishes.</p>
+</div>
+
+<h2>Stage 5 — the two code paths, side by side</h2>
+<p class="measure">Inside the innermost sample loop, each channel takes one of two branches. This is the heart of
+the whole thing — and the diff is smaller than you'd expect.</p>
+
+<div class="card">
+  <div class="ctl"><button id="diffBtn">✦ highlight what changed</button>
+    <span class="muted" style="font-size:14px">yellow = replaced &nbsp;·&nbsp; blue = <b>identical</b></span></div>
+<pre><code><span class="cmt">// gpssim.c:3702 — NORMAL satellite (coherent BPSK)</span>
+ip = <span class="j-a">chan[i].dataBit</span> * <span class="j-s">chan[i].codeCA * cosTable512[iTable]</span> * <span class="j-b">gain[i]</span>;
+
+<span class="cmt">// gpssim.c:3696 — JAM_NOISE (same PRN, under attack)</span>
+noise_amp = <span class="j-b2">gain[i] * jam_js_linear</span>;
+ip = <span class="j-a2">ni</span> * <span class="j-s">chan[i].codeCA * cosTable512[iTable]</span> * <span class="j-b2">noise_amp</span>;</code></pre>
+  <p class="fig-cap"><b>Figure 4.</b> Only two things change. The deterministic <code>dataBit</code>
+  (±1 nav-message bit) becomes random Gaussian <code>ni</code>; the amplitude <code>gain</code> gets
+  multiplied by J/S. The <b>C/A code and carrier are untouched</b> — the noise still wears the
+  victim PRN's spreading code. That's the "matched-code" idea… and the reason for Stage 7's twist.</p>
+</div>
+
+<p class="measure">Read it out loud: <em>a jammed satellite emits random noise, at J/S-boosted amplitude, still
+stamped with its own code and carrier.</em> The nav data is destroyed (random bits), the power is
+lifted, the spreading code stays. Everything then accumulates into the <em>same</em> I/Q buffer as
+the untouched authentic satellites (<code>i_acc += ip</code>), so in your over-the-air injection the
+jammer rides right alongside the real sky.</p>
+
+<h2>Stage 7 — the correlator, and the twist</h2>
+<p class="measure">Here's the design <em>intent</em>, straight from the comment: because the noise carries the
+victim's C/A code, when the receiver despreads that PRN the noise "collapses" coherently and buries
+the correlator — while every <em>other</em> PRN's despreader sees an uncorrelated code and rejects it
+by the full ~30 dB of processing gain. A surgical strike on one satellite.</p>
+
+<p class="measure">That's the textbook <b>matched-code</b> jammer. But it only works if the noise is
+<b>slowly varying</b> (narrowband) relative to the code chips. Toggle the noise model below and watch
+what the receiver's two correlators actually output.</p>
+
+<div class="card">
+  <div class="ctl">
+    <span class="muted" style="font-size:14px">noise model:</span>
+    <span class="seggrp teal" id="noiseMode">
+      <button class="seg" data-m="band">narrowband (textbook intent)</button>
+      <button class="seg active" data-m="white">white per-sample (what the code does)</button>
+    </span>
+    <button id="corrRun">↻ re-run correlators</button>
+  </div>
+  <div class="barrow" style="margin-top:6px">
+    <div style="display:flex; flex-direction:column; align-items:center">
+      <div class="barwrap">
+        <div class="bar jam" id="corrV" style="height:60px"><span class="cap" id="corrVcap">–</span></div>
+        <div class="bar" id="corrK" style="height:60px"><span class="cap" id="corrKcap">–</span></div>
+      </div>
+      <div style="display:flex; gap:26px">
+        <div class="barlbl">victim PRN<br>correlator</div>
+        <div class="barlbl">other PRN<br>correlator</div>
+      </div>
+    </div>
+    <div style="align-self:center; padding-left:8px">
+      <div class="readout" style="font-size:15px">jammer energy concentration<br>on the victim vs others:</div>
+      <div class="big" id="concDb" style="font-size:30px; color:var(--danger)">–</div>
+      <div class="readout muted" id="concNote" style="max-width:230px"></div>
+    </div>
+  </div>
+  <p class="fig-cap"><b>Figure 5.</b> Live: two random ±1 codes, jammer = noise × victim-code,
+  correlated against each. <b>Narrowband</b> → the victim correlator towers (buried) and the other is
+  rejected — the intended matched-code strike. <b>White per-sample</b> → both correlators see the
+  <em>same</em> energy: no concentration. Multiplying white noise by a ±1 code leaves it white, so the
+  code stamp does nothing.</p>
+</div>
+
+<div class="sharp measure">
+  <h2>The sharp edge every detection researcher needs</h2>
+  <p>The shipped code redraws <code>ni</code>/<code>nq</code> <b>every sample</b>. White noise times a
+  deterministic ±1 code is still white noise — so the code/carrier modulation is
+  <b>statistically inert</b>. Measured concentration on the victim correlator:
+  <b>≈ 0 dB</b>, not the ~30 dB the comment promises. In practice <code>jam_noise</code> behaves as a
+  <b>broadband Gaussian noise jammer</b> that lifts the floor across the band, not a surgical
+  matched-code strike. That's not necessarily wrong for denial — broadband noise absolutely knocks a
+  receiver out at high J/S — but it is <em>not</em> what the name suggests, and it changes what your
+  detector should look for.</p>
+  <p style="margin-bottom:4px"><span class="tag">detection cues</span></p>
+  <ul class="tight" style="margin-top:8px">
+    <li><b>Deterministic PRNG.</b> Same seed constant every run → the injected "noise" is
+    byte-reproducible. A replay-aware detector, or anyone with the seed, can regenerate it exactly.</li>
+    <li><b>Light tails.</b> A CLT sum of only <b>4</b> uniforms is visibly more compact than a true
+    Gaussian, and it's hard-bounded to <code>[−250,250]</code>. Kurtosis / tail tests can separate it
+    from thermal noise.</li>
+    <li><b>Flat wideband spectrum.</b> Expecting energy concentrated in the victim's despread band?
+    You'll measure a flat noise floor instead — a tell that this is per-sample white, not matched-code.</li>
+    <li><b>Quantized amplitude.</b> The pre-scale noise takes only a small set of discrete integer
+    values; that granularity can survive into the samples.</li>
+  </ul>
+</div>
+
+<hr>
+
+<h2>Check yourself</h2>
+<p class="measure">Reasoning, not vocabulary. Pick an answer to see why it's right or wrong.</p>
+
+<div class="q card" data-correct="b" id="q1">
+  <div class="stem">1. You launch with <code>-J 26</code>. What linear <em>amplitude</em> multiplier does the jammer use, and why?</div>
+  <button class="opt" data-k="a">≈ 398 — because 10^(26/10)</button>
+  <button class="opt" data-k="b">≈ 20 — because 10^(26/20), amplitude uses /20</button>
+  <button class="opt" data-k="c">26 — decibels are already the multiplier</button>
+  <button class="opt" data-k="d">≈ 13 — half of 26</button>
+  <div class="fb" id="fb1"></div>
+</div>
+
+<div class="q card" data-correct="c" id="q2">
+  <div class="stem">2. You inject <code>jam_noise</code> on PRN 5 and put a spectrum analyzer on the output,
+  expecting energy piled up in PRN 5's band. Instead you see a flat, wideband noise floor across the
+  whole GPS L1 band. What's the best explanation?</div>
+  <button class="opt" data-k="a">Your J/S is too low; raise <code>-J</code></button>
+  <button class="opt" data-k="b">The analyzer is mis-triggered; matched-code energy is there but hidden</button>
+  <button class="opt" data-k="c">The noise is redrawn every sample (white), so the C/A-code stamp doesn't concentrate it — it stays broadband</button>
+  <button class="opt" data-k="d">The C/A code spread the narrowband noise, exactly as intended</button>
+  <div class="fb" id="fb2"></div>
+</div>
+
+<div class="q card" data-correct="b" id="q3">
+  <div class="stem">3. A teammate wants to make the jammer "more realistic" and deletes the
+  <code>/ JAM_NOISE_RMS_SCALE</code> division. What breaks?</div>
+  <button class="opt" data-k="a">Nothing — it's a cosmetic constant</button>
+  <button class="opt" data-k="b">The noise is no longer unit-RMS, so the requested J/S is off by ~72× and no longer calibrated</button>
+  <button class="opt" data-k="c">The PRNG stops being deterministic</button>
+  <button class="opt" data-k="d">The distribution stops being Gaussian</button>
+  <div class="fb" id="fb3"></div>
+</div>
+
+<div class="q card" data-correct="d" id="q4">
+  <div class="stem">4. Which single change would move this implementation <em>closest</em> to the textbook
+  matched-code jammer the comment describes?</div>
+  <button class="opt" data-k="a">Sum 8 uniforms instead of 4 in the CLT step</button>
+  <button class="opt" data-k="b">Increase the default J/S from 20 to 40 dB</button>
+  <button class="opt" data-k="c">Use a different seed constant per run</button>
+  <button class="opt" data-k="d">Make the noise bandlimited (slowly varying) instead of fresh every sample</button>
+  <div class="fb" id="fb4"></div>
+</div>
+
+<details class="measure">
+  <summary>5. Explain-why (open after you've formed an answer): what does the <code>codeCA × carrier</code>
+  factor actually accomplish in the shipped code?</summary>
+  <p>In the <em>intended</em> (narrowband) design it's everything: it spreads the slow noise across the
+  victim's code so only the victim's despreader collapses it back — concentration on one PRN,
+  processing-gain rejection everywhere else.</p>
+  <p>In the <em>shipped</em> (white per-sample) code it accomplishes essentially <b>nothing
+  statistically</b>: white noise × a ±1 sequence is still white noise with the same power and flat
+  spectrum. It's carried over from the normal-signal formula, but for concentration purposes it's a
+  no-op. The honest one-liner: <em>the stamp is there, but there's no slow structure for it to protect,
+  so the jammer is broadband.</em></p>
+</details>
+
+<hr>
+<h2>Recap</h2>
+<ul class="tight measure">
+  <li><b>xorshift32 → uniform</b> [−250,250], deterministically seeded per PRN (reproducible).</li>
+  <li><b>Sum 4 ÷ 4</b> pulls it toward Gaussian by the CLT — realism, but with light tails.</li>
+  <li><b>÷ 72.31</b> = ÷ its own std → unit-RMS noise, so J/S is calibrated.</li>
+  <li><b>10^(dB/20)</b> turns J/S decibels into an amplitude multiplier (voltage, hence /20).</li>
+  <li><b>Two code paths</b> differ by only <code>dataBit→ni</code> and <code>gain→gain×J/S</code>; code &amp; carrier are shared.</li>
+  <li><b>The twist:</b> per-sample white noise makes the matched-code stamp inert → a broadband jammer
+  (~0 dB concentration), not the ~30 dB surgical strike the comment claims — and it leaves a
+  deterministic, light-tailed, flat-spectrum fingerprint.</li>
+</ul>
+
+<p class="foot">Lesson generated for GPS spoofing-detection research on <code>gps-sdr-sim</code>.
+Line numbers refer to <code>gpssim.c</code> / <code>gpssim.h</code> in this repo. The correlator
+figures run a live ±1-code simulation in your browser; concentration numbers match a stand-alone
+check (white ≈ 0 dB, narrowband ≈ 30 dB one-sided processing gain, N = 1023).</p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  // ---------- real xorshift32 engine (faithful to gpssim.c) ----------
+  function makeState(seed){ return { s: (seed>>>0) || 0x6d2b79f5 }; }
+  function nextUniform(st){           // returns int in [-250,250]
+    var x = st.s>>>0;
+    if(x===0) x = 0x6d2b79f5;
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5;  x >>>= 0;
+    st.s = x>>>0;
+    return (x % 501) - 250;
+  }
+  function gaussK(st, K){             // sum K uniforms / K
+    var s=0; for(var i=0;i<K;i++) s += nextUniform(st);
+    return s / K;
+  }
+  function rms(arr){ var m=0,i; for(i=0;i<arr.length;i++) m+=arr[i]; m/=arr.length;
+    var v=0; for(i=0;i<arr.length;i++){var d=arr[i]-m; v+=d*d;} return Math.sqrt(v/arr.length); }
+
+  // ---------- Figure 1: CLT histogram ----------
+  var hist = document.getElementById('hist');
+  var hctx = hist.getContext('2d');
+  var kSlider = document.getElementById('kSlider');
+  var NB = 53, LO=-265, HI=265, NSAMP=20000;
+  function drawHist(K){
+    var st = makeState(0x9e3779b9 ^ (7*0x45d9f3b));
+    var bins = new Array(NB).fill(0), vals=[], i, v, b, w=(HI-LO)/NB;
+    for(i=0;i<NSAMP;i++){ v=gaussK(st,K); vals.push(v);
+      b=Math.floor((v-LO)/w); if(b<0)b=0; if(b>=NB)b=NB-1; bins[b]++; }
+    var mx=Math.max.apply(null,bins)||1;
+    var W=hist.width, H=hist.height, pad=26, baseY=H-24;
+    hctx.clearRect(0,0,W,H);
+    // baseline
+    hctx.strokeStyle="#d9d1c1"; hctx.lineWidth=1;
+    hctx.beginPath(); hctx.moveTo(pad,baseY); hctx.lineTo(W-pad,baseY); hctx.stroke();
+    var bw=(W-2*pad)/NB;
+    for(i=0;i<NB;i++){
+      var h=(bins[i]/mx)*(baseY-14);
+      var cx=LO+w*(i+0.5);
+      // color: bell core teal, tails orange-ish
+      hctx.fillStyle = Math.abs(cx) < 90 ? "#2f6f6a" : "#c98a5e";
+      hctx.fillRect(pad+i*bw+0.6, baseY-h, bw-1.2, h);
+    }
+    // zero tick + labels
+    hctx.fillStyle="#8a8270"; hctx.font="12px 'Cascadia Code',monospace";
+    var zx=pad+((0-LO)/(HI-LO))*(W-2*pad);
+    hctx.fillText("0", zx-3, baseY+16);
+    hctx.fillText("-250", pad-2, baseY+16);
+    hctx.fillText("+250", W-pad-30, baseY+16);
+    document.getElementById('kVal').textContent=K;
+    document.getElementById('kStd').textContent=rms(vals).toFixed(1);
+    var note=document.getElementById('kNote');
+    if(K===1){note.textContent="flat — a bad jammer";}
+    else if(K<4){note.textContent="getting there…";}
+    else if(K===4){note.textContent="what jam_noise ships";}
+    else {note.textContent="diminishing returns";}
+  }
+  kSlider.addEventListener('input', function(){ drawHist(parseInt(kSlider.value,10)); });
+  drawHist(1);
+
+  // ---------- Figure 2: RMS normalization ----------
+  function sampleGauss(n){ var st=makeState(0x9e3779b9 ^ ((1+((n*2654435761)>>>0))>>>0)); return st; }
+  var seedCtr = 3;
+  function doResample(){
+    var st = makeState(0x9e3779b9 ^ ((seedCtr++ * 0x45d9f3b)>>>0));
+    var vals=[], i; for(i=0;i<20000;i++) vals.push(gaussK(st,4));
+    var raw = rms(vals);
+    var norm=[]; for(i=0;i<vals.length;i++) norm.push(vals[i]/72.31);
+    document.getElementById('rmsRaw').textContent = raw.toFixed(2);
+    document.getElementById('rmsNorm').textContent = rms(norm).toFixed(3);
+  }
+  document.getElementById('resample').addEventListener('click', doResample);
+  doResample();
+
+  // ---------- Figure 3: J/S ----------
+  var jsSlider=document.getElementById('jsSlider');
+  function fmt(x){ if(x>=100) return Math.round(x).toLocaleString();
+    if(x>=10) return x.toFixed(1); return x.toFixed(2); }
+  function updJS(){
+    var db=parseInt(jsSlider.value,10);
+    var amp=Math.pow(10, db/20), pow=Math.pow(10, db/10);
+    document.getElementById('jsDb').textContent=db;
+    document.getElementById('jsAmp').textContent=fmt(amp);
+    document.getElementById('jsPow').textContent=fmt(pow);
+    var maxH=150, sigH=16;
+    // scale jam bar relative to signal, capped
+    var ratio=amp; var jamH=Math.min(maxH, sigH*ratio);
+    document.getElementById('barJam').style.height=jamH+"px";
+    document.getElementById('barJamCap').textContent="jam ×"+fmt(amp);
+  }
+  jsSlider.addEventListener('input', updJS); updJS();
+
+  // ---------- Figure 4: diff highlight ----------
+  var diffOn=false;
+  var mapA=['j-a','j-a2'], mapB=['j-b','j-b2'], mapS=['j-s'];
+  function styleDiff(cls, on, kind){
+    var els=document.getElementsByClassName(cls), i;
+    for(i=0;i<els.length;i++){
+      els[i].style.background = on ? (kind==='same'?'#dff0ee':'#ffe7b8') : 'transparent';
+      els[i].style.borderRadius='3px'; els[i].style.padding = on?'.02em .18em':'0';
+    }
+  }
+  document.getElementById('diffBtn').addEventListener('click', function(){
+    diffOn=!diffOn;
+    mapA.forEach(function(c){styleDiff(c,diffOn,'chg');});
+    mapB.forEach(function(c){styleDiff(c,diffOn,'chg');});
+    mapS.forEach(function(c){styleDiff(c,diffOn,'same');});
+    this.textContent = diffOn ? "✦ hide highlight" : "✦ highlight what changed";
+  });
+
+  // ---------- Figure 5: correlator simulation ----------
+  var N=1023, OS=4, TRIALS=40, mode='white';
+  function code(seed){ var st=makeState(seed>>>0), c=[], i;
+    for(i=0;i<N;i++) c.push(nextUniform(st)>0?1:-1); return c; }
+  var cv=code(11*0x45d9f3b), ck=code(22*0x45d9f3b);
+  function trialRMS(useWhite){
+    var accV=0, accK=0, t, s, chip, n, j, nconst, st;
+    for(t=0;t<TRIALS;t++){
+      st=makeState((1000+t*2654435761)>>>0);
+      nconst = gaussK(st,4)/72.31;
+      var yv=0, yk=0;
+      for(s=0;s<N*OS;s++){
+        chip = (s/OS)|0;
+        n = useWhite ? gaussK(st,4)/72.31 : nconst;
+        j = n*cv[chip];
+        yv += j*cv[chip];
+        yk += j*ck[chip];
+      }
+      accV += yv*yv; accK += yk*yk;
+    }
+    return { v:Math.sqrt(accV/TRIALS), k:Math.sqrt(accK/TRIALS) };
+  }
+  function runCorr(){
+    var r = trialRMS(mode==='white');
+    var mx = Math.max(r.v, r.k, 1e-9);
+    var maxH=170;
+    var hv = Math.max(3, (r.v/mx)*maxH), hk = Math.max(3, (r.k/mx)*maxH);
+    document.getElementById('corrV').style.height=hv+"px";
+    document.getElementById('corrK').style.height=hk+"px";
+    document.getElementById('corrVcap').textContent=Math.round(r.v);
+    document.getElementById('corrKcap').textContent=Math.round(r.k);
+    var conc = 20*Math.log10(r.v/Math.max(r.k,1e-9));
+    document.getElementById('concDb').textContent=(conc>=0?"+":"")+conc.toFixed(0)+" dB";
+    var note=document.getElementById('concNote');
+    if(mode==='white'){
+      note.innerHTML="≈ 0 dB. The stamp is inert; both correlators drown equally. <b>Broadband jammer.</b>";
+      document.getElementById('concDb').style.color="#8a6d1f";
+    } else {
+      note.innerHTML="Huge. Victim buried, other PRN rejected by processing gain. <b>The textbook intent.</b>";
+      document.getElementById('concDb').style.color="#9e2f1c";
+    }
+  }
+  var modeBtns=document.querySelectorAll('#noiseMode button');
+  modeBtns.forEach(function(b){
+    b.addEventListener('click', function(){
+      modeBtns.forEach(function(x){x.classList.remove('active');});
+      b.classList.add('active'); mode=b.getAttribute('data-m'); runCorr();
+    });
+  });
+  document.getElementById('corrRun').addEventListener('click', runCorr);
+  runCorr();
+
+  // ---------- Quiz ----------
+  var FB = {
+    q1:{ good:"Right. J/S is an amplitude (voltage) ratio, so it's 10^(dB/20) = 10^1.3 ≈ 20×. The power ratio would be 10^(dB/10) ≈ 398×, but the code multiplies the noise amplitude, so 20× is what enters the samples.",
+         bad:"Not quite. The code does pow(10, db/20) — divide by 20, because it scales amplitude, not power. 26/20 = 1.3, and 10^1.3 ≈ 20×. (398 would be the power ratio.)" },
+    q2:{ good:"Exactly. ni/nq are redrawn every sample, so the noise is white. White noise × a ±1 code is still white with the same flat spectrum — the code stamp can't concentrate it. So you see a broadband floor, not a peak in PRN 5's band.",
+         bad:"Reconsider. The noise is drawn fresh every sample (white). Multiplying white noise by the C/A code leaves it white and flat, so no energy piles up in the victim's band regardless of J/S or your analyzer — you correctly see a broadband floor." },
+    q3:{ good:"Correct. 72.31 is the noise's own standard deviation. Dividing by it gives unit RMS, so the amplitude term equals the true jammer RMS and J/S is calibrated. Remove it and every jammer is ~72× too strong — the dB you ask for no longer matches reality.",
+         bad:"Not the main breakage. The division normalizes the noise to unit RMS. Drop it and the noise is ~72× larger than intended, so your requested J/S is wildly off (uncalibrated). The distribution and the PRNG determinism are unaffected." },
+    q4:{ good:"Yes. The concentration effect needs the noise to be slowly varying (narrowband) so the victim's despreader can collapse it back while others reject it. Making it bandlimited — instead of fresh every sample — is the one change that restores matched-code behavior.",
+         bad:"That's not the lever. More CLT terms, higher J/S, or a fresh seed don't change the spectrum. The reason there's no concentration is that the noise is white (redrawn each sample). Only making it bandlimited restores the matched-code strike." }
+  };
+  ['q1','q2','q3','q4'].forEach(function(qid){
+    var q=document.getElementById(qid), correct=q.getAttribute('data-correct');
+    var opts=q.querySelectorAll('.opt'), fb=document.getElementById('fb'+qid.slice(1)), done=false;
+    opts.forEach(function(o){
+      o.addEventListener('click', function(){
+        if(done) return; done=true;
+        var k=o.getAttribute('data-k'), ok=(k===correct);
+        opts.forEach(function(x){
+          var xk=x.getAttribute('data-k');
+          if(xk===correct) x.classList.add('correct');
+          else if(x===o) x.classList.add('wrong');
+          else x.classList.add('dim');
+        });
+        fb.textContent = ok ? FB[qid].good : FB[qid].bad;
+        fb.classList.add('show', ok?'good':'bad');
+      });
+    });
+  });
+})();
+</script>

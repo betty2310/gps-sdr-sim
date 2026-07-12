@@ -1,0 +1,590 @@
+{
+  "analysis_kind": "single-seed deterministic descriptive verification",
+  "conditions": {
+    "chirp": {
+      "clipped_components": 0,
+      "common_stable_prn_cn0_delta_db": {
+        "maximum": -12.469074726104736,
+        "median": -14.241446733474731,
+        "minimum": -17.94045925140381,
+        "values": [
+          -13.515371322631836,
+          -12.469074726104736,
+          -17.492737293243408,
+          -17.94045925140381,
+          -14.046096324920654,
+          -14.436797142028809
+        ]
+      },
+      "measured_js_db": 20.0,
+      "measured_snr_db": -9.999929967136582,
+      "paths": {
+        "clean_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/chirp/clean/receiver/receiver-report.json",
+        "dataset_index": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/chirp/dataset-index.json",
+        "jammed_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/chirp/js-p20db/receiver/receiver-report.json",
+        "waveform_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/chirp/js-p20db/analysis/waveform-report.json"
+      },
+      "per_prn_jammer_interval_cn0_delta_db": {
+        "10": -13.515371322631836,
+        "12": -12.469074726104736,
+        "18": -0.2144622802734375,
+        "2": -9.439596176147461,
+        "21": -10.623369216918945,
+        "23": -17.492737293243408,
+        "28": -17.94045925140381,
+        "31": -14.046096324920654,
+        "32": -14.436797142028809
+      },
+      "pvt_jammer_interval": {
+        "control_availability": 0.95,
+        "control_expected_fixes": 20,
+        "control_median_usable_satellites": 6.0,
+        "control_valid_fixes": 19,
+        "jammed_availability": 0.0,
+        "jammed_expected_fixes": 20,
+        "jammed_median_usable_satellites": 0.0,
+        "jammed_valid_fixes": 0
+      },
+      "recovery": {
+        "availability": 0.0,
+        "expected_1hz_fixes": 30,
+        "median_usable_satellites": 0.0,
+        "time_to_restored_pvt_s": null,
+        "valid_fixes": 0
+      },
+      "source_measurements": {
+        "active_plateau_rms_full_scale": 0.4999984241520618,
+        "analyzed_samples": 260000.0,
+        "expected_end_hz": 492124.969711422,
+        "expected_start_hz": -492124.969711422,
+        "max_frequency_error_hz": 34.00667985487962,
+        "measured_end_hz": 492124.96938970074,
+        "measured_start_hz": -492124.96938970074,
+        "requested_active_plateau_rms_full_scale": 0.5,
+        "rms_frequency_error_hz": 10.31969659468588
+      },
+      "waveform_checks": {
+        "active_rms": {
+          "error_db": -2.7375325694450808e-05,
+          "pass": true
+        },
+        "chirp_frequency_law": {
+          "max_frequency_error_hz": 34.00667985487962,
+          "pass": true,
+          "rms_frequency_error_hz": 10.31969659468588,
+          "tolerance_hz": 200.0
+        },
+        "measured_js": {
+          "error_db": 0.0,
+          "pass": true
+        },
+        "measured_snr": {
+          "error_db": 7.003286341777937e-05,
+          "pass": true
+        },
+        "no_clipping": {
+          "mixed_clipped_components": 0,
+          "pass": true,
+          "source_clipped_components": 0
+        },
+        "reported_active_rms": {
+          "error_db": -1.7413542929968898e-06,
+          "pass": true
+        },
+        "sample_count": {
+          "expected_bytes": 936000000,
+          "jammer_bytes": 936000000,
+          "mixed_bytes": 936000000,
+          "pass": true
+        },
+        "zero_outside_envelope": {
+          "nonzero_complex_samples": 0,
+          "pass": true
+        }
+      },
+      "waveform_pass": true
+    },
+    "cw": {
+      "clipped_components": 0,
+      "common_stable_prn_cn0_delta_db": {
+        "maximum": 3.5724449157714844,
+        "median": -2.4617271423339844,
+        "minimum": -9.965658187866211,
+        "values": [
+          -1.7667875289916992,
+          3.5724449157714844,
+          -4.649971008300781,
+          -9.965658187866211,
+          3.267603874206543,
+          -3.1566667556762695
+        ]
+      },
+      "measured_js_db": 20.0,
+      "measured_snr_db": -9.999929967136582,
+      "paths": {
+        "clean_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/cw/clean/receiver/receiver-report.json",
+        "dataset_index": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/cw/dataset-index.json",
+        "jammed_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/cw/js-p20db/receiver/receiver-report.json",
+        "waveform_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/cw/js-p20db/analysis/waveform-report.json"
+      },
+      "per_prn_jammer_interval_cn0_delta_db": {
+        "10": -1.7667875289916992,
+        "12": 3.5724449157714844,
+        "18": 14.907829761505127,
+        "2": 10.958178520202637,
+        "21": 13.809214115142822,
+        "23": -4.649971008300781,
+        "28": -9.965658187866211,
+        "31": 3.267603874206543,
+        "32": -3.1566667556762695
+      },
+      "pvt_jammer_interval": {
+        "control_availability": 0.95,
+        "control_expected_fixes": 20,
+        "control_median_usable_satellites": 6.0,
+        "control_valid_fixes": 19,
+        "jammed_availability": 0.95,
+        "jammed_expected_fixes": 20,
+        "jammed_median_usable_satellites": 4.0,
+        "jammed_valid_fixes": 19
+      },
+      "recovery": {
+        "availability": 0.4,
+        "expected_1hz_fixes": 30,
+        "median_usable_satellites": 4.0,
+        "time_to_restored_pvt_s": 0.0,
+        "valid_fixes": 12
+      },
+      "source_measurements": {
+        "active_plateau_rms_full_scale": 0.4999965173344223,
+        "active_rms_full_scale": 0.4999965173273183,
+        "frequency_hz": 500000.00002033374,
+        "negative_frequency_image_rejection_db": 111.8377702408649,
+        "requested_active_plateau_rms_full_scale": 0.5
+      },
+      "waveform_checks": {
+        "active_rms": {
+          "error_db": -6.050030841102145e-05,
+          "pass": true
+        },
+        "measured_js": {
+          "error_db": 0.0,
+          "pass": true
+        },
+        "measured_snr": {
+          "error_db": 7.003286341777937e-05,
+          "pass": true
+        },
+        "negative_frequency_image": {
+          "pass": true,
+          "rejection_db": 111.8377702408649
+        },
+        "no_clipping": {
+          "mixed_clipped_components": 0,
+          "pass": true,
+          "source_clipped_components": 0
+        },
+        "reported_active_rms": {
+          "error_db": -6.0500304904702364e-05,
+          "pass": true
+        },
+        "sample_count": {
+          "expected_bytes": 936000000,
+          "jammer_bytes": 936000000,
+          "mixed_bytes": 936000000,
+          "pass": true
+        },
+        "tone_frequency": {
+          "error_hz": 2.0333740394562483e-05,
+          "pass": true
+        },
+        "zero_outside_envelope": {
+          "nonzero_complex_samples": 0,
+          "pass": true
+        }
+      },
+      "waveform_pass": true
+    },
+    "narrowband": {
+      "clipped_components": 0,
+      "common_stable_prn_cn0_delta_db": {
+        "maximum": -10.31673812866211,
+        "median": -13.073768377304077,
+        "minimum": -16.58761692047119,
+        "values": [
+          -10.892265319824219,
+          -11.875285148620605,
+          -16.58761692047119,
+          -10.31673812866211,
+          -14.272251605987549,
+          -16.37007474899292
+        ]
+      },
+      "measured_js_db": 19.999999999999996,
+      "measured_snr_db": -9.999929967136582,
+      "paths": {
+        "clean_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/narrowband/clean/receiver/receiver-report.json",
+        "dataset_index": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/narrowband/dataset-index.json",
+        "jammed_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/narrowband/js-p20db/receiver/receiver-report.json",
+        "waveform_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/narrowband/js-p20db/analysis/waveform-report.json"
+      },
+      "per_prn_jammer_interval_cn0_delta_db": {
+        "10": -10.892265319824219,
+        "12": -11.875285148620605,
+        "18": 0.18068838119506836,
+        "2": -0.03812456130981445,
+        "21": -11.12671422958374,
+        "23": -16.58761692047119,
+        "28": -10.31673812866211,
+        "31": -14.272251605987549,
+        "32": -16.37007474899292
+      },
+      "pvt_jammer_interval": {
+        "control_availability": 0.95,
+        "control_expected_fixes": 20,
+        "control_median_usable_satellites": 6.0,
+        "control_valid_fixes": 19,
+        "jammed_availability": 0.0,
+        "jammed_expected_fixes": 20,
+        "jammed_median_usable_satellites": 0.0,
+        "jammed_valid_fixes": 0
+      },
+      "recovery": {
+        "availability": 0.16666666666666666,
+        "expected_1hz_fixes": 30,
+        "median_usable_satellites": 5.0,
+        "time_to_restored_pvt_s": 7.0,
+        "valid_fixes": 5
+      },
+      "source_measurements": {
+        "active_plateau_rms_full_scale": 0.14999593476819054,
+        "center_error_hz": -253.1308174743317,
+        "measured_center_hz": 499746.8691825257,
+        "occupied_90_bandwidth_hz": 389990.234375,
+        "power_fraction_in_requested_band": 0.6395672140960629,
+        "requested_active_plateau_rms_full_scale": 0.15
+      },
+      "waveform_checks": {
+        "active_rms": {
+          "error_db": -0.00023540422225786574,
+          "pass": true
+        },
+        "measured_js": {
+          "error_db": -3.552713678800501e-15,
+          "pass": true
+        },
+        "measured_snr": {
+          "error_db": 7.003286341777937e-05,
+          "pass": true
+        },
+        "narrowband_spectrum": {
+          "center_error_hz": -253.1308174743317,
+          "center_tolerance_hz": 10000.0,
+          "occupied_90_bandwidth_hz": 389990.234375,
+          "pass": true,
+          "power_fraction_in_requested_band": 0.6395672140960629
+        },
+        "no_clipping": {
+          "mixed_clipped_components": 0,
+          "pass": true,
+          "source_clipped_components": 0
+        },
+        "reported_active_rms": {
+          "error_db": 7.690152010440111e-08,
+          "pass": true
+        },
+        "sample_count": {
+          "expected_bytes": 936000000,
+          "jammer_bytes": 936000000,
+          "mixed_bytes": 936000000,
+          "pass": true
+        },
+        "zero_outside_envelope": {
+          "nonzero_complex_samples": 0,
+          "pass": true
+        }
+      },
+      "waveform_pass": true
+    },
+    "pulsed": {
+      "clipped_components": 0,
+      "common_stable_prn_cn0_delta_db": {
+        "maximum": -5.60477352142334,
+        "median": -8.97611379623413,
+        "minimum": -12.701369285583496,
+        "values": [
+          -5.60477352142334,
+          -8.616869926452637,
+          -7.442839622497559,
+          -9.389838218688965,
+          -12.701369285583496,
+          -9.335357666015625
+        ]
+      },
+      "measured_js_db": 20.0,
+      "measured_snr_db": -9.999929967136582,
+      "paths": {
+        "clean_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/pulsed/clean/receiver/receiver-report.json",
+        "dataset_index": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/pulsed/dataset-index.json",
+        "jammed_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/pulsed/js-p20db/receiver/receiver-report.json",
+        "waveform_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/pulsed/js-p20db/analysis/waveform-report.json"
+      },
+      "per_prn_jammer_interval_cn0_delta_db": {
+        "10": -5.60477352142334,
+        "12": -8.616869926452637,
+        "18": -6.187547206878662,
+        "2": -5.885146617889404,
+        "21": -7.893212795257568,
+        "23": -7.442839622497559,
+        "28": -9.389838218688965,
+        "31": -12.701369285583496,
+        "32": -9.335357666015625
+      },
+      "pvt_jammer_interval": {
+        "control_availability": 0.95,
+        "control_expected_fixes": 20,
+        "control_median_usable_satellites": 6.0,
+        "control_valid_fixes": 19,
+        "jammed_availability": 0.95,
+        "jammed_expected_fixes": 20,
+        "jammed_median_usable_satellites": 5.0,
+        "jammed_valid_fixes": 19
+      },
+      "recovery": {
+        "availability": 0.4,
+        "expected_1hz_fixes": 30,
+        "median_usable_satellites": 6.0,
+        "time_to_restored_pvt_s": 0.0,
+        "valid_fixes": 12
+      },
+      "source_measurements": {
+        "active_plateau_rms_full_scale": 0.15309208768202057,
+        "envelope_max_error_full_scale": 1.625037677720209e-05,
+        "nominal_duty_cycle": 0.1,
+        "nonzero_duty_cycle": 0.09996153846153846,
+        "nonzero_off_samples": 0,
+        "requested_active_plateau_rms_full_scale": 0.15309310892394862
+      },
+      "waveform_checks": {
+        "active_rms": {
+          "error_db": -5.794136868287896e-05,
+          "pass": true
+        },
+        "measured_js": {
+          "error_db": 0.0,
+          "pass": true
+        },
+        "measured_snr": {
+          "error_db": 7.003286341777937e-05,
+          "pass": true
+        },
+        "no_clipping": {
+          "mixed_clipped_components": 0,
+          "pass": true,
+          "source_clipped_components": 0
+        },
+        "pulse_envelope": {
+          "duty_tolerance": 7.692307692307693e-05,
+          "envelope_max_error_full_scale": 1.625037677720209e-05,
+          "nominal_duty_cycle": 0.1,
+          "nonzero_duty_cycle": 0.09996153846153846,
+          "nonzero_off_samples": 0,
+          "pass": true
+        },
+        "reported_active_rms": {
+          "error_db": -5.79413372446295e-05,
+          "pass": true
+        },
+        "sample_count": {
+          "expected_bytes": 936000000,
+          "jammer_bytes": 936000000,
+          "mixed_bytes": 936000000,
+          "pass": true
+        },
+        "zero_outside_envelope": {
+          "nonzero_complex_samples": 0,
+          "pass": true
+        }
+      },
+      "waveform_pass": true
+    },
+    "wideband": {
+      "clipped_components": 0,
+      "common_stable_prn_cn0_delta_db": {
+        "maximum": -10.06026554107666,
+        "median": -10.938434839248657,
+        "minimum": -16.19459104537964,
+        "values": [
+          -10.06026554107666,
+          -11.711811542510986,
+          -10.063142776489258,
+          -10.165058135986328,
+          -14.390156745910645,
+          -16.19459104537964
+        ]
+      },
+      "measured_js_db": 20.0,
+      "measured_snr_db": -9.999929967136582,
+      "paths": {
+        "clean_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/wideband/clean/receiver/receiver-report.json",
+        "dataset_index": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/wideband/dataset-index.json",
+        "jammed_receiver_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/wideband/js-p20db/receiver/receiver-report.json",
+        "waveform_report": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/runs/wideband/js-p20db/analysis/waveform-report.json"
+      },
+      "per_prn_jammer_interval_cn0_delta_db": {
+        "10": -10.06026554107666,
+        "12": -11.711811542510986,
+        "18": -0.1255812644958496,
+        "2": 0.053334712982177734,
+        "21": -11.126133441925049,
+        "23": -10.063142776489258,
+        "28": -10.165058135986328,
+        "31": -14.390156745910645,
+        "32": -16.19459104537964
+      },
+      "pvt_jammer_interval": {
+        "control_availability": 0.95,
+        "control_expected_fixes": 20,
+        "control_median_usable_satellites": 6.0,
+        "control_valid_fixes": 19,
+        "jammed_availability": 0.0,
+        "jammed_expected_fixes": 20,
+        "jammed_median_usable_satellites": 0.0,
+        "jammed_valid_fixes": 0
+      },
+      "recovery": {
+        "availability": 0.16666666666666666,
+        "expected_1hz_fixes": 30,
+        "median_usable_satellites": 4.0,
+        "time_to_restored_pvt_s": 7.0,
+        "valid_fixes": 5
+      },
+      "source_measurements": {
+        "active_plateau_rms_full_scale": 0.14999785696247855,
+        "center_error_hz": -260093.9431170863,
+        "measured_center_hz": -260093.94311708634,
+        "occupied_90_bandwidth_hz": 2338476.5625,
+        "power_fraction_in_requested_band": 0.03865068086732522,
+        "requested_active_plateau_rms_full_scale": 0.15
+      },
+      "waveform_checks": {
+        "active_rms": {
+          "error_db": -0.00012409546914935823,
+          "pass": true
+        },
+        "measured_js": {
+          "error_db": 0.0,
+          "pass": true
+        },
+        "measured_snr": {
+          "error_db": 7.003286341777937e-05,
+          "pass": true
+        },
+        "no_clipping": {
+          "mixed_clipped_components": 0,
+          "pass": true,
+          "source_clipped_components": 0
+        },
+        "reported_active_rms": {
+          "error_db": 6.429662424124689e-08,
+          "pass": true
+        },
+        "sample_count": {
+          "expected_bytes": 936000000,
+          "jammer_bytes": 936000000,
+          "mixed_bytes": 936000000,
+          "pass": true
+        },
+        "wideband_spectrum": {
+          "occupied_90_bandwidth_hz": 2338476.5625,
+          "pass": true
+        },
+        "zero_outside_envelope": {
+          "nonzero_complex_samples": 0,
+          "pass": true
+        }
+      },
+      "waveform_pass": true
+    }
+  },
+  "sample_size": {
+    "independent_repetitions": 1,
+    "inferential_statistics_supported": false,
+    "noise_seed": 20260712,
+    "runs_per_condition": 1
+  },
+  "schema": "gps-sdr-sim.gnss-sdr-jammer-campaign.v1",
+  "shared": {
+    "clean_sha256": "a4d690ef9d7d0e171b3d8ef984e79dc7426e200d21c7224a645473113b4066ea",
+    "common_stable_prns": [
+      10,
+      12,
+      23,
+      28,
+      31,
+      32
+    ],
+    "profile": {
+      "duration_s": 90.0,
+      "levels_db": [
+        20.0
+      ],
+      "name": "verification",
+      "offset_s": 60.0,
+      "onset_s": 40.0,
+      "ramp_s": 0.01,
+      "sample_rate_hz": 2600000
+    },
+    "receiver_version": "gnss-sdr version 0.0.20",
+    "source": {
+      "command": [
+        "/Users/betty/Developer/gnss-tools/gps-sdr-sim/gps-sdr-sim",
+        "-e",
+        "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/inputs/brdc0030.25n",
+        "-l",
+        "21.0047844,105.8460541,5",
+        "-t",
+        "2025/01/03,00:00:00",
+        "-d",
+        "91.000",
+        "-s",
+        "2600000",
+        "-b",
+        "16",
+        "-o",
+        "clean-overgenerated.bin"
+      ],
+      "generator_output_bytes": 945360000,
+      "generator_requested_duration_s": 91.0,
+      "location_llh": "21.0047844,105.8460541,5",
+      "mode": "gps-sdr-sim",
+      "retained_first_sample_offset": 0,
+      "retained_samples": 234000000,
+      "rinex_path": "/Users/betty/Developer/gnss-tools/gps-sdr-sim/analysis-output/inputs/brdc0030.25n",
+      "rinex_sha256": "3ef9e673ed0142893bd43be39880d924dc3d13fd11257038a256971451370c13",
+      "scenario_start_time": "2025/01/03,00:00:00",
+      "visible_prns": [
+        10,
+        28,
+        23,
+        32,
+        31,
+        12,
+        21,
+        18,
+        2
+      ]
+    },
+    "visible_prns": [
+      2,
+      10,
+      12,
+      18,
+      21,
+      23,
+      28,
+      31,
+      32
+    ]
+  }
+}

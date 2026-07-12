@@ -1,8 +1,10 @@
 # GNSS Jamming Mitigation Research Model and Tool Architecture
 
-> **Status:** Proposed design direction
+> **Status:** Independent CW, narrowband, wideband, chirp, and pulsed offline
+> and UHD live vertical slices implemented; matched synthetic GNSS-SDR
+> verification completed for all five at +20 dB J/S
 >
-> **Date:** 2026-07-10
+> **Date:** 2026-07-12
 >
 > **Scope:** Reproducible offline and conducted/shielded GPS L1 C/A interference-mitigation research
 >
@@ -10,7 +12,7 @@
 
 ## Executive Decision
 
-Keep `gps-sdr-sim` focused on generating clean GNSS signals. Build interference as independent, additive sources in a new jammer generator, then either mix those sources with clean IQ for offline receiver testing or transmit jammer-only IQ through the USRP X300 or bladeRF in a controlled RF setup.
+Keep `gps-sdr-sim` focused on generating clean GNSS signals. Build interference as independent, additive sources in `jammergen`, then either mix those sources with clean IQ for offline receiver testing or transmit jammer-only IQ through the USRP X300 in a controlled RF setup.
 
 The intended tool boundary is:
 
@@ -19,7 +21,7 @@ gps-sdr-sim  -> clean GNSS IQ ----\
 jammergen    -> jammer-only IQ ----+-> iqmix -> receiver-front-end model -> test IQ
 noise source -> thermal noise IQ --/
 
-jammergen -> TX conditioning -> x300tx / bladetx -> conducted or shielded DUT
+shared jammer source -> TX conditioning -> jammertx -> conducted or shielded DUT
 ```
 
 This replaces the current per-satellite "attack method" model. A satellite is a desired-signal source; a jammer is a separate emitter. They should not be represented by mutually exclusive branches in the same channel.
@@ -90,6 +92,15 @@ j[k] -> total-power normalization -> TX filter/limiter -> DAC samples
 
 The real or controlled GNSS signal, propagation path, and jammer are combined physically before the device under test. Do not bake a simulated victim AGC into jammer-only transmit samples; the device under test supplies that behavior. Transmitter anti-clipping and interpolation filters are separate TX-chain concerns.
 
+The five parameterized jammer types do not require an authentic desired signal
+or captured interferer as generator input. A fully synthetic mitigation study
+can use `gps-sdr-sim` plus `jammergen`. Authentic/captured input becomes required
+when the claim depends on real-sky geometry and impairments, a field-observed
+jammer, measured propagation/antenna coupling, analog front-end behavior that
+is absent from the baseband model, or installed-receiver performance. Those
+questions need a lawful capture, IQ replay, or calibrated physical combination;
+the synthetic source alone cannot answer them.
+
 ## Component Responsibilities
 
 | Component | Responsibility | Must not own |
@@ -98,10 +109,10 @@ The real or controlled GNSS signal, propagation path, and jammer are combined ph
 | Shared GNSS reference library | C/A-code generation plus optional code-phase and Doppler references for code-aware sources | Jammer policy or power allocation |
 | `jammergen` | Independent jammer sources, envelopes, frequency laws, filtering, seeding, and total-power normalization | Victim receiver AGC or clean satellite removal |
 | `iqmix` | Offline `signal + jammer + noise` composition and optional victim front-end model | RF calibration claims without measurement |
-| `x300tx` / `bladetx` | Timed streaming and SDR-specific TX configuration | Source-specific signal semantics |
-| Analysis pipeline | PSD, power, correlator, receiver, PVT, and repeatability measurements | Assumed success based only on generated samples |
+| `jammertx` / future hardware backends | Timed streaming and SDR-specific TX configuration | Desired-signal generation or victim receiver AGC |
+| Analysis pipeline | PSD, power, correlator, receiver, PVT, per-PRN prompt, and repeatability measurements; cross-type descriptive reporting | Assumed success based only on generated samples |
 
-`jammergen` may feed a generic IQ player through a file or pipe, or its source library may be linked into the existing real-time players. Both backends must use the same waveform definitions and power normalization.
+`jammergen` and `jammertx` share `tools/jammer_source.c`, so the offline file backend and live UHD backend use the same CW/noise/chirp/pulse state, envelopes, seeds, quantization, and digital metrics. Future hardware backends must reuse the same source definitions and power normalization.
 
 ## Composable Jammer Model
 
@@ -117,12 +128,26 @@ Do not create one enum value for every waveform combination. A jammer source sho
 | Reproducibility | Explicit seed and start-sample state |
 | Spatial model, later | Per-emitter delay, gain, phase, and array steering vector |
 
+The current CLI exposes five named vertical slices over that model:
+
+| Type | Base source | Frequency law | Shaping/envelope |
+| --- | --- | --- | --- |
+| `cw` | tone | fixed | global ramp |
+| `narrowband` | proper-complex Gaussian | fixed center | one-pole low-pass with requested two-sided ENBW |
+| `wideband` | proper-complex Gaussian | full complex Nyquist band | unfiltered |
+| `chirp` | tone | repeating linear start-to-end sweep | global ramp, phase continuous at repeats |
+| `pulsed` | tone | fixed | periodic raised-cosine gate plus global ramp |
+
+These names are stable command-line profiles, not a claim that every future
+composition needs a new enum. Stepped/hopped laws, multitone composition,
+random chips, IQ replay, and code-aware sources remain future components.
+
 ### Source Families and PRN Selectivity
 
 | Source | Main research use | PRN-selective? |
 |---|---|---|
 | CW or multitone | Narrowband mitigation and notch-filter tests | No |
-| Band-limited Gaussian | Broadband and partial-band interference tests | No |
+| Shaped narrowband or wideband Gaussian | Broadband and partial-band interference tests | No |
 | Chirp, stepped, or hopped | Time-frequency mitigation tests | No |
 | Pulsed variants | Blankers, transient detection, and recovery tests | No |
 | Random chips at a GNSS-like chip rate | Matched-spectrum interference | No specific PRN |
@@ -157,7 +182,15 @@ Use one independent source per selected PRN, but allocate a fixed total jammer-p
 
 ## Power Definition and Calibration
 
-Each generated waveform should be normalized after its source-specific filtering and envelope are applied. For source weights `w_m` and total requested digital jammer power `P_J`:
+For the implemented single-source pipeline, CW/chirp amplitude is exact,
+narrowband/wideband noise has unit expected complex power before amplitude,
+and pulsed amplitude is the on-pulse value. `jammergen` records measured plateau
+RMS, and `iqmix` uses measured average plateau power—not nominal amplitude—to
+realize J/S. This keeps comparisons valid across bandwidth and duty cycle.
+
+A future multi-source composite should normalize after source-specific
+filtering and envelopes are applied. For source weights `w_m` and total
+requested digital jammer power `P_J`:
 
 ```text
 u_m[k] = source_m[k] / rms(source_m)
@@ -226,6 +259,13 @@ For each mitigation experiment, progress through:
 
 Record receiver-side evidence, including per-signal `C/N0`, acquisition/tracking state, `svUsed`, raw pseudorange and Doppler, PVT validity, residuals, AGC/noise/jamming indicators, and recovery time. Generated waveform checks alone are not evidence that a mitigation method worked.
 
+Raw GPS L1 C/A spectra are composite because every PRN shares the band. A
+figure labeled by PRN must come from a code-separated domain such as a
+GNSS-SDR post-correlation prompt dump, and it must be labeled as despread
+tracking-channel evidence rather than a PRN-isolated RF FFT. The implemented
+verification workflow produces both domains and keeps their interpretations
+separate.
+
 ## Dataset Manifest
 
 Every generated fixture should carry a machine-readable manifest containing at least:
@@ -245,12 +285,25 @@ Every generated fixture should carry a machine-readable manifest containing at l
 
 1. **Correct the documentation.** Mark `jam_noise` as a legacy, non-selective implementation and `jam_drop` as simulation-only.
 2. **Freeze a legacy characterization test.** Demonstrate the current target/non-target correlator response before removing or renaming behavior.
-3. **Extract shared primitives.** Separate C/A-code, timing, sample-format, oscillator, filter, RNG, and power utilities from the satellite render loops.
-4. **Create `jammergen`.** Start with CW, band-limited Gaussian, and linear/triangular chirp sources, deterministic seeds, and fixed-total-power normalization.
-5. **Create `iqmix`.** Add calibrated offline mixing plus optional receiver filter, AGC/clipping, thermal noise, and quantization.
-6. **Make transmitters source-agnostic.** Feed the X300 and bladeRF players with generic IQ or a common source interface instead of duplicating jammer semantics in each player.
-7. **Add code-aware interference.** Implement `gnss_ca` only after the correlator acceptance harness exists.
-8. **Deprecate legacy attack flags.** Retain them temporarily for reproduction, then remove them after equivalent research workflows are available.
+3. **Extract shared primitives.** Jammer timing, sample format, oscillator,
+   one-pole filter, RNG, chirp, pulse envelope, quantization, and metrics now
+   live in `tools/jammer_source.c`. Shared C/A-code references remain future
+   work for code-aware sources.
+4. **Create `jammergen`.** CW, narrowband Gaussian, wideband Gaussian, linear
+   chirp, and pulsed CW are implemented with deterministic state and
+   sample-accurate envelopes. Stepped/hopped, multitone, replay, and code-aware
+   sources remain future work.
+5. **Create `iqmix`.** Measured J/S, deterministic thermal noise, common anti-clipping gain, and int16 quantization are implemented. Victim analog-front-end models remain future work.
+6. **Make transmitters source-agnostic.** UHD transmission for all five current
+   types is implemented in `jammertx` through the shared jammer source. A
+   bladeRF backend and later waveform components remain future work.
+7. **Verify the synthetic receiver path.** The bounded `verification` profile
+   now exercises all five modes through GNSS-SDR with matched clean controls,
+   numerical waveform gates, per-PRN prompt figures, PVT evidence, and a
+   strict single-run descriptive report. Repeated seeds/J/S levels and
+   authentic captures remain required for broader claims.
+8. **Add code-aware interference.** Implement `gnss_ca` only after the correlator acceptance harness exists.
+9. **Deprecate legacy attack flags.** Retain them temporarily for reproduction, then remove them after equivalent research workflows are available.
 
 ## Safety Boundary
 

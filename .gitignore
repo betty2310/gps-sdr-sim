@@ -29,12 +29,23 @@
 *.hex
 gps-sdr-sim
 gps-sdr-sim-lut
+jammergen
+iqmix
+jammertx
+tests/test_parse_synth_revive
+tests/test_jammer_source
+tests/test_revive_scan
+tests/test_revive_transform
 
 # Debug files
 *.dSYM/
 
 # Output
 *.bin
+cw-dataset-output/
+analysis-output/inputs/
+analysis-output/pilot-cw/
+analysis-output/runs/
 
 # Temporary files
 *.swp
@@ -56,6 +67,7 @@ temp/*
 # sdr-monitor: ignore all except gnss-sdr-receiver.conf
 sdr-monitor/*
 !sdr-monitor/gnss-sdr-receiver.conf
+!sdr-monitor/cw-dataset-receiver.conf
 x300tx
 
 tx

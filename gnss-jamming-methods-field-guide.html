@@ -1,0 +1,2818 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A bottom-up, interactive lesson on signals, spectrum, GNSS receivers, and how each jamming waveform affects acquisition, tracking, and PVT.">
+  <title>GNSS jamming, from radio waves to receiver failure</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23101c25'/%3E%3Cpath d='M10 36h8l5-17 8 29 7-25 6 13h10' fill='none' stroke='%23f2c14e' stroke-width='5' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --serif: Bookerly, Georgia, Cambria, "Times New Roman", serif;
+      --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --paper: #f4efe5;
+      --paper-2: #ebe2d2;
+      --surface: #fffdf8;
+      --ink: #1f251f;
+      --muted: #696b61;
+      --line: #d8cfbf;
+      --orange: #c34f2c;
+      --orange-dark: #87331c;
+      --orange-soft: #f6dfd3;
+      --teal: #176c70;
+      --teal-soft: #dcebea;
+      --yellow: #f2c14e;
+      --navy: #101c25;
+      --navy-2: #172b37;
+      --grid: #29424d;
+      --blue: #63c7d4;
+      --red: #e4604a;
+      --green: #3f815e;
+      --green-soft: #e4f0e7;
+      --purple: #8064a8;
+      --shadow: 0 24px 70px -52px rgba(28, 28, 18, .55);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 7% 5%, rgba(195, 79, 44, .08), transparent 26rem),
+        linear-gradient(90deg, rgba(53, 42, 28, .025) 1px, transparent 1px),
+        var(--paper);
+      background-size: auto, 28px 28px, auto;
+      font-family: var(--serif);
+      font-size: 18px;
+      line-height: 1.68;
+    }
+
+    a { color: var(--teal); text-underline-offset: 3px; }
+    a:hover { color: var(--orange-dark); }
+    button, input, select, textarea { font: inherit; }
+    button { touch-action: manipulation; }
+    code, pre, kbd, samp, .mono { font-family: var(--mono); }
+    code {
+      padding: .08em .34em;
+      border: 1px solid #d8cfbf;
+      border-radius: 5px;
+      background: #eee7da;
+      font-size: .85em;
+    }
+    strong { font-weight: 680; }
+    ::selection { color: #fff; background: var(--orange); }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: 10px;
+      left: 10px;
+      transform: translateY(-150%);
+      padding: 9px 13px;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--navy);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 620px;
+      color: #f9f3e8;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+        radial-gradient(circle at 82% 18%, rgba(99,199,212,.18), transparent 28rem),
+        radial-gradient(circle at 16% 88%, rgba(195,79,44,.22), transparent 30rem),
+        var(--navy);
+      background-size: 40px 40px, 40px 40px, auto, auto, auto;
+      border-bottom: 8px solid var(--orange);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -9rem;
+      bottom: -16rem;
+      width: 38rem;
+      height: 38rem;
+      border: 1px solid rgba(99,199,212,.28);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 4rem rgba(99,199,212,.025),
+        0 0 0 8rem rgba(99,199,212,.018);
+      pointer-events: none;
+    }
+    .hero-inner {
+      position: relative;
+      z-index: 1;
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 84px 0 76px;
+    }
+    .eyebrow {
+      margin: 0 0 18px;
+      color: #9be1e7;
+      font: 700 12px/1.3 var(--mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      font-size: clamp(42px, 7vw, 78px);
+      font-weight: 520;
+      line-height: .99;
+      letter-spacing: -.045em;
+    }
+    .hero-lead {
+      max-width: 760px;
+      margin: 28px 0 0;
+      color: #dce6e4;
+      font-size: clamp(19px, 2.2vw, 24px);
+      line-height: 1.52;
+    }
+    .hero-goal {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 14px;
+      max-width: 790px;
+      margin-top: 36px;
+      padding: 18px 20px;
+      border: 1px solid rgba(255,255,255,.16);
+      border-left: 4px solid var(--yellow);
+      border-radius: 12px;
+      background: rgba(255,255,255,.06);
+      backdrop-filter: blur(5px);
+    }
+    .hero-goal .goal-label {
+      padding-top: 3px;
+      color: var(--yellow);
+      font: 700 11px/1.4 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .hero-goal p { margin: 0; color: #f8f1e6; }
+
+    .spectrum-rule {
+      display: flex;
+      align-items: end;
+      gap: 3px;
+      width: min(620px, 76vw);
+      height: 54px;
+      margin-top: 42px;
+      opacity: .7;
+    }
+    .spectrum-rule i {
+      flex: 1;
+      min-height: 2px;
+      border-radius: 1px 1px 0 0;
+      background: linear-gradient(#f2c14e, #c34f2c);
+      transform-origin: bottom;
+    }
+
+    .lesson-nav {
+      position: sticky;
+      z-index: 20;
+      top: 0;
+      overflow-x: auto;
+      border-bottom: 1px solid #cfc5b5;
+      background: rgba(244, 239, 229, .94);
+      backdrop-filter: blur(12px);
+      scrollbar-width: thin;
+    }
+    .lesson-nav ol {
+      display: flex;
+      width: max-content;
+      min-width: 100%;
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 20px;
+      list-style: none;
+    }
+    .lesson-nav a {
+      display: block;
+      padding: 14px 15px 12px;
+      border-bottom: 3px solid transparent;
+      color: #4d5049;
+      font: 650 12px/1.2 var(--mono);
+      letter-spacing: .035em;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .lesson-nav a:hover, .lesson-nav a:focus-visible {
+      border-color: var(--orange);
+      color: var(--orange-dark);
+    }
+
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 58px 0 110px;
+    }
+    section { scroll-margin-top: 72px; }
+    .measure { max-width: 760px; }
+    .wide-measure { max-width: 940px; }
+    .section-head {
+      display: grid;
+      grid-template-columns: 70px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+      max-width: 950px;
+      margin: 92px 0 28px;
+    }
+    .section-head .num {
+      display: grid;
+      width: 56px;
+      height: 56px;
+      place-items: center;
+      border: 1px solid #b9aa95;
+      border-radius: 50%;
+      color: var(--orange-dark);
+      background: rgba(255,253,248,.65);
+      font: 700 15px/1 var(--mono);
+    }
+    h2 {
+      margin: 0;
+      font-size: clamp(31px, 4vw, 48px);
+      font-weight: 540;
+      line-height: 1.08;
+      letter-spacing: -.032em;
+    }
+    .section-head p {
+      max-width: 760px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+    }
+    h3 {
+      margin: 34px 0 10px;
+      font-size: 24px;
+      font-weight: 620;
+      line-height: 1.25;
+      letter-spacing: -.015em;
+    }
+    h4 {
+      margin: 0 0 5px;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+    p { margin: 14px 0; }
+    .lede { font-size: 21px; line-height: 1.62; }
+    .muted { color: var(--muted); }
+    .small { font-size: 14px; }
+
+    .why {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 26px;
+      margin: 0 0 52px;
+      padding: 28px 30px;
+      border: 1px solid #ddb49f;
+      border-left: 6px solid var(--orange);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.6), transparent 55%),
+        var(--orange-soft);
+      box-shadow: var(--shadow);
+    }
+    .why h2 {
+      color: var(--orange-dark);
+      font: 750 13px/1.35 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .why p:first-child { margin-top: 0; }
+    .why p:last-child { margin-bottom: 0; }
+
+    .safety {
+      display: flex;
+      gap: 14px;
+      max-width: 900px;
+      margin: 24px 0 50px;
+      padding: 16px 18px;
+      border: 1px solid #c9b96f;
+      border-radius: 12px;
+      background: #fbf2c9;
+      font-size: 15px;
+      line-height: 1.52;
+    }
+    .safety b {
+      flex: 0 0 auto;
+      color: #6e5715;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .pad { padding: 26px 28px; }
+    .instrument {
+      overflow: hidden;
+      color: #edf4f1;
+      border-color: #28404b;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        var(--navy);
+      background-size: 24px 24px;
+      box-shadow: 0 26px 70px -44px rgba(9, 20, 28, .9);
+    }
+    .instrument-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 22px;
+      border-bottom: 1px solid #29424d;
+      background: rgba(255,255,255,.03);
+    }
+    .instrument-head h3 { margin: 0; color: #fff; font-size: 19px; }
+    .instrument-head p { margin: 3px 0 0; color: #a9bcc2; font-size: 14px; }
+    .instrument-body { min-width: 0; padding: 22px; }
+    .figure-label {
+      margin: 0 0 8px;
+      color: #8fa8af;
+      font: 650 11px/1.3 var(--mono);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .caption {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    .instrument .caption { color: #b8c7ca; }
+    canvas {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      border-radius: 10px;
+    }
+
+    .concept-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin: 26px 0;
+    }
+    .concept {
+      position: relative;
+      padding: 22px;
+      overflow: hidden;
+    }
+    .concept::before {
+      content: attr(data-n);
+      position: absolute;
+      right: 14px;
+      top: 3px;
+      color: rgba(195,79,44,.08);
+      font: 700 64px/1 var(--mono);
+    }
+    .concept .term {
+      color: var(--orange-dark);
+      font: 700 11px/1.3 var(--mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .concept p { margin-bottom: 0; font-size: 16px; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: end;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 190px;
+    }
+    .field label, .field .label {
+      color: inherit;
+      font: 650 11px/1.3 var(--mono);
+      letter-spacing: .055em;
+      text-transform: uppercase;
+    }
+    .field output {
+      color: var(--yellow);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+    input[type="range"] {
+      width: min(280px, 70vw);
+      accent-color: var(--orange);
+    }
+    select {
+      min-height: 39px;
+      padding: 7px 34px 7px 10px;
+      border: 1px solid #50636c;
+      border-radius: 8px;
+      color: #eff6f3;
+      background: var(--navy-2);
+    }
+    .segmented {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid #3a515c;
+      border-radius: 10px;
+      background: rgba(255,255,255,.035);
+    }
+    .segmented button, .jammer-tabs button {
+      border: 1px solid transparent;
+      border-radius: 7px;
+      color: #c9d7d9;
+      background: transparent;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+    .segmented button { padding: 8px 11px; }
+    .segmented button:hover, .segmented button:focus-visible,
+    .jammer-tabs button:hover, .jammer-tabs button:focus-visible {
+      color: #fff;
+      border-color: #6a7f87;
+    }
+    .segmented button[aria-pressed="true"],
+    .jammer-tabs button[aria-pressed="true"] {
+      color: #fff;
+      border-color: var(--orange);
+      background: var(--orange);
+    }
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #c9d7d9;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .switch input { width: 18px; height: 18px; accent-color: var(--orange); }
+
+    .twin {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+    .triple {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+    }
+    .plot {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid #2d4651;
+      border-radius: 12px;
+      background: rgba(4, 12, 18, .52);
+    }
+
+    .insight {
+      margin: 22px 0;
+      padding: 20px 22px;
+      border: 1px solid #aacdca;
+      border-left: 5px solid var(--teal);
+      border-radius: 13px;
+      background: var(--teal-soft);
+    }
+    .insight h3 {
+      margin: 0 0 7px;
+      color: #124f52;
+      font: 740 12px/1.3 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .insight p:first-of-type { margin-top: 0; }
+    .insight p:last-child { margin-bottom: 0; }
+
+    .mistake {
+      margin: 22px 0;
+      padding: 20px 22px;
+      border: 1px solid #d7b3a7;
+      border-radius: 13px;
+      background: #fbebe5;
+    }
+    .mistake b:first-child {
+      color: var(--orange-dark);
+      font: 740 12px/1.3 var(--mono);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .views {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin: 26px 0;
+    }
+    .view-card { overflow: hidden; }
+    .view-card svg {
+      display: block;
+      width: 100%;
+      height: 140px;
+      background: var(--navy);
+    }
+    .view-card .body { padding: 18px 20px; }
+    .view-card p { margin: 8px 0 0; color: var(--muted); font-size: 15px; }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 22px 0 0;
+    }
+    .metric {
+      min-height: 92px;
+      padding: 14px 15px;
+      border: 1px solid #334c57;
+      border-radius: 10px;
+      background: rgba(255,255,255,.035);
+    }
+    .metric .k {
+      color: #8fa8af;
+      font: 650 10px/1.3 var(--mono);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .metric .v {
+      display: block;
+      margin-top: 7px;
+      color: #fff;
+      font: 700 19px/1.1 var(--mono);
+    }
+    .metric .hint { display: block; margin-top: 6px; color: #9fb1b5; font-size: 12px; line-height: 1.35; }
+
+    .db-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      max-width: 920px;
+      margin: 24px 0;
+    }
+    .db-item {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(255,253,248,.82);
+    }
+    .db-item .db {
+      display: block;
+      color: var(--orange-dark);
+      font: 760 21px/1.1 var(--mono);
+    }
+    .db-item span:last-child {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .gps-band {
+      position: relative;
+      min-height: 265px;
+      margin: 28px 0;
+      padding: 24px;
+      overflow: hidden;
+      color: #eaf1ee;
+      border-radius: var(--radius);
+      background: var(--navy);
+    }
+    .gps-band::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .25;
+      background:
+        linear-gradient(90deg, transparent 49.8%, var(--blue) 50%, transparent 50.2%),
+        repeating-linear-gradient(90deg, transparent 0 9.9%, rgba(255,255,255,.12) 10% 10.1%);
+    }
+    .gps-band > * { position: relative; z-index: 1; }
+    .band-axis {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 18px;
+      color: #8fa8af;
+      font: 11px/1.3 var(--mono);
+    }
+    .band-envelope {
+      display: flex;
+      align-items: end;
+      justify-content: center;
+      height: 130px;
+      gap: 2px;
+      margin-top: 12px;
+    }
+    .band-envelope i {
+      width: 2.25%;
+      min-height: 3px;
+      border-radius: 2px 2px 0 0;
+      background: linear-gradient(#f2c14e, #c34f2c);
+    }
+    .band-note {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+      color: #c4d3d5;
+      font-size: 13px;
+    }
+
+    .receiver-chain {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 9px;
+      margin: 28px 0;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }
+    .stage {
+      position: relative;
+      min-width: 135px;
+      padding: 16px 14px;
+      border: 1px solid var(--line);
+      border-top: 4px solid var(--teal);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .stage:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      z-index: 2;
+      top: 37px;
+      right: -13px;
+      color: var(--orange);
+      font-family: var(--mono);
+    }
+    .stage .stage-n {
+      color: var(--teal);
+      font: 700 10px/1.3 var(--mono);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .stage h4 { margin-top: 6px; font-size: 16px; }
+    .stage p { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+    .equation {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 22px;
+      align-items: center;
+      max-width: 900px;
+      margin: 28px 0;
+      padding: 22px 24px;
+      border: 1px solid #ccbca6;
+      border-radius: 14px;
+      background: #eee6d9;
+    }
+    .equation .formula {
+      color: var(--orange-dark);
+      font: 750 clamp(24px, 4vw, 38px)/1 var(--mono);
+      white-space: nowrap;
+    }
+    .equation p { margin: 0; }
+
+    .jammer-lab { margin: 30px 0; scroll-margin-top: 68px; }
+    .jammer-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      width: 100%;
+    }
+    .jammer-tabs button {
+      min-height: 44px;
+      padding: 9px 10px;
+      border-color: #37515d;
+      background: rgba(255,255,255,.025);
+    }
+    .lab-controls {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: end;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #2e4853;
+    }
+    .lab-grid {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 18px;
+      margin-top: 20px;
+    }
+    .lab-grid > *, .plots-grid > *, .repo-box > * { min-width: 0; }
+    .plots-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .time-wave-plot, .correlation-plot { grid-column: 1 / -1; }
+    .lab-explain {
+      padding: 20px;
+      border: 1px solid #334e59;
+      border-radius: 12px;
+      background: rgba(255,255,255,.035);
+    }
+    .lab-explain .type-kicker {
+      color: var(--yellow);
+      font: 700 10px/1.3 var(--mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .lab-explain h3 { margin: 5px 0 8px; color: #fff; font-size: 25px; }
+    .lab-explain p { color: #c8d5d7; font-size: 15px; line-height: 1.5; }
+    .lab-explain dl { margin: 18px 0 0; }
+    .lab-explain dt {
+      margin-top: 13px;
+      color: #8fa8af;
+      font: 650 10px/1.3 var(--mono);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .lab-explain dd { margin: 3px 0 0; color: #eff5f3; font-size: 14px; line-height: 1.45; }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-top: 18px;
+    }
+    .pipe-stage {
+      min-width: 0;
+      padding: 11px 8px;
+      border: 1px solid #3d535d;
+      border-radius: 9px;
+      background: rgba(255,255,255,.025);
+      text-align: center;
+    }
+    .pipe-stage .dot {
+      display: block;
+      width: 9px;
+      height: 9px;
+      margin: 0 auto 7px;
+      border-radius: 50%;
+      background: #4b956e;
+      box-shadow: 0 0 0 4px rgba(75,149,110,.12);
+    }
+    .pipe-stage .name { display: block; color: #dce7e5; font: 650 10px/1.3 var(--mono); }
+    .pipe-stage .status { display: block; margin-top: 5px; color: #95a9ad; font-size: 11px; }
+    .pipe-stage[data-level="1"] .dot { background: #d2b34b; box-shadow: 0 0 0 4px rgba(210,179,75,.12); }
+    .pipe-stage[data-level="2"] .dot { background: #e48643; box-shadow: 0 0 0 4px rgba(228,134,67,.14); }
+    .pipe-stage[data-level="3"] .dot { background: #e4604a; box-shadow: 0 0 0 4px rgba(228,96,74,.15); }
+
+    .scope-note {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 9px;
+      color: #b8c8ca;
+      background: rgba(99,199,212,.07);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .taxonomy {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+      margin: 28px 0;
+    }
+    .jammer-card {
+      display: grid;
+      grid-template-columns: 9px 1fr;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .jammer-card:hover { transform: translateY(-3px); box-shadow: 0 28px 70px -48px rgba(28,28,18,.75); }
+    .jammer-card:focus-visible { outline: 3px solid var(--orange); outline-offset: 3px; }
+    .jammer-card .stripe { background: var(--teal); }
+    .jammer-card[data-key="wide"] .stripe,
+    .jammer-card[data-key="matchedSpectrum"] .stripe,
+    .jammer-card[data-key="matchedCode"] .stripe { background: var(--orange); }
+    .jammer-card .body { min-width: 0; padding: 20px 21px; }
+    .jammer-card .sub {
+      color: var(--orange-dark);
+      font: 700 10px/1.3 var(--mono);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .jammer-card h3 { margin: 5px 0 7px; font-size: 22px; }
+    .jammer-card p { margin: 7px 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+    .wave-mini {
+      margin: 14px 0 13px;
+      padding: 8px;
+      border: 1px solid #29424d;
+      border-radius: 11px;
+      background: var(--navy);
+    }
+    .wave-mini canvas { width: 100%; height: auto; }
+    .wave-construction {
+      display: grid;
+      gap: 7px;
+      margin: 0 0 13px;
+    }
+    .wave-formula {
+      display: block;
+      overflow-wrap: anywhere;
+      padding: 7px 9px;
+      border: 1px solid #d8cfbf;
+      border-radius: 7px;
+      color: #514132;
+      background: #f0eadf;
+      font: 650 11.5px/1.45 var(--mono);
+    }
+    .wave-time-clue {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .lab-wave-rule {
+      display: grid;
+      gap: 7px;
+      margin: 13px 0 4px;
+      padding: 12px 13px;
+      border: 1px solid #35515d;
+      border-radius: 9px;
+      background: rgba(99,199,212,.06);
+    }
+    .lab-wave-rule code {
+      width: fit-content;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      color: #f7d77d;
+      border-color: #3c5863;
+      background: rgba(0,0,0,.2);
+    }
+    .lab-wave-rule span { color: #b8c8ca; font-size: 13px; line-height: 1.45; }
+    .card-facts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 13px;
+    }
+    .card-facts div {
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: #f0eadf;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .card-facts b {
+      display: block;
+      margin-bottom: 2px;
+      color: #6d6558;
+      font: 700 9px/1.3 var(--mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .scroll { overflow-x: auto; }
+    table {
+      width: 100%;
+      min-width: 900px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: #4a4f48;
+      background: #e9e1d4;
+      font: 700 10px/1.35 var(--mono);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    tbody tr:nth-child(even) td { background: #fbf7ef; }
+    .impact {
+      display: inline-block;
+      min-width: 58px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font: 700 10px/1.2 var(--mono);
+      text-align: center;
+    }
+    .impact.low { color: #225b40; background: #dcecdf; }
+    .impact.med { color: #755910; background: #f4e8b8; }
+    .impact.high { color: #842c1b; background: #f4d5ca; }
+    .impact.target { color: #513d72; background: #e8dff2; }
+
+    .layer-stack {
+      display: grid;
+      gap: 12px;
+      max-width: 920px;
+      margin: 28px 0;
+    }
+    .layer {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 20px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--surface);
+    }
+    .layer .label {
+      color: var(--orange-dark);
+      font: 740 11px/1.45 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .layer p { margin: 0; font-size: 16px; }
+
+    .repo-box {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      margin: 30px 0;
+      padding: 26px;
+      border: 1px solid #2c4652;
+      border-radius: var(--radius);
+      color: #eaf1ef;
+      background: var(--navy);
+    }
+    .repo-box h3 { margin-top: 0; color: #fff; }
+    .repo-box p { color: #c5d1d3; font-size: 15px; }
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      padding: 20px;
+      border: 1px solid #324c58;
+      border-radius: 12px;
+      color: #d7e7e6;
+      background: #09141b;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+    pre .cm { color: #789098; }
+    pre .fn { color: #74cbd6; }
+    pre .op { color: #f2c14e; }
+    pre .var { color: #efa984; }
+
+    .diagnostic-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+      margin: 26px 0;
+    }
+    .diagnostic { padding: 22px; }
+    .diagnostic .label {
+      color: var(--teal);
+      font: 720 10px/1.3 var(--mono);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .diagnostic h3 { margin: 5px 0 9px; font-size: 21px; }
+    .diagnostic ul { margin: 8px 0 0; padding-left: 20px; }
+    .diagnostic li { margin: 7px 0; font-size: 15px; }
+
+    .decision-list {
+      max-width: 900px;
+      margin: 25px 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: diag;
+    }
+    .decision-list li {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 14px;
+      margin: 10px 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(255,253,248,.78);
+      font-size: 15px;
+    }
+    .decision-list li::before {
+      counter-increment: diag;
+      content: counter(diag);
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--teal);
+      font: 700 11px/1 var(--mono);
+    }
+
+    .quiz-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin: 26px 0;
+    }
+    .question { padding: 22px; }
+    .question .qnum {
+      color: var(--orange-dark);
+      font: 720 10px/1.3 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .question .stem { margin: 7px 0 14px; font-weight: 650; line-height: 1.46; }
+    .option {
+      display: block;
+      width: 100%;
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      text-align: left;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .option:hover, .option:focus-visible { border-color: var(--orange); }
+    .option.correct { border-color: #71a886; background: var(--green-soft); }
+    .option.wrong { border-color: #d38b78; background: #f9e4dc; }
+    .option.dim { opacity: .52; }
+    .feedback {
+      display: none;
+      margin-top: 12px;
+      padding: 12px 13px;
+      border-radius: 9px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .feedback.show { display: block; }
+    .feedback.good { border: 1px solid #a8ceb4; background: var(--green-soft); }
+    .feedback.bad { border: 1px solid #e1b3a5; background: #f9e4dc; }
+
+    .order-card { margin: 18px 0; padding: 22px; }
+    .order-bank, .order-answer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 46px;
+      margin: 10px 0;
+      padding: 9px;
+      border: 1px dashed #b9ad9b;
+      border-radius: 10px;
+      background: #f6f0e5;
+    }
+    .order-bank button, .reset-button {
+      padding: 7px 10px;
+      border: 1px solid #b9ad9b;
+      border-radius: 8px;
+      color: var(--ink);
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .order-bank button:disabled { opacity: .35; cursor: default; }
+    .order-answer span {
+      padding: 7px 10px;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--teal);
+      font-size: 13px;
+    }
+    .reset-button { margin-top: 5px; border-color: var(--orange); color: var(--orange-dark); }
+
+    details {
+      max-width: 900px;
+      margin: 10px 0;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(255,253,248,.75);
+    }
+    summary {
+      padding: 14px 17px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    details p { padding: 0 17px 16px; margin: 0; color: var(--muted); font-size: 15px; }
+
+    .sources {
+      margin-top: 70px;
+      padding-top: 30px;
+      border-top: 1px solid #cbbfac;
+    }
+    .sources h2 { font-size: 29px; }
+    .sources ol { max-width: 900px; padding-left: 23px; }
+    .sources li { margin: 10px 0; font-size: 14px; color: #55584f; }
+    .source-kind {
+      display: inline-block;
+      margin-right: 5px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--teal);
+      font: 700 9px/1.2 var(--mono);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    footer {
+      margin-top: 48px;
+      padding: 24px 0 0;
+      border-top: 1px solid #cbbfac;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    :focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+    @media (max-width: 900px) {
+      .concept-grid, .views, .triple { grid-template-columns: 1fr; }
+      .lab-grid, .repo-box { grid-template-columns: 1fr; }
+      .metric-row { grid-template-columns: 1fr 1fr; }
+      .db-strip { grid-template-columns: 1fr 1fr; }
+      .jammer-tabs { grid-template-columns: repeat(2, 1fr); }
+      .pipeline { grid-template-columns: repeat(5, minmax(105px, 1fr)); overflow-x: auto; }
+    }
+    @media (max-width: 720px) {
+      body { font-size: 17px; }
+      .hero { min-height: 560px; }
+      .hero-inner { padding-top: 60px; }
+      .hero-goal { grid-template-columns: 1fr; }
+      main { width: min(100% - 28px, 1120px); padding-top: 36px; }
+      .why { grid-template-columns: 1fr; gap: 8px; padding: 22px; }
+      .section-head { grid-template-columns: 48px 1fr; gap: 12px; margin-top: 72px; }
+      .section-head .num { width: 42px; height: 42px; }
+      .twin, .taxonomy, .diagnostic-grid, .quiz-grid { grid-template-columns: 1fr; }
+      .plots-grid { grid-template-columns: 1fr; }
+      .time-wave-plot, .correlation-plot { grid-column: auto; }
+      .lab-controls { grid-template-columns: 1fr; }
+      .equation { grid-template-columns: 1fr; }
+      .equation .formula { white-space: normal; }
+      .card-facts { grid-template-columns: 1fr; }
+      .layer { grid-template-columns: 1fr; gap: 7px; }
+      .safety { align-items: flex-start; }
+    }
+    @media (max-width: 480px) {
+      .metric-row { grid-template-columns: 1fr; }
+      .db-strip { grid-template-columns: 1fr; }
+      .jammer-tabs { grid-template-columns: 1fr 1fr; }
+      .instrument-body, .pad { padding: 18px; }
+      .lesson-nav a { padding-inline: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .001ms !important; animation-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#lesson">Skip to the lesson</a>
+
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">GNSS security · bottom-up field guide · July 2026</p>
+      <h1>From radio waves to receiver failure.</h1>
+      <p class="hero-lead">A visual lesson for understanding spectrum first, then seeing exactly how
+        continuous-wave, multi-tone, narrowband, wideband, chirp, pulsed, and structured jammers
+        stress a GNSS receiver.</p>
+      <div class="hero-goal">
+        <span class="goal-label">Finish line</span>
+        <p>You will be able to look at a spectrum or spectrogram, name the likely jammer family,
+          predict which receiver stage fails first, and know which telemetry would confirm it.</p>
+      </div>
+      <div class="spectrum-rule" aria-hidden="true">
+        <i style="height:6%"></i><i style="height:8%"></i><i style="height:12%"></i><i style="height:18%"></i>
+        <i style="height:28%"></i><i style="height:45%"></i><i style="height:76%"></i><i style="height:100%"></i>
+        <i style="height:72%"></i><i style="height:42%"></i><i style="height:26%"></i><i style="height:18%"></i>
+        <i style="height:13%"></i><i style="height:10%"></i><i style="height:8%"></i><i style="height:7%"></i>
+        <i style="height:8%"></i><i style="height:10%"></i><i style="height:14%"></i><i style="height:20%"></i>
+        <i style="height:32%"></i><i style="height:18%"></i><i style="height:12%"></i><i style="height:9%"></i>
+      </div>
+    </div>
+  </header>
+
+  <nav class="lesson-nav" aria-label="Lesson chapters">
+    <ol>
+      <li><a href="#signals">01 Signals</a></li>
+      <li><a href="#spectrum">02 Spectrum</a></li>
+      <li><a href="#gps">03 GPS signal</a></li>
+      <li><a href="#receiver">04 Receiver</a></li>
+      <li><a href="#jamming">05 Jamming lab</a></li>
+      <li><a href="#types">06 Types</a></li>
+      <li><a href="#advanced">07 Advanced</a></li>
+      <li><a href="#diagnose">08 Diagnose</a></li>
+      <li><a href="#check">09 Check</a></li>
+    </ol>
+  </nav>
+
+  <main id="lesson">
+    <div class="why">
+      <h2>Why this matters</h2>
+      <div>
+        <p>Your receiver does not report “a chirp jammer attacked me.” It reports clues: AGC moved,
+          the FFT floor rose, acquisition found fewer PRNs, tracking <i>C/N₀</i> fell, navigation bits
+          stopped decoding, or satellites were no longer accepted into PVT.</p>
+        <p>This lesson connects those clues to the RF cause. That connection is the useful skill:
+          <strong>waveform → spectrum → receiver stage → observable symptom</strong>.</p>
+      </div>
+    </div>
+
+    <div class="safety">
+      <b>Lab boundary</b>
+      <span>Radiating GNSS interference can endanger other users and may be illegal. Keep experiments
+        conducted over cable, inside suitable RF shielding, or under the required authorization.
+        The simulations here are qualitative teaching models, not transmit recipes.</span>
+    </div>
+
+    <section id="signals">
+      <div class="section-head">
+        <span class="num">01</span>
+        <div>
+          <h2>Start with a signal: a value changing over time</h2>
+          <p>Before “narrowband” can mean anything, separate three properties that are often mixed
+            together: strength, oscillation rate, and occupied bandwidth.</p>
+        </div>
+      </div>
+
+      <p class="lede measure">An antenna turns an electromagnetic field into a changing voltage.
+        A receiver samples that voltage. The list of sample values is the signal we process.</p>
+
+      <div class="concept-grid">
+        <article class="concept card" data-n="A">
+          <span class="term">Amplitude</span>
+          <h3>How large?</h3>
+          <p>Amplitude is the height of the waveform. Power grows with amplitude squared. A stronger
+            jammer is taller, but “tall” does not tell you whether it is narrowband or wideband.</p>
+        </article>
+        <article class="concept card" data-n="f">
+          <span class="term">Frequency</span>
+          <h3>How fast does one pattern repeat?</h3>
+          <p>A steady sinusoid repeats at one frequency. It can oscillate very fast and still occupy
+            one thin spectral line.</p>
+        </article>
+        <article class="concept card" data-n="B">
+          <span class="term">Bandwidth</span>
+          <h3>How many frequencies are present?</h3>
+          <p>Bandwidth is the width of the occupied frequency region. One tone is narrow; abrupt
+            pulses or random sample-to-sample changes need many frequency components.</p>
+        </article>
+      </div>
+
+      <div class="instrument card" id="signalBench">
+        <div class="instrument-head">
+          <div>
+            <h3>Signal bench: time view versus frequency view</h3>
+            <p>Choose a waveform. The two plots show the same samples from two angles.</p>
+          </div>
+          <div class="segmented" role="group" aria-label="Choose a signal waveform">
+            <button type="button" class="sig-choice" data-signal="lowTone" aria-pressed="true">slow tone</button>
+            <button type="button" class="sig-choice" data-signal="highTone" aria-pressed="false">fast tone</button>
+            <button type="button" class="sig-choice" data-signal="pulse" aria-pressed="false">short pulse</button>
+            <button type="button" class="sig-choice" data-signal="noise" aria-pressed="false">random noise</button>
+          </div>
+        </div>
+        <div class="instrument-body">
+          <div class="twin">
+            <div class="plot">
+              <p class="figure-label">Time domain · amplitude over time</p>
+              <canvas id="signalTime" width="520" height="220" role="img"
+                aria-label="Time-domain plot of a slow steady tone">Your browser cannot draw the time plot.</canvas>
+            </div>
+            <div class="plot">
+              <p class="figure-label">Frequency domain · power at each frequency</p>
+              <canvas id="signalFreq" width="520" height="220" role="img"
+                aria-label="Spectrum of a slow steady tone">Your browser cannot draw the spectrum.</canvas>
+            </div>
+          </div>
+          <p class="caption" id="signalLesson"><strong>Slow tone:</strong> it repeats slowly and produces
+            one narrow spectral line. Its centre frequency is low; its bandwidth is still narrow.</p>
+        </div>
+      </div>
+
+      <div class="mistake measure">
+        <b>Repair this mental model</b>
+        <p><strong>“Faster change means wider bandwidth” is only a shortcut for abrupt or random
+          change.</strong> A perfectly steady 1.5&nbsp;GHz sinusoid changes extremely fast but remains
+          a single narrow line. Bandwidth grows when the waveform needs a <em>range</em> of frequencies
+          to describe its shape: sharp edges, modulation, hopping, or unpredictable changes.</p>
+      </div>
+
+      <h3>Why the receiver uses I and Q</h3>
+      <p class="measure">Sampling a 1575.42&nbsp;MHz carrier directly is inconvenient. The RF front end
+        mixes a small slice around GPS L1 down near zero frequency. It stores each sample as
+        <strong>I</strong> and <strong>Q</strong>: two coordinates of a rotating arrow. Together they
+        preserve amplitude and phase, including whether energy lies above or below the tuned centre.</p>
+      <div class="insight measure">
+        <h3>Useful reading rule</h3>
+        <p>In SDR files, “0 Hz” usually means the radio’s tuned centre, not literal DC in the sky.
+          A spectral line at +200&nbsp;kHz means “200&nbsp;kHz above the tuned centre.”</p>
+      </div>
+      <div class="insight measure">
+        <h3>Sample rate sets the horizontal window</h3>
+        <p>An IQ rate of <i>F</i><sub>s</sub> samples/s represents roughly one
+          <i>F</i><sub>s</sub>-wide baseband span, from −<i>F</i><sub>s</sub>/2 to
+          +<i>F</i><sub>s</sub>/2. For example, 4.096&nbsp;Msample/s shows roughly
+          4.096&nbsp;MHz around the tuned centre. The analog anti-alias filter must reject energy
+          outside that span or it can fold into the recorded band.</p>
+      </div>
+    </section>
+
+    <section id="spectrum">
+      <div class="section-head">
+        <span class="num">02</span>
+        <div>
+          <h2>Spectrum is a power map of frequency</h2>
+          <p>A waveform, a spectrum, and a spectrogram are not three different signals. They are
+            three views of the same received samples.</p>
+        </div>
+      </div>
+
+      <div class="views">
+        <article class="view-card card">
+          <svg viewBox="0 0 300 140" role="img" aria-label="A waveform with amplitude over time">
+            <path d="M0 70H300M30 0V140" stroke="#29424d" stroke-width="1"/>
+            <path d="M30 70 C45 20 60 20 75 70 S105 120 120 70 S150 20 165 70 S195 120 210 70 S240 20 255 70 S285 120 300 70"
+              fill="none" stroke="#63c7d4" stroke-width="3"/>
+            <text x="240" y="130" fill="#8fa8af" font-family="monospace" font-size="10">time →</text>
+          </svg>
+          <div class="body">
+            <h3>Waveform</h3>
+            <p><strong>x = time, y = amplitude.</strong> Best for pulses, clipping, transitions, and
+              seeing what a single sample does.</p>
+          </div>
+        </article>
+        <article class="view-card card">
+          <svg viewBox="0 0 300 140" role="img" aria-label="A spectrum with power over frequency">
+            <path d="M0 120H300M30 0V140" stroke="#29424d" stroke-width="1"/>
+            <path d="M30 120L116 118L130 112L141 80L150 18L159 80L170 112L184 118L300 120"
+              fill="rgba(195,79,44,.35)" stroke="#f2c14e" stroke-width="2"/>
+            <text x="215" y="134" fill="#8fa8af" font-family="monospace" font-size="10">frequency →</text>
+          </svg>
+          <div class="body">
+            <h3>Spectrum / PSD</h3>
+            <p><strong>x = frequency, y = power.</strong> Best for seeing lines, occupied bandwidth,
+              spectral shape, and the noise floor.</p>
+          </div>
+        </article>
+        <article class="view-card card">
+          <svg viewBox="0 0 300 140" role="img" aria-label="A spectrogram with frequency over time and brightness as power">
+            <defs>
+              <linearGradient id="sweep" x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0" stop-color="#c34f2c" stop-opacity=".1"/>
+                <stop offset=".45" stop-color="#f2c14e"/>
+                <stop offset=".55" stop-color="#f2c14e"/>
+                <stop offset="1" stop-color="#c34f2c" stop-opacity=".1"/>
+              </linearGradient>
+            </defs>
+            <path d="M0 140L70 0M70 140L140 0M140 140L210 0M210 140L280 0" stroke="url(#sweep)" stroke-width="8"/>
+            <text x="240" y="132" fill="#8fa8af" font-family="monospace" font-size="10">time →</text>
+            <text x="7" y="18" fill="#8fa8af" font-family="monospace" font-size="10">freq ↑</text>
+          </svg>
+          <div class="body">
+            <h3>Spectrogram</h3>
+            <p><strong>x = time, y = frequency, colour = power.</strong> Best for a jammer that moves,
+              pulses, hops, or changes mode.</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="twin">
+        <article class="card pad">
+          <p class="figure-label" style="color:var(--orange-dark)">Short FFT window</p>
+          <h3>Better timing, blurrier frequency</h3>
+          <p>A short window tells you when a pulse or sweep arrived, but its frequency bins are wider.
+            Use this when the event changes quickly.</p>
+        </article>
+        <article class="card pad">
+          <p class="figure-label" style="color:var(--teal)">Long FFT window</p>
+          <h3>Sharper frequency, blurrier timing</h3>
+          <p>A long window separates nearby tones, but averages motion during the window.
+            Spectrogram design is always a time–frequency trade-off.</p>
+        </article>
+      </div>
+
+      <h3>Narrow and wide are relative words</h3>
+      <p class="measure">A 100&nbsp;kHz interferer is wide compared with a 25&nbsp;Hz tracking loop, but
+        narrow compared with a receiver front end that admits 20&nbsp;MHz. Always ask:
+        <strong>bandwidth relative to what?</strong> For this lesson, compare the jammer with the useful
+        GPS L1 C/A signal band and with the receiver’s admitted bandwidth.</p>
+
+      <div class="instrument card">
+        <div class="instrument-head">
+          <div>
+            <h3>Bandwidth bench: coverage versus power density</h3>
+            <p>Move the jammer without changing the victim signal.</p>
+          </div>
+        </div>
+        <div class="instrument-body">
+          <div class="controls">
+            <div class="field">
+              <label for="bw">jammer bandwidth</label>
+              <input id="bw" type="range" min="0.1" max="10" step="0.1" value="0.5">
+              <output id="bwOut" for="bw">0.5 MHz</output>
+            </div>
+            <div class="field">
+              <label for="offset">centre offset from L1</label>
+              <input id="offset" type="range" min="-4" max="4" step="0.1" value="0">
+              <output id="offsetOut" for="offset">0.0 MHz</output>
+            </div>
+            <div class="field">
+              <label for="totalPower">total jammer power</label>
+              <input id="totalPower" type="range" min="-10" max="30" step="1" value="10">
+              <output id="powerOut" for="totalPower">+10 dB (conceptual)</output>
+            </div>
+          </div>
+          <div class="plot" style="margin-top:18px">
+            <canvas id="bandwidthCanvas" width="1020" height="300" role="img"
+              aria-label="GPS signal spectrum and a movable jammer band">Your browser cannot draw the bandwidth plot.</canvas>
+          </div>
+          <div class="metric-row">
+            <div class="metric"><span class="k">GPS main-lobe overlap</span><span class="v" id="coverageMetric">24%</span><span class="hint">how much useful frequency span is covered</span></div>
+            <div class="metric"><span class="k">Power density</span><span class="v" id="densityMetric">+13 dB/MHz</span><span class="hint">same total power becomes taller when squeezed</span></div>
+            <div class="metric"><span class="k">Jammer family</span><span class="v" id="widthMetric">narrow</span><span class="hint">relative to the 2.046 MHz ideal C/A main lobe</span></div>
+            <div class="metric"><span class="k">Key trade-off</span><span class="v" id="tradeMetric">dense</span><span class="hint">strong locally, but leaves frequencies untouched</span></div>
+          </div>
+          <p class="caption"><strong>Power is area, not height alone.</strong> With fixed total power,
+            squeezing the jammer into a narrower band raises power per hertz. Spreading it wider covers
+            more of the receiver but lowers power density unless the transmitter adds more total power.</p>
+        </div>
+      </div>
+
+      <div class="equation">
+        <div class="formula">PSD ≈ P / B</div>
+        <p><strong>Power spectral density</strong> is power divided by bandwidth. This simple relation
+          explains the jammer designer’s recurring trade-off: concentrate energy or cover more spectrum.</p>
+      </div>
+    </section>
+
+    <section id="gps">
+      <div class="section-head">
+        <span class="num">03</span>
+        <div>
+          <h2>Why a GPS signal looks like noise on purpose</h2>
+          <p>GNSS uses spread spectrum: the signal occupies much more bandwidth than the 50 bit/s
+            navigation message needs, then the receiver collapses it again with a known PRN code.</p>
+        </div>
+      </div>
+
+      <p class="lede measure">For GPS L1 C/A, the carrier is centred at
+        <strong>1575.42&nbsp;MHz</strong>. A satellite’s 1023-chip C/A code runs at
+        <strong>1.023&nbsp;Mchip/s</strong> and repeats every millisecond. Ideal rectangular chips give
+        a sinc²-like spectrum whose central lobe has first nulls at about ±1.023&nbsp;MHz.</p>
+
+      <div class="gps-band" aria-label="Idealized GPS L1 C/A spectrum">
+        <div class="band-note">
+          <span class="mono">baseband offset from 1575.42 MHz</span>
+          <span>idealized C/A spectrum · not receiver filter shape</span>
+        </div>
+        <div class="band-envelope" id="gpsEnvelope" aria-hidden="true"></div>
+        <div class="band-axis">
+          <span>−5 MHz</span><span>−1.023</span><span>0 (L1)</span><span>+1.023</span><span>+5 MHz</span>
+        </div>
+      </div>
+
+      <h3>Decibels without fear</h3>
+      <p class="measure">A decibel is a logarithmic <em>ratio</em>. It keeps huge RF power ranges
+        readable and turns multiplication into addition. For power ratios:</p>
+      <div class="db-strip" aria-label="Decibel power ratio cheat sheet">
+        <div class="db-item"><span class="db">+3 dB</span><span>about 2× the power</span></div>
+        <div class="db-item"><span class="db">+10 dB</span><span>10× the power</span></div>
+        <div class="db-item"><span class="db">+20 dB</span><span>100× the power</span></div>
+        <div class="db-item"><span class="db">−10 dB</span><span>one tenth the power</span></div>
+      </div>
+      <p class="measure"><strong>J/S</strong> compares total jammer power with desired-signal power:
+        0&nbsp;dB means equal power, +20&nbsp;dB means 100× more jammer power. That still does not
+        predict damage without bandwidth. <strong>C/N₀</strong>, reported in dB-Hz, compares recovered
+        carrier power with noise density and is the more familiar tracking-quality trend.</p>
+      <p class="measure">The official GPS interface specification gives a minimum received L1 C/A
+        signal level of about <strong>−158.5&nbsp;dBW (−128.5&nbsp;dBm)</strong> under its stated
+        conditions. That weakness is why a nearby terrestrial interferer can dominate the RF front
+        end even at modest transmitted power—and why PRN correlation is essential.</p>
+
+      <h3>The code is a key, not encryption</h3>
+      <p class="measure">Each satellite uses a different public PRN sequence. Before correlation,
+        every satellite looks noise-like and can sit below the receiver’s thermal noise. During
+        <strong>acquisition</strong>, the receiver tries candidate PRN codes, time shifts, and Doppler
+        frequencies. The correct combination makes 1023 tiny contributions add in phase into a peak;
+        wrong combinations mostly cancel.</p>
+
+      <div class="twin">
+        <article class="card pad">
+          <p class="figure-label" style="color:var(--orange-dark)">Before correlation</p>
+          <h3>Signal hidden in the floor</h3>
+          <p>Looking at raw IQ, a genuine C/A signal resembles noise. A higher FFT floor is useful
+            interference evidence, but the satellite itself is not normally a bright line.</p>
+        </article>
+        <article class="card pad">
+          <p class="figure-label" style="color:var(--teal)">After correct correlation</p>
+          <h3>Energy becomes one peak</h3>
+          <p>The receiver gains processing gain by integrating the known code. Jamming wins by
+            raising the correlator’s uncertainty, distorting the peak, or overwhelming earlier hardware.</p>
+        </article>
+      </div>
+
+      <div class="insight measure">
+        <h3>Keep the scales separate</h3>
+        <p><strong>RF bandwidth</strong> is measured in hertz. <strong>Code delay</strong> is a horizontal
+          shift of the PRN sequence. <strong>Doppler</strong> is a carrier-frequency offset.
+          Acquisition searches a 2-D grid of code delay × Doppler; a spectrum alone does not show the
+          whole search problem.</p>
+      </div>
+    </section>
+
+    <section id="receiver">
+      <div class="section-head">
+        <span class="num">04</span>
+        <div>
+          <h2>A jammer can break six different jobs</h2>
+          <p>“The receiver lost GPS” is the final symptom. The first damaged stage tells you much more
+            about the interference.</p>
+        </div>
+      </div>
+
+      <div class="receiver-chain" aria-label="GNSS receiver processing chain">
+        <article class="stage"><span class="stage-n">Stage 1</span><h4>Antenna + RF</h4><p>Selects the band and amplifies a very weak sky signal. A nearby jammer can dominate here.</p></article>
+        <article class="stage"><span class="stage-n">Stage 2</span><h4>AGC + ADC</h4><p>Sets gain and digitizes IQ. Strong interference lowers AGC gain or clips the ADC.</p></article>
+        <article class="stage"><span class="stage-n">Stage 3</span><h4>Acquisition</h4><p>Searches PRN delay and Doppler. A raised floor hides correlation peaks.</p></article>
+        <article class="stage"><span class="stage-n">Stage 4</span><h4>Tracking</h4><p>DLL/PLL/FLL keep code and carrier aligned. Interference adds jitter or causes loss of lock.</p></article>
+        <article class="stage"><span class="stage-n">Stage 5</span><h4>Nav decode</h4><p>Integrates symbols and checks data. Bit errors block ephemeris/time updates.</p></article>
+        <article class="stage"><span class="stage-n">Stage 6</span><h4>PVT</h4><p>Uses accepted ranges. Too few or inconsistent measurements mean degraded or no fix.</p></article>
+      </div>
+
+      <div class="diagnostic-grid">
+        <article class="diagnostic card">
+          <span class="label">Front-end evidence</span>
+          <h3>Before the correlator</h3>
+          <ul>
+            <li>AGC command or reported gain falls</li>
+            <li>ADC clipping / sample histogram piles at limits</li>
+            <li>Total in-band power or FFT floor rises</li>
+            <li>Lines, sweeps, or pulses appear in a spectrogram</li>
+          </ul>
+        </article>
+        <article class="diagnostic card">
+          <span class="label">Receiver evidence</span>
+          <h3>After correlation</h3>
+          <ul>
+            <li>Acquisition peaks lose margin or new PRNs are not found</li>
+            <li><i>C/N₀</i> trends down; code/carrier residuals grow</li>
+            <li>Tracking and navigation-data locks drop</li>
+            <li><code>svUsed</code>/<code>prUsed</code> fall; PVT becomes invalid</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="mistake measure">
+        <b>One metric is never enough</b>
+        <p>High reported <i>C/N₀</i> does not prove a measurement is accepted into PVT, and
+          <code>svUsed = 0</code> does not by itself prove jamming. Pair RF evidence with acquisition,
+          tracking, measurement residuals, and PVT validity. A receiver can track a signal and still
+          reject its pseudorange.</p>
+      </div>
+    </section>
+
+    <section id="jamming">
+      <div class="section-head">
+        <span class="num">05</span>
+        <div>
+          <h2>Jamming adds an unwanted signal</h2>
+          <p>It does not erase the satellite waveform. It changes the mixture that reaches the
+            receiver until one or more processing jobs can no longer separate truth from interference.</p>
+        </div>
+      </div>
+
+      <div class="equation">
+        <div class="formula">r(t) = s(t) + n(t) + j(t)</div>
+        <p>The receiver gets desired satellite signals <strong>s</strong>, ordinary noise
+          <strong>n</strong>, and jammer <strong>j</strong>. Jammer type describes the structure of
+          <strong>j</strong>; jammer power describes how dominant it is.</p>
+      </div>
+
+      <p class="measure">The same waveform can be harmless when weak and devastating when strong.
+        The same power can also produce different damage depending on receiver bandwidth, filters,
+        AGC, quantization, acquisition strategy, loop bandwidths, antenna, and whether the receiver
+        was already tracking. There is no universal “failure at +X dB” threshold.</p>
+
+      <div class="jammer-lab instrument card">
+        <div class="instrument-head">
+          <div>
+            <h3>End-to-end jammer → receiver lab</h3>
+            <p>Choose a family, then follow the same signal through amplitude versus time, spectrum,
+              spectrogram, correlation, and modeled receiver symptoms.</p>
+          </div>
+        </div>
+        <div class="instrument-body">
+          <div class="jammer-tabs" role="group" aria-label="Choose a jammer type">
+            <button type="button" data-jammer="cw" aria-pressed="true">CW tone</button>
+            <button type="button" data-jammer="multi" aria-pressed="false">multi-tone</button>
+            <button type="button" data-jammer="narrow" aria-pressed="false">narrowband noise</button>
+            <button type="button" data-jammer="wide" aria-pressed="false">wideband noise</button>
+            <button type="button" data-jammer="chirp" aria-pressed="false">chirp / sweep</button>
+            <button type="button" data-jammer="pulse" aria-pressed="false">pulsed</button>
+            <button type="button" data-jammer="matchedSpectrum" aria-pressed="false">matched-spectrum</button>
+            <button type="button" data-jammer="matchedCode" aria-pressed="false">matched-code</button>
+          </div>
+
+          <div class="lab-controls">
+            <div class="controls">
+              <div class="field">
+                <label for="jsLevel">conceptual jammer / signal level</label>
+                <input id="jsLevel" type="range" min="-20" max="40" step="1" value="15">
+                <output id="jsOut" for="jsLevel">J/S = +15 dB</output>
+              </div>
+              <div class="field">
+                <label for="receiverMode">receiver starting state</label>
+                <select id="receiverMode">
+                  <option value="acquiring">cold / acquiring</option>
+                  <option value="tracking" selected>already tracking</option>
+                </select>
+              </div>
+            </div>
+            <label class="switch"><input id="mitigation" type="checkbox"> show common mitigation</label>
+          </div>
+
+          <div class="lab-grid">
+            <div>
+              <div class="plots-grid">
+                <div class="plot time-wave-plot">
+                  <p class="figure-label">Transmitted waveform · amplitude A(t) over time</p>
+                  <canvas id="jamTime" width="1060" height="300" role="img"
+                    aria-label="Normalized time-domain waveform for a continuous-wave jammer">Your browser cannot draw the time-domain waveform.</canvas>
+                </div>
+                <div class="plot">
+                  <p class="figure-label">Spectrum · one time window</p>
+                  <canvas id="jamSpectrum" width="520" height="250" role="img"
+                    aria-label="Spectrum for a continuous-wave jammer">Your browser cannot draw the spectrum.</canvas>
+                </div>
+                <div class="plot">
+                  <p class="figure-label">Spectrogram · frequency over time</p>
+                  <canvas id="jamSpectrogram" width="520" height="250" role="img"
+                    aria-label="Spectrogram for a continuous-wave jammer">Your browser cannot draw the spectrogram.</canvas>
+                </div>
+                <div class="plot correlation-plot">
+                  <p class="figure-label">Correlator view · code-delay search</p>
+                  <canvas id="correlator" width="1060" height="220" role="img"
+                    aria-label="Correlation peak under continuous-wave interference">Your browser cannot draw the correlator.</canvas>
+                </div>
+              </div>
+
+              <div class="pipeline" id="labPipeline" aria-label="Modeled receiver stage status">
+                <div class="pipe-stage" data-stage="front"><span class="dot"></span><span class="name">AGC / ADC</span><span class="status">healthy</span></div>
+                <div class="pipe-stage" data-stage="acq"><span class="dot"></span><span class="name">acquisition</span><span class="status">healthy</span></div>
+                <div class="pipe-stage" data-stage="track"><span class="dot"></span><span class="name">tracking</span><span class="status">healthy</span></div>
+                <div class="pipe-stage" data-stage="nav"><span class="dot"></span><span class="name">nav bits</span><span class="status">healthy</span></div>
+                <div class="pipe-stage" data-stage="pvt"><span class="dot"></span><span class="name">PVT</span><span class="status">healthy</span></div>
+              </div>
+            </div>
+
+            <aside class="lab-explain" aria-live="polite">
+              <span class="type-kicker" id="jamClass">narrowband · stationary</span>
+              <h3 id="jamName">CW / single tone</h3>
+              <p id="jamCore">One sinusoid stays at one frequency. On a spectrogram it is one horizontal line.</p>
+              <div class="lab-wave-rule">
+                <code id="jamFormula">j(t) = A cos(2πf₀t + φ)</code>
+                <span id="jamTimeClue">Constant peak amplitude and evenly spaced cycles.</span>
+              </div>
+              <dl>
+                <dt>What changes first</dt><dd id="jamFirst">A tall spectral line appears; strong cases can pull down AGC gain.</dd>
+                <dt>Receiver symptom</dt><dd id="jamSymptom">Correlation margin falls most where the tone overlaps useful signal energy.</dd>
+                <dt>Detector clue</dt><dd id="jamDetect">High spectral peak-to-average ratio at a stable frequency.</dd>
+                <dt>Mitigation and its cost</dt><dd id="jamMitigate">A notch can remove the line, but also removes nearby GNSS energy and can distort correlation.</dd>
+              </dl>
+              <div class="metric-row" style="grid-template-columns:1fr 1fr">
+                <div class="metric"><span class="k">illustrative C/N₀ trend</span><span class="v" id="cn0Metric">42 dB-Hz</span><span class="hint">directional teaching estimate</span></div>
+                <div class="metric"><span class="k">illustrative svUsed</span><span class="v" id="svMetric">9 / 10</span><span class="hint">not a receiver threshold</span></div>
+              </div>
+              <div class="scope-note" id="jamScope">Usually affects the whole admitted L1 band, but damage is concentrated near the tone.</div>
+            </aside>
+          </div>
+          <p class="caption"><strong>Reading the time trace:</strong> the carrier is slowed and the
+            amplitude scale is normalized; the J/S control changes its drawn height while preserving
+            the family’s structure. <strong>Interpretation, not certification:</strong> status lights
+            and numeric trends are not calibrated to a specific u-blox, Septentrio, GNSS-SDR, front
+            end, antenna, or filter. Validate real thresholds with conducted tests.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="types">
+      <div class="section-head">
+        <span class="num">06</span>
+        <div>
+          <h2>The jammer families, one by one</h2>
+          <p>Each card now starts with the real-amplitude view you asked for: x-axis is time and
+            y-axis is A(t). Select any card to load the same waveform into the larger lab above.</p>
+        </div>
+      </div>
+
+      <h3>Time-domain waveform atlas</h3>
+      <p class="lede measure"><strong>Yes: ideal CW is one sinusoid.</strong> Multi-tone is several
+        sinusoids added together. The other families change frequency, gate the carrier in time,
+        generate random samples, filter those samples, or flip carrier phase with a PRN code.</p>
+      <div class="insight wide-measure">
+        <h3>How to read these drawings</h3>
+        <p>The carrier is deliberately slowed and the amplitude is normalized to ±A so its shape is
+          visible. A real GPS L1 waveform cycles at 1575.42&nbsp;MHz and would look like a solid blur
+          at this scale. Real SDR hardware normally creates I/Q baseband samples and upconverts them;
+          the plots show the equivalent real passband amplitude.</p>
+        <p>For noise families, there is no one repeating “correct” line. Each run produces a different
+          realization with the same statistics. That is also why a single time trace cannot reliably
+          tell narrowband noise from wideband or matched-spectrum noise—the spectrum is the deciding
+          view.</p>
+      </div>
+
+      <div class="taxonomy" id="taxonomy">
+        <article class="jammer-card card" data-key="cw" tabindex="0" role="button" aria-label="Load CW tone in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">stationary · narrowest</span><h3>CW / single tone</h3>
+          <p>One stable sinusoid. It is narrow regardless of how high its centre frequency is.</p>
+          <div class="card-facts"><div><b>Picture</b>one horizontal line</div><div><b>First pain</b>spectral line; possible AGC loss</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="multi" tabindex="0" role="button" aria-label="Load multi-tone in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">stationary · comb</span><h3>Multi-tone</h3>
+          <p>Several CW lines. More useful spectrum is occupied, and a bank of notches costs more desired signal.</p>
+          <div class="card-facts"><div><b>Picture</b>parallel horizontal lines</div><div><b>First pain</b>several spectral slices</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="narrow" tabindex="0" role="button" aria-label="Load narrowband noise in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">stationary · partial-band</span><h3>Narrowband noise</h3>
+          <p>Random energy filtered into a small band. It is a fuzzy stripe rather than a sharp tone.</p>
+          <div class="card-facts"><div><b>Picture</b>thick horizontal band</div><div><b>First pain</b>local noise-floor rise</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="wide" tabindex="0" role="button" aria-label="Load wideband noise in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">stationary · full-band</span><h3>Wideband barrage noise</h3>
+          <p>Noise covers most or all admitted signal bandwidth. It reduces correlation margin for many PRNs at once.</p>
+          <div class="card-facts"><div><b>Picture</b>bright full-band carpet</div><div><b>First pain</b>global floor + AGC</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="chirp" tabindex="0" role="button" aria-label="Load chirp in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">moving · swept-frequency</span><h3>Chirp / sweep</h3>
+          <p>A narrow tone moves across frequency and repeats. Narrow at an instant, broad over the sweep period.</p>
+          <div class="card-facts"><div><b>Picture</b>diagonal sawtooth lines</div><div><b>First pain</b>repeated transient hits</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="pulse" tabindex="0" role="button" aria-label="Load pulsed interference in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">bursty · time-localized</span><h3>Pulsed interference</h3>
+          <p>High energy arrives during short time intervals. Shorter edges imply broader instantaneous spectrum.</p>
+          <div class="card-facts"><div><b>Picture</b>vertical bright bars</div><div><b>First pain</b>ADC / AGC transients</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="matchedSpectrum" tabindex="0" role="button" aria-label="Load matched-spectrum noise in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">structured · signal-shaped</span><h3>Matched-spectrum noise</h3>
+          <p>Noise is filtered to resemble the victim signal’s spectral envelope. A simple notch cannot separate them cleanly.</p>
+          <div class="card-facts"><div><b>Picture</b>GPS-like central envelope</div><div><b>First pain</b>correlator margin</div></div></div>
+        </article>
+        <article class="jammer-card card" data-key="matchedCode" tabindex="0" role="button" aria-label="Load matched-code interference in the jammer lab">
+          <span class="stripe"></span><div class="body"><span class="sub">protocol-aware · PRN-targeted</span><h3>Matched-code interference</h3>
+          <p>Structured energy uses a victim PRN and timing relationship. It is about correlation, not narrow RF bandwidth.</p>
+          <div class="card-facts"><div><b>Picture</b>may look GPS-like</div><div><b>First pain</b>target PRN correlator</div></div></div>
+        </article>
+      </div>
+
+      <h3>Effect matrix</h3>
+      <p class="measure">These labels assume comparable in-band power and no special spatial
+        mitigation. “Targeted” means one PRN or correlator can be stressed more than the rest.</p>
+      <div class="card scroll">
+        <table>
+          <thead><tr><th>Family</th><th>AGC / ADC</th><th>Acquisition</th><th>Tracking</th><th>PVT</th><th>Common mitigation</th><th>Mitigation limit</th></tr></thead>
+          <tbody>
+            <tr><td><strong>CW</strong></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact low">indirect</span></td><td>notch / interference tracking</td><td>notch removes desired energy too</td></tr>
+            <tr><td><strong>Multi-tone</strong></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td>multiple adaptive notches</td><td>many notches erode the signal band</td></tr>
+            <tr><td><strong>Narrowband noise</strong></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td><span class="impact med">medium</span></td><td>sub-band excision / filtering</td><td>overlap decides how much GNSS energy is lost</td></tr>
+            <tr><td><strong>Wideband noise</strong></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td>spatial nulling, robust front end, alternate band</td><td>frequency filtering cannot separate co-band noise</td></tr>
+            <tr><td><strong>Chirp</strong></td><td><span class="impact high">bursty</span></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td><span class="impact med">medium</span></td><td>time-frequency excision / sweep estimation</td><td>fast or dense sweeps leave little clean data</td></tr>
+            <tr><td><strong>Pulsed</strong></td><td><span class="impact high">high</span></td><td><span class="impact med">duty-led</span></td><td><span class="impact med">duty-led</span></td><td><span class="impact med">medium</span></td><td>pulse blanking</td><td>high duty cycle discards too many samples</td></tr>
+            <tr><td><strong>Matched-spectrum</strong></td><td><span class="impact med">medium</span></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td><span class="impact high">high</span></td><td>spatial / multi-sensor / robust correlation</td><td>spectral overlap defeats simple frequency cuts</td></tr>
+            <tr><td><strong>Matched-code</strong></td><td><span class="impact low">possibly low</span></td><td><span class="impact target">targeted</span></td><td><span class="impact target">targeted</span></td><td><span class="impact target">targeted</span></td><td>correlation-shape and cross-sensor checks</td><td>can resemble valid GNSS structure</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="advanced">
+      <div class="section-head">
+        <span class="num">07</span>
+        <div>
+          <h2>“Advanced” is a strategy layer, not one new shape</h2>
+          <p>Cognitive, adaptive, hopping, and protocol-aware describe how a jammer chooses or controls
+            a waveform. They should not sit beside “CW” as if all words describe the same axis.</p>
+        </div>
+      </div>
+
+      <div class="layer-stack">
+        <div class="layer"><span class="label">Layer 1 · waveform</span><p>What energy looks like now:
+          tone, multi-tone, partial-band noise, wideband noise, chirp, or pulse.</p></div>
+        <div class="layer"><span class="label">Layer 2 · targeting</span><p>What the energy is aligned to:
+          a frequency, a GNSS band, a time window, an acquisition search, a PRN code, or a receiver state.</p></div>
+        <div class="layer"><span class="label">Layer 3 · control</span><p>How choices change:
+          fixed, hopping, reactive, adaptive, or “cognitive.” An adaptive jammer may switch among
+          several Layer-1 waveforms.</p></div>
+        <div class="layer"><span class="label">Counter-layer</span><p>How the receiver responds:
+          detection/classification, notch or blanking, time-frequency excision, spatial nulling/CRPA,
+          multi-band operation, inertial aiding, or alternate PNT.</p></div>
+      </div>
+
+      <div class="insight measure">
+        <h3>Matched-spectrum ≠ matched-code ≠ narrowband</h3>
+        <p><strong>Matched-spectrum</strong> copies a power-versus-frequency envelope.
+          <strong>Matched-code</strong> uses PRN structure so the target correlator responds.
+          <strong>Narrowband</strong> only says the occupied RF frequency width is small.
+          A PRN-coded waveform is normally spread across a GPS-like band, not narrowband.</p>
+      </div>
+
+      <div class="repo-box">
+        <div>
+          <h3>Where this repo’s <code>jam_noise</code> lands</h3>
+          <p>The production path in <code>gpssim.c</code> and both live players draws independent I/Q
+            noise every output sample, multiplies it by the selected satellite’s current C/A chip and
+            carrier, then adds it to the composite IQ stream.</p>
+          <p>Because independent zero-mean white noise is symmetric, multiplying each sample by
+            ±1 C/A chips does not, by itself, create a reliable PRN correlation peak or change the
+            white power spectrum. The current result is best taught as
+            <strong>per-PRN-scaled, wideband noise injection</strong>, not as demonstrated
+            target-selective matched-code jamming.</p>
+          <p>To study a genuinely structured PRN-coded interferer, first create slower symbols or a
+            deterministic component, then spread those symbols with the chosen C/A code and verify
+            target selectivity at the receiver correlator. That RF result is GPS-like
+            <strong>spread spectrum</strong>, not narrowband.</p>
+        </div>
+        <pre aria-label="Simplified jam_noise signal path"><span class="cm">// simplified from gpssim.c</span>
+<span class="var">ni</span> = <span class="fn">nextGaussianNoise</span>(state);
+<span class="var">nq</span> = <span class="fn">nextGaussianNoise</span>(state);
+
+<span class="cm">// a fresh random value every sample</span>
+<span class="var">I</span> = <span class="var">ni</span> <span class="op">×</span> codeCA <span class="op">×</span> carrierI;
+<span class="var">Q</span> = <span class="var">nq</span> <span class="op">×</span> codeCA <span class="op">×</span> carrierQ;
+
+<span class="cm">// white noise × ±1 is still white noise</span>
+compositeIQ <span class="op">+=</span> (I, Q);</pre>
+      </div>
+
+      <div class="mistake measure">
+        <b>What must be measured</b>
+        <p>A source-code comment is a design intention, not receiver-side proof. For a “target PRN”
+          claim, compare the intended PRN with control PRNs using acquisition peak statistics,
+          post-correlation noise, tracking residuals, and receiver acceptance. Do not infer selectivity
+          from the transmitter waveform alone.</p>
+      </div>
+    </section>
+
+    <section id="diagnose">
+      <div class="section-head">
+        <span class="num">08</span>
+        <div>
+          <h2>Read the receiver from outside to inside</h2>
+          <p>A disciplined diagnosis follows the signal path. This prevents a PVT symptom from being
+            mislabeled as a waveform type.</p>
+        </div>
+      </div>
+
+      <ol class="decision-list">
+        <li><div><strong>Start at raw power.</strong> Did AGC fall, did samples clip, or did total
+          in-band power rise? If not, a weak or structured attack may still exist, but broad strong
+          jamming is less likely.</div></li>
+        <li><div><strong>Inspect spectrum and spectrogram.</strong> One line suggests CW; several
+          lines suggest multi-tone; a fuzzy stripe suggests narrowband noise; diagonal repeats suggest
+          chirp; vertical bars suggest pulses; a full carpet suggests wideband noise.</div></li>
+        <li><div><strong>Inspect acquisition.</strong> Count searched/found PRNs and compare peak-to-
+          second-peak or detection statistics. Cold acquisition usually fails before an already-locked
+          receiver loses all tracking.</div></li>
+        <li><div><strong>Inspect tracking.</strong> Trend <i>C/N₀</i>, DLL/PLL/FLL errors, lock time,
+          cycle slips, and navigation-bit sync. Look for changes synchronized with the spectrogram.</div></li>
+        <li><div><strong>Inspect measurement acceptance.</strong> Check <code>svUsed</code>,
+          <code>prUsed</code>, pseudorange residuals, and validity flags. Tracking without PVT use is
+          evidence of a downstream consistency problem, not proof of successful navigation.</div></li>
+        <li><div><strong>Demand a control.</strong> Compare clean versus jammed, target versus
+          untargeted PRNs, mitigation off versus on, and repeated runs. A single screenshot is a clue,
+          not a causal result.</div></li>
+      </ol>
+
+      <h3>A fast symptom-to-hypothesis map</h3>
+      <div class="card scroll">
+        <table>
+          <thead><tr><th>Observed clue</th><th>First hypothesis</th><th>What would strengthen it</th><th>What else could look similar</th></tr></thead>
+          <tbody>
+            <tr><td>Stable tall FFT line</td><td>CW / unintentional carrier</td><td>same frequency over time; notch improves receiver</td><td>local oscillator spur, clock leakage</td></tr>
+            <tr><td>Repeating diagonal tracks</td><td>chirp / swept-frequency interference</td><td>consistent sweep slope and repetition</td><td>frequency-hopping source at low time resolution</td></tr>
+            <tr><td>Vertical bars + ADC clipping</td><td>pulsed interference</td><td>sample peaks align with loss-of-lock events</td><td>front-end impulse, nearby radar/DME depending on band</td></tr>
+            <tr><td>All PRNs’ <i>C/N₀</i> fall together</td><td>wide/partial-band interference or front-end compression</td><td>AGC and in-band power move together</td><td>antenna disconnect, attenuation, obstruction</td></tr>
+            <tr><td>One PRN has an abnormal correlation shape</td><td>structured interference, multipath, or spoofing</td><td>PRN-specific repeatable effect with raw-IQ evidence</td><td>bad ephemeris, multipath, implementation bug</td></tr>
+            <tr><td>Tracked, but <code>svUsed = 0</code></td><td>measurement rejected downstream</td><td>large/clamped residuals or integrity flags</td><td>timing inconsistency, spoofing, geometry, stale data</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="check">
+      <div class="section-head">
+        <span class="num">09</span>
+        <div>
+          <h2>Check that the model transfers</h2>
+          <p>These questions test prediction and diagnosis, not vocabulary.</p>
+        </div>
+      </div>
+
+      <div class="quiz-grid">
+        <article class="question card" data-answer="b" id="q1">
+          <span class="qnum">Misconception check</span>
+          <p class="stem">A perfectly steady sinusoid moves from 100&nbsp;kHz to 2&nbsp;MHz. What
+            necessarily happens to its bandwidth?</p>
+          <button class="option" data-choice="a">It becomes 20× wider because it changes 20× faster.</button>
+          <button class="option" data-choice="b">It stays a narrow line; its centre frequency moves.</button>
+          <button class="option" data-choice="c">It becomes white noise.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+
+        <article class="question card" data-answer="c" id="q2">
+          <span class="qnum">Apply power density</span>
+          <p class="stem">Two jammers have equal total power. One occupies 100&nbsp;kHz; the other
+            occupies 10&nbsp;MHz. Which statement is best?</p>
+          <button class="option" data-choice="a">Their power per hertz is equal.</button>
+          <button class="option" data-choice="b">The wide jammer is always more damaging.</button>
+          <button class="option" data-choice="c">The narrow jammer is denser; the wide jammer covers more spectrum.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+
+        <article class="question card" data-answer="a" id="q3">
+          <span class="qnum">Read a spectrogram</span>
+          <p class="stem">You see repeating diagonal lines across the band. What family and why?</p>
+          <button class="option" data-choice="a">Chirp: a narrow tone is sweeping across frequency over time.</button>
+          <button class="option" data-choice="b">Pulse: short events always draw horizontal lines.</button>
+          <button class="option" data-choice="c">CW: one fixed frequency draws a diagonal.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+
+        <article class="question card" data-answer="c" id="q4">
+          <span class="qnum">Separate the axes</span>
+          <p class="stem">A slow random symbol is multiplied by GPS PRN&nbsp;7 at 1.023&nbsp;Mchip/s.
+            What is the best description of the RF result?</p>
+          <button class="option" data-choice="a">Narrowband, because the random symbol changes slowly.</button>
+          <button class="option" data-choice="b">A pure CW line.</button>
+          <button class="option" data-choice="c">PRN-structured spread spectrum with a GPS-like occupied band.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+
+        <article class="question card" data-answer="b" id="q5">
+          <span class="qnum">Diagnose receiver evidence</span>
+          <p class="stem">A satellite tracks at high reported <i>C/N₀</i> but remains
+            <code>svUsed = 0</code> with a clamped pseudorange residual. What can you conclude?</p>
+          <button class="option" data-choice="a">The jamming attack definitely succeeded.</button>
+          <button class="option" data-choice="b">Tracking exists, but the measurement is inconsistent; inspect timing, ranging, integrity, and spoofing paths.</button>
+          <button class="option" data-choice="c">The receiver has a valid PVT solution from that satellite.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+
+        <article class="question card" data-answer="a" id="q6">
+          <span class="qnum">Choose mitigation</span>
+          <p class="stem">Strong short bursts create vertical bars and clip the ADC, with clean gaps
+            between bursts. Which first mitigation matches the structure?</p>
+          <button class="option" data-choice="a">Detect and blank contaminated time samples, if duty cycle is low enough.</button>
+          <button class="option" data-choice="b">Apply one fixed narrow notch.</button>
+          <button class="option" data-choice="c">Increase receiver RF gain.</button>
+          <div class="feedback" aria-live="polite"></div>
+        </article>
+      </div>
+
+      <article class="order-card card">
+        <span class="qnum mono" style="color:var(--orange-dark);font-size:10px;text-transform:uppercase;letter-spacing:.08em">Order the failure investigation</span>
+        <p class="stem"><strong>Build the receiver path from outside to inside.</strong> Select all six
+          stages in signal-flow order.</p>
+        <div class="order-bank" id="orderBank" aria-label="Available receiver stages"></div>
+        <div class="order-answer" id="orderAnswer" aria-label="Your selected order"></div>
+        <button class="reset-button" type="button" id="orderReset">Reset order</button>
+        <div class="feedback" id="orderFeedback" aria-live="polite"></div>
+      </article>
+
+      <h3>Compact glossary</h3>
+      <details><summary>FFT, spectrum, PSD, and spectrogram</summary><p>An FFT is an algorithm that
+        converts a finite window of samples into frequency bins. A spectrum plots magnitude or power
+        per bin. PSD normalizes power by bandwidth. A spectrogram stacks many short spectra over time.</p></details>
+      <details><summary>SNR, J/S, C/N₀, and dB-Hz</summary><p>SNR compares signal and noise power in
+        a stated bandwidth. J/S compares jammer and desired-signal power. C/N₀ compares carrier power
+        with noise density and is expressed in dB-Hz. They are related but not interchangeable without
+        bandwidth and measurement details.</p></details>
+      <details><summary>Acquisition versus tracking</summary><p>Acquisition is the broad search for a
+        PRN’s code delay and Doppler. Tracking is the continuous fine adjustment after a signal has
+        been found. An already-tracking receiver can often survive conditions in which cold
+        acquisition would fail.</p></details>
+      <details><summary>Jamming versus spoofing</summary><p>Jamming aims mainly at denial or
+        degradation by interference. Spoofing presents counterfeit but plausible ranging signals to
+        manipulate measurements. Protocol-aware denial can blur the boundary, so classify the
+        observed mechanism rather than assuming intent from one metric.</p></details>
+    </section>
+
+    <section class="sources" aria-labelledby="sources-title">
+      <h2 id="sources-title">Grounding and further reading</h2>
+      <ol>
+        <li><span class="source-kind">official</span>
+          <a href="https://www.gps.gov/sites/default/files/2025-07/IS-GPS-200N.pdf" target="_blank" rel="noopener">IS-GPS-200N</a>:
+          official GPS L1/L2 interface specification; L1 frequency, C/A code structure/rate, signal levels, and correlation requirements.</li>
+        <li><span class="source-kind">research</span>
+          <a href="https://trepo.tuni.fi/handle/10024/215469" target="_blank" rel="noopener">Morales Ferre, de la Fuente &amp; Lohan (2019), Jammer Classification in GNSS Bands</a>:
+          time-frequency examples and classification of tone/modulated, chirp, pulsed, and narrowband jammer families.</li>
+        <li><span class="source-kind">research</span>
+          <a href="https://www.mdpi.com/1424-8220/22/2/679" target="_blank" rel="noopener">Gao et al. (2022), Wide-Band Interference Mitigation Using Sub-Band AGC</a>:
+          interference families and why mitigation must match time/frequency structure.</li>
+        <li><span class="source-kind">research</span>
+          <a href="https://www.mdpi.com/1424-8220/23/7/3452" target="_blank" rel="noopener">Low-Cost COTS GNSS Interference Monitoring, Detection, and Classification (2023)</a>:
+          practical monitoring chain and single-tone, multi-tone, chirp, and pulsed spectrograms.</li>
+        <li><span class="source-kind">research</span>
+          <a href="https://www.mdpi.com/2076-3417/15/13/7131" target="_blank" rel="noopener">Differentiated GNSS Baseband Jamming Suppression (2025)</a>:
+          classification-guided mitigation for narrowband, pulsed, and chirp interference.</li>
+        <li><span class="source-kind">repo</span>
+          <code>gpssim.c</code>, <code>player/x300tx.cpp</code>, and <code>player/bladetx.cpp</code>:
+          the local <code>jam_noise</code> generation path analyzed in this lesson.</li>
+      </ol>
+    </section>
+
+    <footer>
+      <p>Built as a self-contained lesson: no external scripts, fonts, network calls, or stored browser
+        state. Visual receiver responses are qualitative and must be calibrated against the actual
+        receiver, front end, sample rate, bandwidth, and conducted test setup.</p>
+    </footer>
+  </main>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var COLORS = {
+      navy: "#101c25", grid: "#29424d", blue: "#63c7d4", orange: "#c34f2c",
+      yellow: "#f2c14e", red: "#e4604a", green: "#4b956e", pale: "#dce7e5",
+      muted: "#8fa8af", purple: "#a98bc8"
+    };
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function sinc(x) { return Math.abs(x) < 1e-8 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x); }
+    function seeded(seed) {
+      return function () {
+        seed |= 0;
+        seed = (seed + 0x6D2B79F5) | 0;
+        var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function ctx2d(id) {
+      var canvas = document.getElementById(id);
+      return { canvas: canvas, ctx: canvas.getContext("2d") };
+    }
+    function clearPlot(ctx, w, h) {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = COLORS.navy;
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      for (var x = 0; x <= w; x += w / 10) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      for (var y = 0; y <= h; y += h / 5) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+    }
+    function axisText(ctx, w, h, xText, yText) {
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = "11px Cascadia Code, monospace";
+      ctx.fillText(xText, w - ctx.measureText(xText).width - 8, h - 7);
+      ctx.save();
+      ctx.translate(12, 52);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(yText, 0, 0);
+      ctx.restore();
+    }
+
+    /* ---------- Signal bench ---------- */
+    var signalMode = "lowTone";
+    var signalInfo = {
+      lowTone: {
+        text: "<strong>Slow tone:</strong> it repeats slowly and produces one narrow spectral line. Its centre frequency is low; its bandwidth is still narrow.",
+        label: "slow steady tone"
+      },
+      highTone: {
+        text: "<strong>Fast tone:</strong> the line moves to a higher centre frequency but does not become wide. Fast oscillation and wide bandwidth are different ideas.",
+        label: "fast steady tone"
+      },
+      pulse: {
+        text: "<strong>Short pulse:</strong> many sinusoids must add together to create the sharp start and stop. That is why short time-localized events spread across frequency.",
+        label: "short time-domain pulse"
+      },
+      noise: {
+        text: "<strong>Random noise:</strong> unpredictable sample-to-sample change contributes energy to many frequency bins, producing a wide, irregular floor.",
+        label: "sample-to-sample random noise"
+      }
+    };
+    function makeSignal(mode, n) {
+      var out = new Float64Array(n);
+      var rand = seeded(217);
+      for (var i = 0; i < n; i++) {
+        if (mode === "lowTone") out[i] = Math.sin(2 * Math.PI * 6 * i / n);
+        if (mode === "highTone") out[i] = Math.sin(2 * Math.PI * 31 * i / n);
+        if (mode === "pulse") out[i] = (i > n * .43 && i < n * .56) ? 1 : 0;
+        if (mode === "noise") out[i] = (rand() + rand() + rand() - 1.5) / .9;
+      }
+      return out;
+    }
+    function simpleDFT(samples) {
+      var n = samples.length, bins = n / 2, out = new Float64Array(bins);
+      for (var k = 0; k < bins; k++) {
+        var re = 0, im = 0;
+        for (var i = 0; i < n; i++) {
+          var a = 2 * Math.PI * k * i / n;
+          re += samples[i] * Math.cos(a);
+          im -= samples[i] * Math.sin(a);
+        }
+        out[k] = Math.sqrt(re * re + im * im);
+      }
+      return out;
+    }
+    function drawSignalBench() {
+      var time = ctx2d("signalTime"), freq = ctx2d("signalFreq");
+      var n = 256, s = makeSignal(signalMode, n), sp = simpleDFT(s);
+      clearPlot(time.ctx, time.canvas.width, time.canvas.height);
+      clearPlot(freq.ctx, freq.canvas.width, freq.canvas.height);
+      var mid = time.canvas.height / 2;
+      time.ctx.strokeStyle = COLORS.blue; time.ctx.lineWidth = 2.2; time.ctx.beginPath();
+      for (var i = 0; i < n; i++) {
+        var x = 24 + i / (n - 1) * (time.canvas.width - 38);
+        var y = mid - s[i] * (time.canvas.height * .36);
+        if (i === 0) time.ctx.moveTo(x, y); else time.ctx.lineTo(x, y);
+      }
+      time.ctx.stroke();
+      axisText(time.ctx, time.canvas.width, time.canvas.height, "time →", "amplitude");
+
+      var max = 0;
+      for (i = 0; i < sp.length; i++) max = Math.max(max, sp[i]);
+      max = max || 1;
+      freq.ctx.beginPath();
+      freq.ctx.moveTo(24, freq.canvas.height - 24);
+      for (i = 0; i < sp.length; i++) {
+        x = 24 + i / (sp.length - 1) * (freq.canvas.width - 38);
+        y = freq.canvas.height - 24 - (sp[i] / max) * (freq.canvas.height - 50);
+        freq.ctx.lineTo(x, y);
+      }
+      freq.ctx.lineTo(freq.canvas.width - 14, freq.canvas.height - 24);
+      freq.ctx.closePath();
+      var grad = freq.ctx.createLinearGradient(0, 0, 0, freq.canvas.height);
+      grad.addColorStop(0, "rgba(242,193,78,.85)");
+      grad.addColorStop(1, "rgba(195,79,44,.08)");
+      freq.ctx.fillStyle = grad; freq.ctx.fill();
+      freq.ctx.strokeStyle = COLORS.yellow; freq.ctx.lineWidth = 2; freq.ctx.stroke();
+      axisText(freq.ctx, freq.canvas.width, freq.canvas.height, "frequency →", "power");
+
+      document.getElementById("signalLesson").innerHTML = signalInfo[signalMode].text;
+      time.canvas.setAttribute("aria-label", "Time-domain plot of a " + signalInfo[signalMode].label);
+      freq.canvas.setAttribute("aria-label", "Spectrum of a " + signalInfo[signalMode].label);
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".sig-choice"), function (button) {
+      button.addEventListener("click", function () {
+        signalMode = button.getAttribute("data-signal");
+        Array.prototype.forEach.call(document.querySelectorAll(".sig-choice"), function (b) {
+          b.setAttribute("aria-pressed", b === button ? "true" : "false");
+        });
+        drawSignalBench();
+      });
+    });
+    drawSignalBench();
+
+    /* ---------- GPS envelope ---------- */
+    var env = document.getElementById("gpsEnvelope");
+    for (var eb = 0; eb < 43; eb++) {
+      var bar = document.createElement("i");
+      var ex = (eb - 21) / 7;
+      var eh = Math.max(.025, Math.pow(sinc(ex), 2));
+      bar.style.height = (5 + eh * 112) + "px";
+      env.appendChild(bar);
+    }
+
+    /* ---------- Bandwidth bench ---------- */
+    var bw = document.getElementById("bw");
+    var offset = document.getElementById("offset");
+    var totalPower = document.getElementById("totalPower");
+    function drawBandwidth() {
+      var item = ctx2d("bandwidthCanvas"), c = item.canvas, xctx = item.ctx;
+      clearPlot(xctx, c.width, c.height);
+      var b = parseFloat(bw.value), off = parseFloat(offset.value), p = parseFloat(totalPower.value);
+      var left = off - b / 2, right = off + b / 2;
+      var plotL = 42, plotR = c.width - 20, base = c.height - 35, top = 20;
+      function fx(mhz) { return plotL + (mhz + 5) / 10 * (plotR - plotL); }
+
+      xctx.beginPath(); xctx.moveTo(plotL, base);
+      for (var i = 0; i <= 500; i++) {
+        var f = -5 + i / 50;
+        var gps = Math.pow(sinc(f / 1.023), 2);
+        xctx.lineTo(fx(f), base - gps * 145);
+      }
+      xctx.lineTo(plotR, base); xctx.closePath();
+      var gg = xctx.createLinearGradient(0, base - 150, 0, base);
+      gg.addColorStop(0, "rgba(99,199,212,.72)"); gg.addColorStop(1, "rgba(99,199,212,.06)");
+      xctx.fillStyle = gg; xctx.fill();
+      xctx.strokeStyle = COLORS.blue; xctx.lineWidth = 2; xctx.stroke();
+
+      var densityDb = p - 10 * Math.log10(b);
+      var height = clamp(42 + (densityDb + 10) * 4.1, 20, 220);
+      var jl = clamp(fx(left), plotL, plotR), jr = clamp(fx(right), plotL, plotR);
+      xctx.fillStyle = "rgba(228,96,74,.34)";
+      xctx.fillRect(jl, base - height, Math.max(2, jr - jl), height);
+      xctx.strokeStyle = COLORS.red; xctx.lineWidth = 2;
+      xctx.strokeRect(jl, base - height, Math.max(2, jr - jl), height);
+
+      xctx.fillStyle = COLORS.pale; xctx.font = "12px Cascadia Code, monospace";
+      [-5, -2.5, 0, 2.5, 5].forEach(function (tick) {
+        xctx.fillText((tick > 0 ? "+" : "") + tick + " MHz", fx(tick) - 22, c.height - 11);
+      });
+      xctx.fillStyle = COLORS.blue; xctx.fillText("GPS L1 C/A envelope", 52, 25);
+      xctx.fillStyle = COLORS.red; xctx.fillText("jammer", clamp(jl + 7, 48, c.width - 90), Math.max(35, base - height - 8));
+
+      var overlap = Math.max(0, Math.min(right, 1.023) - Math.max(left, -1.023));
+      var coverage = clamp(overlap / 2.046 * 100, 0, 100);
+      var relative = b < .5 ? "very narrow" : b < 1.6 ? "narrow" : b < 3.5 ? "comparable" : "wide";
+      document.getElementById("bwOut").textContent = b.toFixed(1) + " MHz";
+      document.getElementById("offsetOut").textContent = (off >= 0 ? "+" : "") + off.toFixed(1) + " MHz";
+      document.getElementById("powerOut").textContent = (p >= 0 ? "+" : "") + p.toFixed(0) + " dB (conceptual)";
+      document.getElementById("coverageMetric").textContent = Math.round(coverage) + "%";
+      document.getElementById("densityMetric").textContent = (densityDb >= 0 ? "+" : "") + densityDb.toFixed(1) + " dB/MHz";
+      document.getElementById("widthMetric").textContent = relative;
+      document.getElementById("tradeMetric").textContent = b < 2.046 ? "dense / partial" : "broad / dilute";
+      c.setAttribute("aria-label", "GPS spectrum with a " + b.toFixed(1) + " megahertz jammer centered " + Math.abs(off).toFixed(1) + " megahertz " + (off < 0 ? "below" : "above") + " L1");
+    }
+    [bw, offset, totalPower].forEach(function (input) { input.addEventListener("input", drawBandwidth); });
+    drawBandwidth();
+
+    /* ---------- Jammer model ---------- */
+    var JAMMERS = {
+      cw: {
+        name: "CW / single tone", cls: "narrowband · stationary",
+        formula: "j(t) = A cos(2πf₀t + φ)",
+        timeClue: "Constant peak amplitude and evenly spaced cycles. This is exactly one sinusoid.",
+        core: "One sinusoid stays at one frequency. On a spectrogram it is one horizontal line.",
+        first: "A tall spectral line appears; strong cases can pull down AGC gain.",
+        symptom: "Correlation margin falls most where the tone overlaps useful signal energy. Strong front-end effects can spread the damage.",
+        detect: "High spectral peak-to-average ratio at a stable frequency.",
+        mitigate: "A notch can remove the line, but also removes nearby GNSS energy and can distort correlation.",
+        scope: "Usually broad receiver impact through shared AGC, with frequency-localized interference energy.",
+        impacts: [.42, .55, .48, .34, .42], mitigation: .52
+      },
+      multi: {
+        name: "Multi-tone", cls: "narrowband · several stationary lines",
+        formula: "j(t) = Σₖ Aₖ cos(2πfₖt + φₖ)",
+        timeClue: "Several sinusoids add and cancel, producing a beat-like envelope around a complicated trace.",
+        core: "Several sinusoids occupy selected frequencies. The spectrogram shows parallel horizontal lines.",
+        first: "Several spectral slices become contaminated; total power may also move AGC.",
+        symptom: "More acquisition and tracking bandwidth is lost than with one tone; effects grow with line count and placement.",
+        detect: "Multiple stable high-kurtosis peaks or a comb-like spectrum.",
+        mitigate: "A notch bank can suppress the lines, at the cost of removing more desired spectrum.",
+        scope: "All PRNs share the front end, while exact damage depends on tone positions and receiver filtering.",
+        impacts: [.50, .66, .60, .42, .54], mitigation: .42
+      },
+      narrow: {
+        name: "Narrowband noise", cls: "partial-band · stationary",
+        formula: "j(t) = BPF{w(t)}",
+        timeClue: "Filtered random noise: neighboring samples are correlated, so the trace is smoother than white noise.",
+        core: "Random energy is filtered into a limited band, making a thick fuzzy stripe rather than a line.",
+        first: "The noise floor rises only in part of the admitted spectrum.",
+        symptom: "Acquisition and tracking lose some usable signal spectrum; damage depends strongly on overlap and receiver filter shape.",
+        detect: "Persistent local band-power excess with noise-like statistics.",
+        mitigate: "Sub-band filtering or excision can help, but discarded bins contain GNSS energy too.",
+        scope: "Shared-band effect. It is not PRN selective; location and bandwidth decide which signal energy is covered.",
+        impacts: [.46, .68, .62, .45, .58], mitigation: .40
+      },
+      wide: {
+        name: "Wideband barrage noise", cls: "full-band · stationary",
+        formula: "j(t) = A · w(t)",
+        timeClue: "Rapid, irregular sample-to-sample changes. A different random trace appears on every run.",
+        core: "Noise covers most of the admitted band. In a spectrogram it looks like a brighter carpet.",
+        first: "Total in-band power rises, AGC can reduce gain, and the correlator floor rises for many PRNs.",
+        symptom: "Cold acquisition misses peaks; tracked channels lose C/N₀ and then lock; too few accepted ranges remain for PVT.",
+        detect: "Broad floor rise, AGC change, and correlated C/N₀ loss across satellites.",
+        mitigate: "Frequency-only excision is weak because jammer and signal share the band; spatial nulling or alternate PNT is more useful.",
+        scope: "Constellation-wide inside the jammed band; often the clearest all-satellites-at-once signature.",
+        impacts: [.82, .96, .90, .76, .94], mitigation: .14
+      },
+      chirp: {
+        name: "Chirp / swept-frequency", cls: "instantaneously narrow · wide over time",
+        formula: "j(t) = A cos(2π[f₀t + ½kt²] + φ)",
+        timeClue: "Cycle spacing steadily shrinks or expands as instantaneous frequency sweeps.",
+        core: "A tone moves through frequency and repeats. It draws diagonal or sawtooth tracks.",
+        first: "Each sweep creates a short high-power encounter in successive frequency slices.",
+        symptom: "Repeated encounters interrupt acquisition integration and inject periodic tracking errors; fast sweeps can also stress AGC.",
+        detect: "Diagonal time-frequency tracks with a repeatable slope and repetition period.",
+        mitigate: "Estimate and excise the sweep or blank contaminated intervals. Dense sweeps leave less clean data.",
+        scope: "Covers a broad band over a sweep cycle even though each instant is narrow.",
+        impacts: [.68, .86, .82, .58, .76], mitigation: .36
+      },
+      pulse: {
+        name: "Pulsed interference", cls: "time-localized · often broadband",
+        formula: "j(t) = p(t) · A cos(2πf₀t + φ)",
+        timeClue: "Carrier bursts are separated by quiet intervals; p(t) is the on/off gate.",
+        core: "High energy arrives in short bursts. The spectrogram shows vertical bars because many frequencies are hit at the same time.",
+        first: "ADC clipping and AGC transients can occur during each burst.",
+        symptom: "Samples inside bursts are corrupted; low duty cycle leaves clean gaps, while high duty cycle behaves more like continuous noise.",
+        detect: "High time-domain crest factor, periodic amplitude spikes, and vertical spectrogram bars.",
+        mitigate: "Pulse blanking discards burst samples. It works only while enough clean samples remain.",
+        scope: "Shared front-end effect; duty cycle, peak power, and recovery time dominate.",
+        impacts: [.94, .74, .69, .62, .70], mitigation: .48
+      },
+      matchedSpectrum: {
+        name: "Matched-spectrum noise", cls: "signal-shaped · non-PRN-specific",
+        formula: "j(t) = hGNSS(t) * w(t)",
+        timeClue: "Still noise-like in time. Filtering gives it the victim signal’s spectral envelope, which the time plot alone hides.",
+        core: "Noise is filtered to resemble the GPS signal’s power spectrum. It occupies the same useful spectral region.",
+        first: "The correlator noise rises without an easy out-of-band or single-line feature.",
+        symptom: "Acquisition and tracking margin fall across affected signals; simple notches sacrifice the same signal energy they try to protect.",
+        detect: "GPS-like spectral envelope plus excess total power, AGC movement, or multi-antenna / reference-sensor disagreement.",
+        mitigate: "Spatial filtering, robust correlation, multi-band and multi-sensor checks; frequency cuts have poor separation.",
+        scope: "Usually band-wide, not inherently PRN selective. Matching the envelope is not matching a code.",
+        impacts: [.52, .90, .86, .72, .88], mitigation: .12
+      },
+      matchedCode: {
+        name: "Matched-code interference", cls: "protocol-aware · potentially PRN-targeted",
+        formula: "j(t) = A d(t)cPRN(t) cos(2πf₀t)",
+        timeClue: "The PRN chips invert the carrier by 180° at selected chip boundaries; the envelope can stay constant.",
+        core: "Structured energy uses a victim PRN and timing relationship. Its important fingerprint may appear after correlation, not as a unique PSD.",
+        first: "A target PRN’s acquisition surface or tracking discriminator becomes abnormal while raw spectrum may remain GPS-like.",
+        symptom: "Targeted peak-floor rise, distorted/extra peaks, tracking jitter, or rejected measurements. Exact behavior depends on code delay, Doppler, data, and waveform.",
+        detect: "Compare target and control PRNs, correlation shapes, multi-peak statistics, and cross-sensor consistency.",
+        mitigate: "Correlation-domain integrity checks, spatial separation, authenticated signals where available, and independent PNT aiding.",
+        scope: "Potentially target-specific. A target claim requires receiver-side proof; code multiplication alone does not guarantee selectivity.",
+        impacts: [.34, .78, .92, .70, .78], mitigation: .10
+      }
+    };
+    var currentJammer = "cw";
+    var jsLevel = document.getElementById("jsLevel");
+    var receiverMode = document.getElementById("receiverMode");
+    var mitigation = document.getElementById("mitigation");
+
+    function makeJammerWave(type, n, seed) {
+      var out = new Float64Array(n);
+      var markers = [];
+      var rand = seeded(seed || 913);
+      var tones = [];
+      var narrowI = [];
+      var narrowQ = [];
+      var i, k, u, value;
+
+      if (type === "narrow") {
+        for (k = 0; k < 16; k++) {
+          narrowI.push(rand() + rand() + rand() - 1.5);
+          narrowQ.push(rand() + rand() + rand() - 1.5);
+        }
+      }
+      if (type === "matchedSpectrum") {
+        for (k = 0; k < 28; k++) {
+          var tf = 4 + k * 22 / 27;
+          tones.push({
+            f: tf,
+            p: rand() * Math.PI * 2,
+            a: Math.abs(sinc((tf - 15) / 5.2)) * (.7 + rand() * .3)
+          });
+        }
+      }
+
+      var chips = [1, 1, -1, 1, -1, -1, 1, -1, 1, 1, 1, -1, -1, 1, -1, 1, 1, -1];
+      for (k = 1; k < chips.length; k++) {
+        if (chips[k] !== chips[k - 1]) markers.push(k / chips.length);
+      }
+
+      for (i = 0; i < n; i++) {
+        u = i / (n - 1);
+        value = 0;
+        if (type === "cw") {
+          value = Math.cos(2 * Math.PI * 14 * u + .2);
+        } else if (type === "multi") {
+          value = (
+            Math.cos(2 * Math.PI * 8 * u) +
+            .82 * Math.cos(2 * Math.PI * 14.5 * u + .75) +
+            .68 * Math.cos(2 * Math.PI * 22 * u + 1.6)
+          ) / 2.5;
+        } else if (type === "narrow") {
+          var anchor = u * (narrowI.length - 1);
+          var ai = Math.min(narrowI.length - 2, Math.floor(anchor));
+          var mix = anchor - ai;
+          var iv = narrowI[ai] * (1 - mix) + narrowI[ai + 1] * mix;
+          var qv = narrowQ[ai] * (1 - mix) + narrowQ[ai + 1] * mix;
+          value = iv * Math.cos(2 * Math.PI * 14 * u) - qv * Math.sin(2 * Math.PI * 14 * u);
+        } else if (type === "matchedSpectrum") {
+          for (k = 0; k < tones.length; k++) {
+            value += tones[k].a * Math.cos(2 * Math.PI * tones[k].f * u + tones[k].p);
+          }
+          value /= Math.sqrt(tones.length);
+        } else if (type === "wide") {
+          value = (rand() + rand() + rand() + rand() - 2);
+        } else if (type === "chirp") {
+          var startCycles = 4;
+          var sweepCycles = 34;
+          value = Math.cos(2 * Math.PI * (startCycles * u + .5 * sweepCycles * u * u) + .15);
+        } else if (type === "pulse") {
+          var gatePhase = u % .32;
+          var gate = gatePhase > .035 && gatePhase < .155 ? 1 : 0;
+          value = gate * Math.cos(2 * Math.PI * 25 * u + .2);
+        } else if (type === "matchedCode") {
+          var chipIndex = Math.min(chips.length - 1, Math.floor(u * chips.length));
+          value = chips[chipIndex] * Math.cos(2 * Math.PI * 32 * u + .1);
+        }
+        out[i] = value;
+      }
+
+      var peak = 0;
+      for (i = 0; i < n; i++) peak = Math.max(peak, Math.abs(out[i]));
+      peak = peak || 1;
+      for (i = 0; i < n; i++) out[i] /= peak;
+
+      return { samples: out, markers: type === "matchedCode" ? markers : [] };
+    }
+
+    function drawTimeWave(canvas, type, level, compact) {
+      var ctx = canvas.getContext("2d");
+      var w = canvas.width, h = canvas.height;
+      clearPlot(ctx, w, h);
+      var left = compact ? 31 : 84;
+      var right = w - 14;
+      var top = 15;
+      var bottom = h - 26;
+      var mid = (top + bottom) / 2;
+      var shape = makeJammerWave(type, compact ? 300 : 620, 1701 + type.length * 37);
+      var scale = compact ? .82 : .28 + .72 * level;
+      var halfHeight = (bottom - top) * .43 * scale;
+
+      ctx.strokeStyle = "rgba(220,231,229,.38)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, mid); ctx.lineTo(right, mid); ctx.stroke();
+
+      if (type === "matchedCode") {
+        ctx.save();
+        ctx.setLineDash([4, 5]);
+        ctx.strokeStyle = "rgba(169,139,200,.46)";
+        shape.markers.forEach(function (marker) {
+          var mx = left + marker * (right - left);
+          ctx.beginPath(); ctx.moveTo(mx, top); ctx.lineTo(mx, bottom); ctx.stroke();
+        });
+        ctx.restore();
+        if (!compact) {
+          ctx.fillStyle = COLORS.purple;
+          ctx.font = "22px Cascadia Code, monospace";
+          ctx.fillText("dashed = PRN chip changes that invert carrier phase", left + 8, top + 12);
+        }
+      }
+
+      ctx.beginPath();
+      for (var i = 0; i < shape.samples.length; i++) {
+        var x = left + i / (shape.samples.length - 1) * (right - left);
+        var y = mid - shape.samples[i] * halfHeight;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = type === "matchedCode" ? COLORS.purple : COLORS.yellow;
+      ctx.lineWidth = compact ? 1.55 : 3.4;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = (compact ? "9px" : "24px") + " Cascadia Code, monospace";
+      var tickX = compact ? 4 : 45;
+      ctx.fillText("+A", tickX, top + (compact ? 4 : 14));
+      ctx.fillText("0", tickX + (compact ? 8 : 10), mid + (compact ? 4 : 8));
+      ctx.fillText("−A", tickX, bottom + 3);
+      var timeLabel = "time →";
+      ctx.fillText(timeLabel, right - ctx.measureText(timeLabel).width, h - 7);
+      ctx.save();
+      ctx.translate(compact ? 10 : 16, compact ? 91 : bottom);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(compact ? "A(t)" : "amplitude A(t)", 0, 0);
+      ctx.restore();
+
+      if (type === "narrow" || type === "wide" || type === "matchedSpectrum") {
+        var note = "one random realization";
+        ctx.fillStyle = "rgba(143,168,175,.9)";
+        ctx.fillText(note, right - ctx.measureText(note).width, top + 4);
+      }
+      canvas.setAttribute("aria-label", "Representative normalized amplitude versus time waveform for " + JAMMERS[type].name);
+    }
+
+    function renderFamilyWaveCards() {
+      Array.prototype.forEach.call(document.querySelectorAll(".jammer-card"), function (card) {
+        if (card.querySelector(".wave-mini")) return;
+        var type = card.getAttribute("data-key");
+        var data = JAMMERS[type];
+        var body = card.querySelector(".body");
+        var heading = body.querySelector("h3");
+
+        var mini = document.createElement("div");
+        mini.className = "wave-mini";
+        var canvas = document.createElement("canvas");
+        canvas.width = 520;
+        canvas.height = 170;
+        canvas.setAttribute("role", "img");
+        canvas.textContent = "Representative time-domain waveform for " + data.name;
+        mini.appendChild(canvas);
+
+        var construction = document.createElement("div");
+        construction.className = "wave-construction";
+        var formula = document.createElement("span");
+        formula.className = "wave-formula";
+        formula.textContent = data.formula;
+        var clue = document.createElement("span");
+        clue.className = "wave-time-clue";
+        clue.textContent = data.timeClue;
+        construction.appendChild(formula);
+        construction.appendChild(clue);
+
+        heading.insertAdjacentElement("afterend", mini);
+        mini.insertAdjacentElement("afterend", construction);
+        drawTimeWave(canvas, type, .75, true);
+      });
+    }
+
+    function drawJamSpectrum(type, severity) {
+      var item = ctx2d("jamSpectrum"), c = item.canvas, ctx = item.ctx;
+      clearPlot(ctx, c.width, c.height);
+      var left = 28, right = c.width - 15, base = c.height - 25, amp = 40 + severity * 135;
+      function px(v) { return left + (v + 1) / 2 * (right - left); }
+
+      ctx.beginPath(); ctx.moveTo(left, base);
+      for (var i = 0; i <= 240; i++) {
+        var f = -1 + i / 120;
+        var gps = Math.pow(sinc(f * 3.2), 2);
+        ctx.lineTo(px(f), base - 25 * gps);
+      }
+      ctx.strokeStyle = "rgba(99,199,212,.65)"; ctx.lineWidth = 1.5; ctx.stroke();
+
+      ctx.strokeStyle = COLORS.yellow; ctx.fillStyle = "rgba(228,96,74,.28)"; ctx.lineWidth = 2;
+      if (type === "cw") {
+        ctx.beginPath(); ctx.moveTo(px(.12), base); ctx.lineTo(px(.12), base - amp); ctx.stroke();
+      } else if (type === "multi") {
+        [-.58, -.12, .27, .61].forEach(function (f) {
+          ctx.beginPath(); ctx.moveTo(px(f), base); ctx.lineTo(px(f), base - amp * (.72 + Math.abs(f) * .2)); ctx.stroke();
+        });
+      } else if (type === "narrow") {
+        var l = px(-.22), r = px(.28);
+        ctx.fillRect(l, base - amp * .68, r - l, amp * .68);
+        ctx.strokeRect(l, base - amp * .68, r - l, amp * .68);
+      } else if (type === "wide" || type === "pulse" || type === "chirp") {
+        ctx.fillRect(left, base - amp * .42, right - left, amp * .42);
+        ctx.strokeRect(left, base - amp * .42, right - left, amp * .42);
+      } else {
+        ctx.beginPath(); ctx.moveTo(left, base);
+        for (i = 0; i <= 240; i++) {
+          f = -1 + i / 120;
+          var shape = Math.pow(sinc(f * 3.2), 2);
+          ctx.lineTo(px(f), base - amp * (.08 + .82 * shape));
+        }
+        ctx.lineTo(right, base); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      axisText(ctx, c.width, c.height, "frequency offset →", "power");
+      ctx.fillStyle = COLORS.blue; ctx.font = "10px Cascadia Code, monospace";
+      ctx.fillText("faint line = desired GPS envelope", 35, 16);
+    }
+
+    function drawJamSpectrogram(type, severity) {
+      var item = ctx2d("jamSpectrogram"), c = item.canvas, ctx = item.ctx;
+      clearPlot(ctx, c.width, c.height);
+      var rand = seeded(type.length * 97 + 11);
+      var alpha = .2 + severity * .72;
+      ctx.lineWidth = 2 + severity * 3;
+      ctx.strokeStyle = "rgba(242,193,78," + alpha + ")";
+      ctx.fillStyle = "rgba(228,96,74," + alpha * .72 + ")";
+      var i, x, y;
+      if (type === "cw") {
+        y = c.height * .48; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(c.width, y); ctx.stroke();
+      } else if (type === "multi") {
+        [.24, .43, .62, .78].forEach(function (v) {
+          ctx.beginPath(); ctx.moveTo(0, c.height * v); ctx.lineTo(c.width, c.height * v); ctx.stroke();
+        });
+      } else if (type === "narrow") {
+        for (i = 0; i < 1700; i++) {
+          x = rand() * c.width; y = c.height * (.43 + (rand() - .5) * .20);
+          ctx.fillRect(x, y, 2, 2);
+        }
+      } else if (type === "wide") {
+        for (i = 0; i < 5400; i++) {
+          x = rand() * c.width; y = rand() * c.height;
+          ctx.globalAlpha = .12 + rand() * alpha * .48; ctx.fillRect(x, y, 2, 2);
+        }
+        ctx.globalAlpha = 1;
+      } else if (type === "chirp") {
+        var sw = c.width / 6;
+        for (i = 0; i < 6; i++) {
+          ctx.beginPath(); ctx.moveTo(i * sw, c.height - 5); ctx.lineTo((i + 1) * sw, 5); ctx.stroke();
+        }
+      } else if (type === "pulse") {
+        for (i = 0; i < 7; i++) {
+          x = (i + .55) * c.width / 7;
+          ctx.fillRect(x - 3 - severity * 4, 0, 6 + severity * 8, c.height);
+        }
+      } else {
+        for (i = 0; i < 3900; i++) {
+          x = rand() * c.width;
+          var yf = rand() * 2 - 1;
+          var weight = .05 + Math.pow(sinc(yf * 3.2), 2);
+          if (rand() < weight) {
+            y = (yf + 1) / 2 * c.height;
+            ctx.globalAlpha = .16 + rand() * alpha * .55;
+            ctx.fillRect(x, y, 2, 2);
+          }
+        }
+        ctx.globalAlpha = 1;
+        if (type === "matchedCode") {
+          ctx.fillStyle = "rgba(169,139,200,.9)";
+          ctx.font = "10px Cascadia Code, monospace";
+          ctx.fillText("PSD may match signal-shaped noise", 14, 18);
+        }
+      }
+      axisText(ctx, c.width, c.height, "time →", "frequency");
+    }
+
+    function drawCorrelator(type, severity, impact) {
+      var item = ctx2d("correlator"), c = item.canvas, ctx = item.ctx;
+      clearPlot(ctx, c.width, c.height);
+      var rand = seeded(type.length * 141 + Math.round(severity * 100));
+      var left = 28, right = c.width - 18, base = c.height - 28;
+      var noise = 8 + impact * 43;
+      var peak = Math.max(12, 145 * (1 - impact * .78));
+      ctx.beginPath();
+      for (var i = 0; i <= 280; i++) {
+        var x = left + i / 280 * (right - left);
+        var dx = (i - 142) / 7.5;
+        var p = peak * Math.max(0, 1 - Math.abs(dx));
+        var n = (rand() - .5) * noise + noise * .55;
+        if (type === "matchedCode") {
+          n += 28 * Math.max(0, 1 - Math.abs((i - 197) / 10));
+          n += 18 * Math.max(0, 1 - Math.abs((i - 88) / 8));
+        }
+        var y = base - n - p;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = type === "matchedCode" ? COLORS.purple : COLORS.blue;
+      ctx.lineWidth = 2; ctx.stroke();
+      ctx.setLineDash([5, 5]); ctx.strokeStyle = "rgba(242,193,78,.65)";
+      ctx.beginPath(); ctx.moveTo(left, base - 68); ctx.lineTo(right, base - 68); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = COLORS.muted; ctx.font = "10px Cascadia Code, monospace";
+      ctx.fillText("illustrative detection threshold", right - 190, base - 74);
+      axisText(ctx, c.width, c.height, "code delay →", "correlation");
+    }
+
+    function statusFor(v) {
+      if (v < .24) return { level: 0, text: "healthy" };
+      if (v < .48) return { level: 1, text: "stressed" };
+      if (v < .72) return { level: 2, text: "degraded" };
+      return { level: 3, text: "likely fail" };
+    }
+    function updateJammerLab() {
+      var data = JAMMERS[currentJammer];
+      var js = parseInt(jsLevel.value, 10);
+      var severity = clamp((js + 20) / 60, 0, 1);
+      var reduction = mitigation.checked ? data.mitigation : 0;
+      var values = data.impacts.map(function (v, index) {
+        var modeFactor = 1;
+        if (receiverMode.value === "acquiring" && index === 1) modeFactor = 1.15;
+        if (receiverMode.value === "tracking" && index === 2) modeFactor = 1.12;
+        return clamp(v * severity * modeFactor * (1 - reduction), 0, 1);
+      });
+
+      document.getElementById("jsOut").textContent = "J/S = " + (js >= 0 ? "+" : "") + js + " dB";
+      document.getElementById("jamClass").textContent = data.cls;
+      document.getElementById("jamName").textContent = data.name;
+      document.getElementById("jamCore").textContent = data.core;
+      document.getElementById("jamFormula").textContent = data.formula;
+      document.getElementById("jamTimeClue").textContent = data.timeClue;
+      document.getElementById("jamFirst").textContent = data.first;
+      document.getElementById("jamSymptom").textContent = data.symptom;
+      document.getElementById("jamDetect").textContent = data.detect;
+      document.getElementById("jamMitigate").textContent = data.mitigate +
+        (mitigation.checked ? " The model is showing that mitigation enabled." : "");
+      document.getElementById("jamScope").textContent = data.scope;
+
+      var pipe = document.querySelectorAll("#labPipeline .pipe-stage");
+      Array.prototype.forEach.call(pipe, function (node, index) {
+        var s = statusFor(values[index]);
+        node.setAttribute("data-level", String(s.level));
+        node.querySelector(".status").textContent = s.text;
+      });
+      var avgCorr = (values[1] + values[2]) / 2;
+      var cn0 = Math.round(45 - avgCorr * 27);
+      var sv = clamp(10 - Math.round(values[4] * 9), 1, 10);
+      document.getElementById("cn0Metric").textContent = cn0 + " dB-Hz";
+      document.getElementById("svMetric").textContent = sv + " / 10";
+
+      drawTimeWave(document.getElementById("jamTime"), currentJammer, severity, false);
+      drawJamSpectrum(currentJammer, severity);
+      drawJamSpectrogram(currentJammer, severity);
+      drawCorrelator(currentJammer, severity, avgCorr);
+      document.getElementById("jamSpectrum").setAttribute("aria-label", "Illustrative spectrum for " + data.name);
+      document.getElementById("jamSpectrogram").setAttribute("aria-label", "Illustrative spectrogram for " + data.name);
+      document.getElementById("correlator").setAttribute("aria-label", "Illustrative receiver correlation under " + data.name);
+    }
+    function chooseJammer(key, scroll) {
+      currentJammer = key;
+      Array.prototype.forEach.call(document.querySelectorAll(".jammer-tabs button"), function (b) {
+        b.setAttribute("aria-pressed", b.getAttribute("data-jammer") === key ? "true" : "false");
+      });
+      updateJammerLab();
+      if (scroll) {
+        document.querySelector(".jammer-lab").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".jammer-tabs button"), function (button) {
+      button.addEventListener("click", function () { chooseJammer(button.getAttribute("data-jammer"), false); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".jammer-card"), function (card) {
+      function load() { chooseJammer(card.getAttribute("data-key"), true); }
+      card.addEventListener("click", load);
+      card.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); load(); }
+      });
+    });
+    [jsLevel, receiverMode, mitigation].forEach(function (control) {
+      control.addEventListener(control.type === "range" ? "input" : "change", updateJammerLab);
+    });
+    renderFamilyWaveCards();
+    updateJammerLab();
+
+    /* ---------- Quiz ---------- */
+    var ANSWERS = {
+      q1: {
+        good: "Correct. A steady sinusoid remains one spectral line. Its centre frequency moved; its occupied bandwidth did not have to widen.",
+        bad: "Centre frequency and bandwidth are separate. A higher-frequency steady tone still needs only one frequency component."
+      },
+      q2: {
+        good: "Correct. With equal total power, P/B is larger for the 100 kHz jammer, while the 10 MHz jammer touches much more of the receiver band.",
+        bad: "Use PSD ≈ P/B. Equal power squeezed into less bandwidth is denser; spreading it trades density for coverage."
+      },
+      q3: {
+        good: "Correct. Time moves horizontally and frequency vertically, so a diagonal track is a frequency that moves with time: a chirp or sweep.",
+        bad: "A fixed CW is horizontal. A time-localized broadband pulse is vertical. A moving frequency draws a diagonal."
+      },
+      q4: {
+        good: "Correct. The slow symbol controls information rate, but multiplying by the fast PRN chips spreads it across the PRN signal band.",
+        bad: "Do not stop at the slow symbol. The 1.023 Mchip/s PRN multiplication spreads it into a GPS-like occupied band."
+      },
+      q5: {
+        good: "Correct. Tracking is only one stage. A range can still fail consistency or integrity checks and be excluded from PVT.",
+        bad: "Neither high C/N₀ nor tracking proves PVT use. The clamped residual points to a downstream measurement-consistency problem that needs diagnosis."
+      },
+      q6: {
+        good: "Correct. The corruption is localized in time, so blanking can preserve the clean gaps. Its limit is duty cycle: too many blanked samples destroy integration.",
+        bad: "A fixed notch targets a frequency-localized line, not a time-localized burst. Increasing gain risks more clipping."
+      }
+    };
+    Array.prototype.forEach.call(document.querySelectorAll(".question"), function (q) {
+      var done = false, id = q.id, answer = q.getAttribute("data-answer");
+      Array.prototype.forEach.call(q.querySelectorAll(".option"), function (option) {
+        option.addEventListener("click", function () {
+          if (done) return;
+          done = true;
+          var ok = option.getAttribute("data-choice") === answer;
+          Array.prototype.forEach.call(q.querySelectorAll(".option"), function (o) {
+            if (o.getAttribute("data-choice") === answer) o.classList.add("correct");
+            else if (o === option) o.classList.add("wrong");
+            else o.classList.add("dim");
+            o.disabled = true;
+          });
+          var fb = q.querySelector(".feedback");
+          fb.textContent = ok ? ANSWERS[id].good : ANSWERS[id].bad;
+          fb.classList.add("show", ok ? "good" : "bad");
+        });
+      });
+    });
+
+    /* ---------- Ordering check ---------- */
+    var correctOrder = ["Antenna / RF", "AGC / ADC", "Acquisition", "Tracking", "Nav bits", "PVT"];
+    var bankOrder = ["Tracking", "Antenna / RF", "PVT", "Acquisition", "Nav bits", "AGC / ADC"];
+    var chosen = [];
+    var orderBank = document.getElementById("orderBank");
+    var orderAnswer = document.getElementById("orderAnswer");
+    var orderFeedback = document.getElementById("orderFeedback");
+    function renderOrder() {
+      orderBank.innerHTML = "";
+      bankOrder.forEach(function (name) {
+        var b = document.createElement("button");
+        b.type = "button"; b.textContent = name; b.disabled = chosen.indexOf(name) !== -1;
+        b.addEventListener("click", function () {
+          chosen.push(name);
+          renderOrder();
+          if (chosen.length === correctOrder.length) {
+            var ok = chosen.every(function (v, i) { return v === correctOrder[i]; });
+            orderFeedback.textContent = ok
+              ? "Correct. Follow energy from antenna and front end, through search and tracking, into decoded data and finally PVT."
+              : "Not quite. Use the physical signal path: antenna/RF → AGC/ADC → acquisition → tracking → navigation bits → PVT.";
+            orderFeedback.className = "feedback show " + (ok ? "good" : "bad");
+          }
+        });
+        orderBank.appendChild(b);
+      });
+      orderAnswer.innerHTML = "";
+      chosen.forEach(function (name, i) {
+        var s = document.createElement("span");
+        s.textContent = (i + 1) + ". " + name;
+        orderAnswer.appendChild(s);
+      });
+    }
+    document.getElementById("orderReset").addEventListener("click", function () {
+      chosen = [];
+      orderFeedback.className = "feedback";
+      orderFeedback.textContent = "";
+      renderOrder();
+    });
+    renderOrder();
+  })();
+  </script>
+</body>
+</html>

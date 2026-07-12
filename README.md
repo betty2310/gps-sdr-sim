@@ -112,9 +112,48 @@ it by a C/A-code sign does not establish PRN selectivity. Other methods (`spoof_
 `spoof_nav`) are accepted as placeholders for scenario planning.
 
 Do not use `jam_noise` to claim matched-code target/non-target rejection. See the
-[jamming mitigation architecture](docs/jamming-mitigation-architecture.md) for the planned
-independent `jammergen` and `iqmix` tools, and the
+[jamming mitigation architecture](docs/jamming-mitigation-architecture.md) for the independent
+`jammergen` and `iqmix` architecture, and the
 [interference mitigation scenario catalog](docs/jamming-spoofing-scenarios.md) for valid research scenarios.
+
+### Offline synthetic jamming datasets
+
+The repository now includes standalone streaming `jammergen` and `iqmix` tools plus a
+Python workflow for reproducible additive CW, narrowband-noise, wideband-noise, chirp,
+pulsed-CW, thermal-noise, and clean GPS datasets. The five jammer types share one C
+renderer with the UHD backend and have type-specific numerical acceptance gates.
+The canonical workflow creates an exact 90-second clean control and measured J/S sweep,
+runs numerical waveform gates, produces plots and checksums, and validates fixtures with
+the dedicated automatic-channel GNSS-SDR configuration. It does not modify `gpssim.c` or
+provide RF transmission instructions.
+
+```sh
+make jammergen iqmix
+cd processing
+uv run python cw_dataset.py create --profile canonical \
+  --rinex /path/to/frozen-navigation.rnx \
+  --start-time 2026/07/12,00:00:00 \
+  --output-dir ../cw-dataset-output/run-20260712
+```
+
+Use `--jammer-type cw|narrowband|wideband|chirp|pulsed`; see the
+[offline multi-waveform dataset guide](docs/cw-jamming-dataset.md) for type parameters,
+the sample contract, fast test profile, receiver gates, and authentic-signal boundary.
+
+For a bounded GNSS-SDR cross-type check, use `--profile verification` once per
+jammer type. It creates a 90-second matched clean/+20 dB J/S pair with a
+40-second clean prefix, GNSS-SDR tracking/PVT evidence, and post-correlation
+PNG/PDF spectrum-spectrogram figures for every visible PRN. Aggregate completed
+runs with `processing/jamming_campaign_report.py`; raw RF spectra remain
+composite because GPS L1 C/A PRNs overlap in frequency.
+
+For an authorized conducted or verified shielded hardware experiment, `jammertx`
+generates the same selected source in memory and streams jammer-only SC16 through UHD. It
+does not use authentic-GPS IQ, RINEX, ephemeris, GPS time, receiver location, or PRNs.
+Build it explicitly with `make jammertx`; it is not part of `make all` because UHD is
+optional. See the [real-time X300 multi-waveform guide](docs/realtime-cw-jammer-x300.md) for the
+signal model, dry-run workflow, calibration boundary, manifests, receiver evidence,
+and controlled-RF safety requirements.
 
 The user motion can be specified in either dynamic or static mode:
 

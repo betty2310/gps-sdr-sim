@@ -39,17 +39,21 @@ The current `-A`, `-J`, `-P`, and `-G` controls remain available for reproducing
 
 The legacy noise branch is duplicated in `gpssim.c`, `player/x300tx.cpp`, and `player/bladetx.cpp`. Selecting additional `jam_noise` PRNs adds additional independent noise-like branches and can increase total power. Results from that path must not be labeled PRN-selective unless an independent correlator test establishes selectivity.
 
-## Planned Toolchain
+## Implemented Independent-Source Toolchain
 
 ```text
 gps-sdr-sim -> clean.bin --------\
 jammergen   -> jammer.bin --------+-> iqmix -> test.bin -> software receiver
 noise model -> thermal noise -----/
 
-jammergen -> x300tx / bladetx -> conducted or shielded receiver test
+shared jammer source -> jammertx -> conducted or shielded receiver test
 ```
 
-The command-line interfaces for `jammergen` and `iqmix` are intentionally not specified here until implemented and covered by tests. Scenario definitions describe required behavior rather than inventing commands that do not exist.
+The implemented command-line interfaces are documented in the
+[offline multi-waveform dataset guide](cw-jamming-dataset.md) and
+[real-time X300 multi-waveform guide](realtime-cw-jammer-x300.md). This catalog remains at
+the scenario-definition level so waveform and RF operating details have one
+authoritative home.
 
 ## Experimental Rules
 
@@ -229,12 +233,15 @@ Also preserve software-receiver acquisition maps, prompt/early/late correlator o
 | Partial simulated constellation | Implemented via `-P` |
 | Oracle satellite removal | Implemented as legacy `jam_drop` |
 | Legacy per-sample noise replacement | Implemented as `jam_noise`; not PRN-selective as documented previously |
-| Independent jammer-source engine | Planned |
-| CW, band-limited Gaussian, chirp | Planned in `jammergen` |
-| Offline calibrated mixer and receiver front end | Planned in `iqmix` |
+| Independent jammer-source engine | Implemented for offline CW |
+| CW, band-limited Gaussian, chirp | CW implemented in `jammergen`; other families planned |
+| Offline calibrated mixer and receiver front end | Measured mixing/noise/quantization implemented in `iqmix`; analog front end planned |
 | Fixed-total-power multi-source normalization | Planned |
 | Code-aware targeted-PRN source | Planned after correlator tests |
-| Generic X300/bladeRF jammer playback | Planned refactor |
+| Jammer-only hardware transmission | UHD/X300 CW implemented in `jammertx`; bladeRF and later source families planned |
 | Wideband, multiband, and multi-antenna fixtures | Future scope |
 
-The immediate next step is to freeze tests that characterize the legacy output, then implement `jammergen` and `iqmix` without adding additional jammer families to the satellite render loop.
+The next work is controlled RF characterization of the UHD CW path, followed by
+additional independent waveform families and a bladeRF backend. New sources
+must reuse the shared jammer-source boundary rather than adding jammer branches
+to the satellite render loop.

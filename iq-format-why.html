@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23245c4a'/%3E%3Cpath d='M7 16h18M16 7v18' stroke='%23fffdf7' stroke-width='2'/%3E%3Ccircle cx='22' cy='10' r='3' fill='%23fffdf7'/%3E%3C/svg%3E">
+  <title>Why signals are stored as I/Q</title>
+  <style>
+    :root {
+      --serif: Bookerly, Georgia, Cambria, "Times New Roman", serif;
+      --mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      --ink: #20231f;
+      --muted: #62675f;
+      --paper: #f6f2e9;
+      --card: #fffdf7;
+      --line: #d9d2c4;
+      --green: #245c4a;
+      --green-soft: #dfece5;
+      --rust: #9c4528;
+      --rust-soft: #f3dfd5;
+      --blue: #315d78;
+      --blue-soft: #dce8ee;
+      --gold: #a97718;
+      --shadow: 0 16px 45px rgba(54, 45, 30, .09);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(169, 119, 24, .08), transparent 28rem),
+        var(--paper);
+      font-family: var(--serif);
+      line-height: 1.68;
+    }
+    button, input, textarea { font: inherit; }
+    code, pre, kbd, samp, .code { font-family: var(--mono); }
+    a { color: var(--green); text-underline-offset: .18em; }
+    .shell { width: min(1100px, calc(100% - 36px)); margin: 0 auto; }
+    .reading { width: min(760px, 100%); margin-inline: auto; }
+
+    header { padding: 72px 0 36px; }
+    .eyebrow {
+      color: var(--rust);
+      font-family: var(--mono);
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { line-height: 1.12; letter-spacing: -.025em; }
+    h1 { max-width: 850px; margin: 13px 0 20px; font-size: clamp(2.65rem, 7vw, 5.8rem); font-weight: 500; }
+    h2 { margin: 0 0 18px; font-size: clamp(1.9rem, 4vw, 3rem); font-weight: 500; }
+    h3 { margin: 0 0 10px; font-size: 1.34rem; }
+    .dek { max-width: 700px; margin: 0; color: var(--muted); font-size: clamp(1.12rem, 2vw, 1.35rem); }
+    .short-answer {
+      margin-top: 32px;
+      padding-left: 18px;
+      border-left: 4px solid var(--gold);
+      font-size: 1.08rem;
+    }
+
+    main section { margin: 84px 0; }
+    .why {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(28px, 5vw, 52px);
+      border: 1px solid #b9cfc4;
+      border-radius: 24px;
+      background: var(--green-soft);
+      box-shadow: var(--shadow);
+    }
+    .why::after {
+      content: "I  +  jQ";
+      position: absolute;
+      right: -15px;
+      bottom: -48px;
+      color: rgba(36, 92, 74, .08);
+      font-family: var(--mono);
+      font-size: clamp(5rem, 13vw, 10rem);
+      font-weight: 700;
+      letter-spacing: -.1em;
+      pointer-events: none;
+    }
+    .why p { position: relative; z-index: 1; max-width: 780px; font-size: 1.08rem; }
+    .why strong { color: #174535; }
+
+    .truth-grid, .two-col, .three-col { display: grid; gap: 20px; }
+    .truth-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 30px; }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 25px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card);
+      box-shadow: 0 8px 25px rgba(54, 45, 30, .05);
+    }
+    .card p:last-child { margin-bottom: 0; }
+    .verdict {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .yes { color: var(--green); background: var(--green-soft); }
+    .but { color: var(--rust); background: var(--rust-soft); }
+    .section-intro { max-width: 720px; color: var(--muted); font-size: 1.08rem; }
+
+    .lab {
+      margin-top: 32px;
+      padding: clamp(20px, 4vw, 34px);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: #fbfaf5;
+      box-shadow: var(--shadow);
+    }
+    .lab-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    .lab-head p { max-width: 650px; margin: 5px 0 0; color: var(--muted); }
+    .badge { flex: none; padding: 5px 10px; border-radius: 999px; color: var(--blue); background: var(--blue-soft); font-family: var(--mono); font-size: .75rem; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; margin-bottom: 22px; }
+    .control { display: grid; grid-template-columns: auto minmax(150px, 260px) auto; align-items: center; gap: 10px; }
+    label { font-weight: 700; }
+    input[type="range"] { accent-color: var(--green); width: 100%; }
+    output { min-width: 4.8em; color: var(--rust); font-family: var(--mono); font-weight: 700; }
+    canvas {
+      display: block;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffef9;
+    }
+    .canvas-labels { display: flex; justify-content: space-between; margin-top: 8px; color: var(--muted); font-family: var(--mono); font-size: .74rem; }
+    .readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 16px; }
+    .datum { padding: 12px 14px; border-radius: 12px; background: #efece3; }
+    .datum span { display: block; color: var(--muted); font-family: var(--mono); font-size: .7rem; text-transform: uppercase; }
+    .datum strong { font-family: var(--mono); font-size: 1.02rem; }
+
+    .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 12px; margin: 30px 0; }
+    .flow-node { padding: 20px; border: 1px solid var(--line); border-radius: 15px; background: var(--card); }
+    .flow-node strong { display: block; color: var(--green); font-family: var(--mono); font-size: .8rem; text-transform: uppercase; }
+    .arrow { align-self: center; color: var(--rust); font-size: 1.5rem; }
+    .formula {
+      overflow-x: auto;
+      padding: 20px;
+      border-radius: 14px;
+      color: #f7f1e6;
+      background: #27302c;
+      font-family: var(--mono);
+      text-align: center;
+    }
+    .callout { margin: 28px 0; padding: 18px 22px; border-left: 4px solid var(--rust); background: var(--rust-soft); }
+    .callout strong { color: #71301b; }
+
+    .direction-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    button {
+      padding: 10px 16px;
+      border: 1px solid var(--green);
+      border-radius: 999px;
+      color: var(--green);
+      background: transparent;
+      cursor: pointer;
+      transition: background .15s ease, color .15s ease, transform .15s ease;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid rgba(49, 93, 120, .35); outline-offset: 3px; }
+    button.active, button.primary { color: white; background: var(--green); }
+
+    .sample-budget { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 28px; }
+    .meter { padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
+    .meter-track { height: 13px; margin: 13px 0 8px; overflow: hidden; border-radius: 99px; background: #e7e1d5; }
+    .meter-fill { height: 100%; border-radius: inherit; }
+    .huge { width: 100%; background: var(--rust); }
+    .small { width: 8%; min-width: 12px; background: var(--green); }
+    .meter strong { font-family: var(--mono); }
+    .fine-print { color: var(--muted); font-size: .86rem; }
+
+    .file-strip { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin: 22px 0 12px; }
+    .sample { padding: 14px 4px; border-radius: 8px; font-family: var(--mono); text-align: center; }
+    .sample:nth-child(odd) { color: var(--green); background: var(--green-soft); }
+    .sample:nth-child(even) { color: var(--rust); background: var(--rust-soft); }
+    .sample small { display: block; opacity: .7; }
+
+    .quiz { padding: clamp(25px, 5vw, 48px); border-radius: 24px; color: #eef3ef; background: #27302c; }
+    .quiz h2 { color: white; }
+    .quiz .section-intro { color: #bdc9c1; }
+    .question { margin-top: 30px; padding-top: 28px; border-top: 1px solid #4d5852; }
+    .question fieldset { margin: 0; padding: 0; border: 0; }
+    .question legend { margin-bottom: 15px; font-size: 1.12rem; font-weight: 700; }
+    .option { display: block; margin: 9px 0; padding: 11px 14px; border: 1px solid #59655f; border-radius: 10px; cursor: pointer; }
+    .option:hover { background: #333e38; }
+    .option input { margin-right: 9px; accent-color: #8ebaa6; }
+    .quiz button { margin-top: 12px; border-color: #a8c9b8; color: white; }
+    .quiz button:hover { background: #36453e; }
+    .feedback { display: none; margin-top: 14px; padding: 14px 16px; border-radius: 10px; color: var(--ink); background: #e8e4d9; }
+    .feedback.show { display: block; }
+    .feedback.correct { border-left: 5px solid #4f8a70; }
+    .feedback.incorrect { border-left: 5px solid #b55a3b; }
+    textarea { width: 100%; min-height: 100px; padding: 13px; border: 1px solid #637068; border-radius: 10px; color: var(--ink); background: #fffef9; resize: vertical; }
+
+    .takeaway { text-align: center; }
+    .takeaway blockquote { margin: 28px auto; max-width: 760px; color: var(--green); font-size: clamp(1.5rem, 4vw, 2.45rem); line-height: 1.28; }
+    footer { padding: 0 0 55px; color: var(--muted); text-align: center; font-size: .86rem; }
+
+    @media (max-width: 760px) {
+      header { padding-top: 45px; }
+      main section { margin: 60px 0; }
+      .truth-grid, .two-col, .three-col, .sample-budget { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); justify-self: center; }
+      .lab-head { display: block; }
+      .badge { display: inline-block; margin-top: 10px; }
+      .control { width: 100%; grid-template-columns: 1fr; }
+      .readout { grid-template-columns: 1fr; }
+      .file-strip { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="shell">
+    <div class="eyebrow">A signal-processing field guide</div>
+    <h1>Why store a signal as I/Q?</h1>
+    <p class="dek">Because “amplitude at each time” is enough only when you keep the fast RF waveform. I/Q lets us move that waveform down to a manageable speed without losing the phase and direction information that carries data.</p>
+    <p class="short-answer"><strong>The short answer:</strong> I/Q is amplitude <em>and phase</em>, written as two coordinates. It stores the slowly changing shape of a radio signal, not every wiggle of its high-frequency carrier.</p>
+  </header>
+
+  <main class="shell">
+    <section class="why" aria-labelledby="why-title">
+      <div class="eyebrow">Why this matters</div>
+      <h2 id="why-title">The carrier is fast. The information is slow.</h2>
+      <p>A GPS L1 signal rides on a carrier near <strong>1.575&nbsp;GHz</strong>. If you tried to store that raw voltage waveform directly, your converter and disk would need to deal with billions of samples each second. Yet the useful signal occupies only a small band around that carrier.</p>
+      <p>A radio front end therefore removes the carrier before storage. But removing it carelessly would also erase whether the signal was ahead or behind in phase—and whether a component sat above or below the tuned frequency. <strong>I/Q downconversion keeps those distinctions.</strong></p>
+      <p>You meet this in SDR recordings, GPS simulators, Wi-Fi and cellular receivers, radar, digital modulation, spectrum analyzers, and almost any code that performs filtering, synchronization, demodulation, or correlation on radio samples.</p>
+    </section>
+
+    <section aria-labelledby="honest-title">
+      <div class="reading">
+        <div class="eyebrow">First, fix the premise</div>
+        <h2 id="honest-title">“Amplitude + time” is not wrong</h2>
+        <p class="section-intro">A real ADC measures a signed voltage at each instant. If it samples fast enough, that one stream contains amplitude, frequency, and phase implicitly. The problem is not correctness; it is cost and convenience.</p>
+      </div>
+      <div class="truth-grid">
+        <article class="card">
+          <span class="verdict yes">True</span>
+          <h3>Raw real samples can store everything</h3>
+          <p>Record <code>+0.2, +0.9, +0.3, −0.7…</code> quickly enough and the shape of the waveform reveals its phase. No separate “phase column” is required.</p>
+        </article>
+        <article class="card">
+          <span class="verdict but">The catch</span>
+          <h3>You must follow every carrier wiggle</h3>
+          <p>A gigahertz carrier changes sign billions of times per second. Most of those stored wiggles say “the carrier is still here,” not “here is new information.”</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="clock-title">
+      <div class="reading">
+        <div class="eyebrow">Mental model 01</div>
+        <h2 id="clock-title">I/Q is a clock hand, not two mysterious signals</h2>
+        <p class="section-intro">Imagine freezing a sinusoid and describing its state with a rotating arrow. The horizontal coordinate is <strong>I</strong> (in-phase). The vertical coordinate is <strong>Q</strong> (quadrature, 90° away). Together they describe both length and angle.</p>
+      </div>
+
+      <div class="lab">
+        <div class="lab-head">
+          <div>
+            <h3>Move the signal through phase</h3>
+            <p>Watch one I/Q point reconstruct a complete carrier. A single real value at one instant cannot tell you the arrow’s full direction; the pair can.</p>
+          </div>
+          <span class="badge">interactive</span>
+        </div>
+        <div class="controls">
+          <div class="control">
+            <label for="phase">Phase</label>
+            <input id="phase" type="range" min="-180" max="180" value="35" step="1">
+            <output id="phaseOut" for="phase">35°</output>
+          </div>
+          <div class="control">
+            <label for="amplitude">Amplitude</label>
+            <input id="amplitude" type="range" min="0.2" max="1" value="0.82" step="0.01">
+            <output id="ampOut" for="amplitude">0.82</output>
+          </div>
+        </div>
+        <canvas id="iqCanvas" width="1000" height="390" aria-label="I/Q phasor and reconstructed sinusoid"></canvas>
+        <div class="canvas-labels"><span>LEFT: I/Q PLANE</span><span>RIGHT: RECONSTRUCTED REAL WAVEFORM</span></div>
+        <div class="readout" aria-live="polite">
+          <div class="datum"><span>I = A cos φ</span><strong id="iRead">0.67</strong></div>
+          <div class="datum"><span>Q = A sin φ</span><strong id="qRead">0.47</strong></div>
+          <div class="datum"><span>Complex sample</span><strong id="complexRead">0.67 + j0.47</strong></div>
+        </div>
+      </div>
+
+      <div class="reading">
+        <p class="formula">x = I + jQ &nbsp;&nbsp; ↔ &nbsp;&nbsp; amplitude = √(I² + Q²), phase = atan2(Q, I)</p>
+        <p>The letter <code>j</code> is bookkeeping: it says the Q coordinate is perpendicular to I. Electrical engineers use <code>j</code> because <code>i</code> already means current.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="mix-title">
+      <div class="reading">
+        <div class="eyebrow">Mental model 02</div>
+        <h2 id="mix-title">Downconversion makes the carrier stand still</h2>
+        <p class="section-intro">Why this step matters: storage and signal processing should scale with the information bandwidth, not with the radio station’s address on the frequency dial.</p>
+      </div>
+      <div class="flow" role="img" aria-label="RF signal is mixed with cosine and sine references, then low-pass filtered into I and Q">
+        <div class="flow-node"><strong>Incoming RF</strong>A fast rotating signal near the tuned carrier.</div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>Two mixers</strong>Compare with cosine for I and sine for Q.</div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>Complex baseband</strong>The carrier stops; only slow changes remain.</div>
+      </div>
+      <div class="reading">
+        <p>If the receiver’s reference rotates at the same speed as the carrier, the carrier looks stationary—like jogging beside another runner. Modulation appears as the remaining slow motion of the I/Q arrow.</p>
+        <div class="callout"><strong>Common confusion:</strong> Q is not “quality,” and it is not a second antenna. It is the result of measuring the same signal against a reference shifted by one quarter-cycle.</div>
+      </div>
+    </section>
+
+    <section aria-labelledby="direction-title">
+      <div class="reading">
+        <div class="eyebrow">The capability one real channel loses at baseband</div>
+        <h2 id="direction-title">I/Q preserves rotation direction</h2>
+        <p class="section-intro">A real cosine cannot distinguish <code>+f</code> from <code>−f</code>: <code>cos(+ωt) = cos(−ωt)</code>. But after tuning, those signs mean “above the center frequency” and “below the center frequency.” I/Q keeps them separate.</p>
+      </div>
+      <div class="lab">
+        <div class="lab-head">
+          <div>
+            <h3>Same real trace, opposite complex motion</h3>
+            <p>Change direction. The I projection remains the same cosine, while Q flips sign and reveals clockwise versus counterclockwise rotation.</p>
+          </div>
+          <span class="badge">interactive</span>
+        </div>
+        <div class="direction-controls" role="group" aria-label="Phasor rotation direction">
+          <button id="ccw" class="active" type="button">+f · counterclockwise</button>
+          <button id="cw" type="button">−f · clockwise</button>
+          <button id="pause" type="button">Pause</button>
+        </div>
+        <canvas id="directionCanvas" width="1000" height="340" aria-label="Rotating complex phasor with I and Q histories"></canvas>
+        <p id="directionText" class="fine-print" aria-live="polite"><strong>+f:</strong> Q leads the rotation. This component lies above the tuned center in complex baseband.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="rate-title">
+      <div class="reading">
+        <div class="eyebrow">The engineering payoff</div>
+        <h2 id="rate-title">Process bandwidth, not carrier frequency</h2>
+        <p class="section-intro">Consider an illustrative 2&nbsp;MHz-wide signal centered near GPS L1. Directly sampling the carrier and complex-sampling the downconverted band solve the same capture problem at very different rates.</p>
+      </div>
+      <div class="sample-budget">
+        <article class="meter">
+          <span class="verdict but">Direct RF</span>
+          <h3>Follow a 1.575&nbsp;GHz carrier</h3>
+          <div class="meter-track"><div class="meter-fill huge"></div></div>
+          <strong>&gt; 3.15 billion real samples/s</strong>
+          <p class="fine-print">A simple Nyquist illustration for sampling from DC. Specialized bandpass-sampling designs can change the exact requirement.</p>
+        </article>
+        <article class="meter">
+          <span class="verdict yes">Complex baseband</span>
+          <h3>Follow a roughly 2&nbsp;MHz band</h3>
+          <div class="meter-track"><div class="meter-fill small"></div></div>
+          <strong>about 2–4 million I/Q pairs/s</strong>
+          <p class="fine-print">The exact rate includes filter transition room and application needs. The key scaling variable is occupied bandwidth.</p>
+        </article>
+      </div>
+      <div class="reading">
+        <p>Each I/Q sample has two numbers, so complex sampling is not free. But “two values at a few megasamples per second” is far cheaper than “one value at several gigasamples per second.”</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="file-title">
+      <div class="reading">
+        <div class="eyebrow">What is actually inside the file?</div>
+        <h2 id="file-title">Usually, alternating numbers</h2>
+        <p class="section-intro">An I/Q file often stores interleaved signed integers or floating-point values. The metadata—sample rate, center frequency, numeric type, scale, and I/Q ordering—is essential because raw bytes do not describe themselves.</p>
+        <div class="file-strip" aria-label="Interleaved I and Q samples">
+          <div class="sample"><small>I₀</small>72</div><div class="sample"><small>Q₀</small>18</div>
+          <div class="sample"><small>I₁</small>65</div><div class="sample"><small>Q₁</small>35</div>
+          <div class="sample"><small>I₂</small>49</div><div class="sample"><small>Q₂</small>51</div>
+          <div class="sample"><small>I₃</small>27</div><div class="sample"><small>Q₃</small>66</div>
+        </div>
+        <p class="fine-print">Example only: <code>I₀, Q₀, I₁, Q₁…</code>. Some formats use planar arrays, swapped Q/I order, or packed samples.</p>
+      </div>
+      <div class="three-col">
+        <article class="card"><h3>Amplitude changes</h3><p>The point moves toward or away from the origin. Receivers use this for envelopes, gain, and amplitude modulation.</p></article>
+        <article class="card"><h3>Phase changes</h3><p>The point moves around the origin. PSK, carrier tracking, and coherent correlation depend on this angle.</p></article>
+        <article class="card"><h3>Frequency offset</h3><p>The point keeps rotating. Rotation speed and direction reveal Doppler and tuning error.</p></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="world-title">
+      <div class="reading">
+        <div class="eyebrow">Where the mental model pays rent</div>
+        <h2 id="world-title">What engineers do with I/Q</h2>
+      </div>
+      <div class="two-col">
+        <article class="card"><h3>GNSS acquisition and tracking</h3><p>Correlators compare complex samples against local PRN replicas. Carrier phase and Doppler become controlled rotations rather than billion-cycle-per-second waveforms.</p></article>
+        <article class="card"><h3>Digital communications</h3><p>QPSK and QAM intentionally place symbols at different I/Q coordinates. The constellation is a map of allowed amplitude-and-phase states.</p></article>
+        <article class="card"><h3>Spectrum and filtering</h3><p>Complex samples distinguish energy above and below the tuned center, enabling unambiguous shifts, channel selection, and analytic-signal processing.</p></article>
+        <article class="card"><h3>Debugging SDR recordings</h3><p>Wrong sample type, swapped I/Q, conjugation, DC offset, and I/Q imbalance create recognizable distortions. The “rotating arrow” model makes them easier to diagnose.</p></article>
+      </div>
+    </section>
+
+    <section class="quiz" aria-labelledby="quiz-title">
+      <div class="eyebrow">Knowledge check</div>
+      <h2 id="quiz-title">Can you use the model?</h2>
+      <p class="section-intro">These test reasoning, not vocabulary. Answer each one and inspect the explanation.</p>
+
+      <div class="question" data-question="q1">
+        <fieldset>
+          <legend>1. Why not store only the magnitude <code>√(I² + Q²)</code>?</legend>
+          <label class="option"><input type="radio" name="q1" value="a"> Magnitude needs more bytes than I/Q.</label>
+          <label class="option"><input type="radio" name="q1" value="b"> Magnitude discards phase and rotation direction.</label>
+          <label class="option"><input type="radio" name="q1" value="c"> Magnitude cannot represent signal power.</label>
+        </fieldset>
+        <button type="button" data-check="q1">Check answer</button>
+        <div class="feedback" id="q1Feedback" role="status"></div>
+      </div>
+
+      <div class="question" data-question="q2">
+        <fieldset>
+          <legend>2. An SDR is tuned to 100&nbsp;MHz. One tone is at 100.2&nbsp;MHz and another at 99.8&nbsp;MHz. What does I/Q preserve?</legend>
+          <label class="option"><input type="radio" name="q2" value="a"> Which tone is +200&nbsp;kHz and which is −200&nbsp;kHz from center.</label>
+          <label class="option"><input type="radio" name="q2" value="b"> Only their absolute 200&nbsp;kHz distance from center.</label>
+          <label class="option"><input type="radio" name="q2" value="c"> Their antenna locations.</label>
+        </fieldset>
+        <button type="button" data-check="q2">Check answer</button>
+        <div class="feedback" id="q2Feedback" role="status"></div>
+      </div>
+
+      <div class="question" data-question="q3">
+        <fieldset>
+          <legend>3. Debug the statement: “I/Q has twice as much physical signal as a real waveform because it has two channels.”</legend>
+          <label class="option"><input type="radio" name="q3" value="a"> Correct: Q comes from a second physical transmitter.</label>
+          <label class="option"><input type="radio" name="q3" value="b"> Incorrect: I and Q are two projections of the same signal against references 90° apart.</label>
+          <label class="option"><input type="radio" name="q3" value="c"> Incorrect only when I equals Q.</label>
+        </fieldset>
+        <button type="button" data-check="q3">Check answer</button>
+        <div class="feedback" id="q3Feedback" role="status"></div>
+      </div>
+
+      <div class="question">
+        <label for="explain">4. Explain why a 1.575&nbsp;GHz signal might be stored at only a few million I/Q pairs per second.</label>
+        <textarea id="explain" placeholder="Use the ideas of carrier, downconversion, and bandwidth…"></textarea>
+        <button type="button" id="reveal">Compare with a model answer</button>
+        <div class="feedback" id="modelAnswer" role="status"><strong>Model answer:</strong> The front end mixes the selected RF band down to complex baseband. I/Q preserves the band’s amplitude, phase, and positive/negative frequency information, while the known carrier itself no longer needs to be sampled. The required rate therefore follows the occupied bandwidth plus filter margin, not the original carrier frequency.</div>
+      </div>
+    </section>
+
+    <section class="takeaway" aria-labelledby="takeaway-title">
+      <div class="eyebrow">Keep this sentence</div>
+      <h2 id="takeaway-title">The whole lesson in one thought</h2>
+      <blockquote>Real samples draw every fast wiggle. I/Q stores the slow motion of the arrow that creates those wiggles.</blockquote>
+      <p class="reading">Both can represent the signal. I/Q is the representation that makes radio bandwidth, phase, frequency direction, modulation, and receiver algorithms manageable.</p>
+    </section>
+  </main>
+
+  <footer class="shell">Self-contained lesson · no network calls · all diagrams rendered in your browser</footer>
+
+  <script>
+    (() => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      function fitCanvas(canvas) {
+        const cssWidth = canvas.clientWidth;
+        const cssHeight = Number(canvas.getAttribute('height')) / Number(canvas.getAttribute('width')) * cssWidth;
+        canvas.style.height = `${cssHeight}px`;
+        canvas.width = Math.round(cssWidth * dpr);
+        canvas.height = Math.round(cssHeight * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { ctx, w: cssWidth, h: cssHeight };
+      }
+
+      const phase = document.querySelector('#phase');
+      const amplitude = document.querySelector('#amplitude');
+      const phaseOut = document.querySelector('#phaseOut');
+      const ampOut = document.querySelector('#ampOut');
+      const iRead = document.querySelector('#iRead');
+      const qRead = document.querySelector('#qRead');
+      const complexRead = document.querySelector('#complexRead');
+      const iqCanvas = document.querySelector('#iqCanvas');
+
+      function line(ctx, x1, y1, x2, y2, color, width = 1, dash = []) {
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+        ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]);
+      }
+
+      function arrow(ctx, x1, y1, x2, y2, color, width = 3) {
+        line(ctx, x1, y1, x2, y2, color, width);
+        const a = Math.atan2(y2 - y1, x2 - x1);
+        ctx.beginPath(); ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - 11 * Math.cos(a - Math.PI / 6), y2 - 11 * Math.sin(a - Math.PI / 6));
+        ctx.lineTo(x2 - 11 * Math.cos(a + Math.PI / 6), y2 - 11 * Math.sin(a + Math.PI / 6));
+        ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+      }
+
+      function drawIQ() {
+        const { ctx, w, h } = fitCanvas(iqCanvas);
+        ctx.clearRect(0, 0, w, h);
+        const phi = Number(phase.value) * Math.PI / 180;
+        const amp = Number(amplitude.value);
+        const I = amp * Math.cos(phi), Q = amp * Math.sin(phi);
+        const leftW = w < 620 ? w * .43 : w * .38;
+        const cx = leftW / 2, cy = h / 2, radius = Math.min(leftW * .34, h * .34);
+
+        ctx.strokeStyle = '#d9d2c4'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
+        line(ctx, cx - radius - 18, cy, cx + radius + 18, cy, '#9ba099');
+        line(ctx, cx, cy + radius + 18, cx, cy - radius - 18, '#9ba099');
+        ctx.fillStyle = '#62675f'; ctx.font = '13px Cascadia Code, monospace';
+        ctx.fillText('+I', cx + radius + 5, cy - 8); ctx.fillText('+Q', cx + 8, cy - radius - 7);
+        const px = cx + I * radius, py = cy - Q * radius;
+        line(ctx, px, cy, px, py, '#9c4528', 2, [5, 5]);
+        line(ctx, cx, py, px, py, '#245c4a', 2, [5, 5]);
+        arrow(ctx, cx, cy, px, py, '#315d78', 4);
+        ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fillStyle = '#315d78'; ctx.fill();
+        ctx.fillStyle = '#245c4a'; ctx.fillText('I', (cx + px) / 2, cy + 20);
+        ctx.fillStyle = '#9c4528'; ctx.fillText('Q', px + 9, (cy + py) / 2);
+
+        const sx = leftW + 38, ex = w - 20, mid = h / 2, waveAmp = h * .28;
+        line(ctx, sx, mid, ex, mid, '#9ba099');
+        for (let k = 0; k <= 4; k++) {
+          const x = sx + (ex - sx) * k / 4;
+          line(ctx, x, mid - waveAmp - 12, x, mid + waveAmp + 12, '#ebe6dc');
+        }
+        ctx.beginPath();
+        for (let x = sx; x <= ex; x++) {
+          const t = (x - sx) / (ex - sx) * Math.PI * 4;
+          const y = mid - amp * waveAmp * Math.cos(t + phi);
+          if (x === Math.ceil(sx)) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#245c4a'; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = '#62675f'; ctx.fillText('time →', ex - 48, mid + waveAmp + 31);
+
+        phaseOut.value = `${phase.value}°`; ampOut.value = amp.toFixed(2);
+        iRead.textContent = I.toFixed(2); qRead.textContent = Q.toFixed(2);
+        complexRead.textContent = `${I.toFixed(2)} ${Q < 0 ? '−' : '+'} j${Math.abs(Q).toFixed(2)}`;
+      }
+
+      phase.addEventListener('input', drawIQ);
+      amplitude.addEventListener('input', drawIQ);
+
+      const directionCanvas = document.querySelector('#directionCanvas');
+      const ccw = document.querySelector('#ccw');
+      const cw = document.querySelector('#cw');
+      const pause = document.querySelector('#pause');
+      const directionText = document.querySelector('#directionText');
+      let sign = 1, running = true, start = performance.now(), frozenAngle = 0;
+
+      function setDirection(next) {
+        sign = next; start = performance.now(); frozenAngle = 0;
+        ccw.classList.toggle('active', sign === 1); cw.classList.toggle('active', sign === -1);
+        directionText.innerHTML = sign === 1
+          ? '<strong>+f:</strong> Q leads the rotation. This component lies above the tuned center in complex baseband.'
+          : '<strong>−f:</strong> Q reverses. This component lies below the tuned center in complex baseband.';
+      }
+      ccw.addEventListener('click', () => setDirection(1));
+      cw.addEventListener('click', () => setDirection(-1));
+      pause.addEventListener('click', () => {
+        if (running) frozenAngle = sign * (performance.now() - start) / 700;
+        else start = performance.now() - Math.abs(frozenAngle) * 700;
+        running = !running;
+        pause.textContent = running ? 'Pause' : 'Resume';
+        pause.classList.toggle('active', !running);
+      });
+
+      function drawDirection(now) {
+        const { ctx, w, h } = fitCanvas(directionCanvas);
+        ctx.clearRect(0, 0, w, h);
+        const angle = running ? sign * (now - start) / 700 : frozenAngle;
+        const split = w * .34, cx = split / 2, cy = h / 2, r = Math.min(split * .31, h * .34);
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.strokeStyle = '#d9d2c4'; ctx.stroke();
+        line(ctx, cx - r - 12, cy, cx + r + 12, cy, '#9ba099');
+        line(ctx, cx, cy + r + 12, cx, cy - r - 12, '#9ba099');
+        const px = cx + r * Math.cos(angle), py = cy - r * Math.sin(angle);
+        arrow(ctx, cx, cy, px, py, sign === 1 ? '#315d78' : '#9c4528', 4);
+        line(ctx, px, cy, px, py, '#9c4528', 1.5, [4, 4]);
+        ctx.font = '12px Cascadia Code, monospace'; ctx.fillStyle = '#62675f';
+        ctx.fillText(sign === 1 ? '+f ↺' : '−f ↻', cx - 17, cy + r + 29);
+
+        const sx = split + 28, ex = w - 18, top = h * .31, bottom = h * .73, a = h * .18;
+        line(ctx, sx, top, ex, top, '#c7c2b8'); line(ctx, sx, bottom, ex, bottom, '#c7c2b8');
+        ctx.fillStyle = '#245c4a'; ctx.fillText('I', sx - 18, top + 4);
+        ctx.fillStyle = '#9c4528'; ctx.fillText('Q', sx - 18, bottom + 4);
+        ctx.beginPath();
+        for (let x = sx; x <= ex; x++) {
+          const t = angle - (ex - x) / 42;
+          const y = top - a * Math.cos(t);
+          if (x === Math.ceil(sx)) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#245c4a'; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.beginPath();
+        for (let x = sx; x <= ex; x++) {
+          const t = angle - (ex - x) / 42;
+          const y = bottom - a * Math.sin(t);
+          if (x === Math.ceil(sx)) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#9c4528'; ctx.lineWidth = 2.5; ctx.stroke();
+        requestAnimationFrame(drawDirection);
+      }
+
+      const answers = {
+        q1: { correct: 'b', good: 'Exactly. Magnitude keeps the arrow’s length but throws away its angle. Without phase, coherent demodulation, Doppler direction, and many modulation states disappear.', bad: 'Not quite. Magnitude represents power-related information well, but it removes the arrow’s angle—and therefore phase and rotation direction.' },
+        q2: { correct: 'a', good: 'Right. In complex baseband, the upper tone rotates in the positive direction and the lower tone in the negative direction.', bad: 'Try the rotation-direction model. A real cosine sees ±200 kHz as the same shape; Q supplies the sign that tells upper from lower.' },
+        q3: { correct: 'b', good: 'Right. The two values are perpendicular measurements of one physical waveform. Together they are a convenient coordinate system for amplitude and phase.', bad: 'The signal is not duplicated. I and Q are two projections of the same received waveform, measured against references separated by 90°.' }
+      };
+
+      document.querySelectorAll('[data-check]').forEach(button => {
+        button.addEventListener('click', () => {
+          const name = button.dataset.check;
+          const chosen = document.querySelector(`input[name="${name}"]:checked`);
+          const feedback = document.querySelector(`#${name}Feedback`);
+          if (!chosen) {
+            feedback.textContent = 'Choose an answer first. The useful learning happens when you commit to a model.';
+            feedback.className = 'feedback show incorrect'; return;
+          }
+          const ok = chosen.value === answers[name].correct;
+          feedback.textContent = ok ? answers[name].good : answers[name].bad;
+          feedback.className = `feedback show ${ok ? 'correct' : 'incorrect'}`;
+        });
+      });
+
+      document.querySelector('#reveal').addEventListener('click', () => {
+        const answer = document.querySelector('#modelAnswer');
+        answer.classList.toggle('show');
+        document.querySelector('#reveal').textContent = answer.classList.contains('show') ? 'Hide model answer' : 'Compare with a model answer';
+      });
+
+      window.addEventListener('resize', drawIQ);
+      drawIQ();
+      requestAnimationFrame(drawDirection);
+    })();
+  </script>
+</body>
+</html>
