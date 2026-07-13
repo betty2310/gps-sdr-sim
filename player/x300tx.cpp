@@ -11,6 +11,7 @@
  */
 
 #include <uhd/stream.hpp>
+#include <uhd/device.hpp>
 #include <uhd/types/metadata.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
 
@@ -21,6 +22,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cstdint>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 
@@ -36,6 +46,9 @@
 
 extern "C" {
 #include "gpssim.h"
+#include "tools/matched_code_plan.h"
+#include "tools/matched_code_source.h"
+#include "tools/sha256.h"
 }
 
 ////////////////////////////////////////////////////////////
@@ -51,6 +64,65 @@ extern "C" {
 #define EPOCH_TARGET_SEC 0.1
 #define GPS_TIME_PPM_DEFAULT 0.0
 #define GPS_TIME_PPM_MAX_ABS 1000.0
+#define MATCHED_RATE_TOLERANCE_HZ 0.5
+#define MATCHED_RAMP_DEFAULT_SEC 0.01
+
+struct MatchedCodeOptions {
+  bool enabled = false;
+  bool dry_run = false;
+  bool controlled_rf_confirmed = false;
+  bool js_set = false;
+  bool phase_seed_set = false;
+  bool onset_set = false;
+  bool offset_set = false;
+  bool ramp_set = false;
+  bool address_set = false;
+  bool channel_set = false;
+  bool antenna_set = false;
+  bool legacy_js_set = false;
+  bool legacy_gain_boost_set = false;
+  std::string target_prns;
+  std::string manifest_path;
+  std::string trajectory_path;
+  std::string calibration_id;
+  double js_db = 0.0;
+  uint64_t phase_seed = 0;
+  double onset_seconds = 0.0;
+  double offset_seconds = 0.0;
+  double ramp_seconds = MATCHED_RAMP_DEFAULT_SEC;
+};
+
+struct MatchedCodeRunResult {
+  std::string status = "incomplete";
+  std::string failure_reason;
+  std::string device_type;
+  std::string device_product;
+  std::string device_serial;
+  std::string device_address;
+  std::string actual_antenna;
+  std::string start_mode;
+  size_t tx_channel_count = 0;
+  double actual_rate_hz = 0.0;
+  double actual_frequency_hz = 0.0;
+  double actual_gain_db = 0.0;
+  double uhd_start_time_seconds = 0.0;
+  bool start_margin_met = false;
+  bool target_allocation_passed = false;
+  uint64_t rendered_clean_samples = 0;
+  uint64_t rendered_jammer_samples = 0;
+  uint64_t quantized_samples = 0;
+  uint64_t sent_samples = 0;
+  uint64_t underflows = 0;
+  uint64_t sequence_errors = 0;
+  uint64_t time_errors = 0;
+  bool interrupted = false;
+  matched_code_mix_metrics_t mix_metrics{};
+  matched_code_source_metrics_t source_metrics{};
+  double minimum_epoch_js_db = std::numeric_limits<double>::infinity();
+  double maximum_epoch_js_db = -std::numeric_limits<double>::infinity();
+  std::string trajectory_sha256;
+  int exit_status = 1;
+};
 
 // Trimble time-tag mode defaults
 #define TRIMBLE_START_OFFSET_DEFAULT 2
@@ -408,6 +480,85 @@ static int hasReviveMode(const synth_config_t *cfg) {
 // Generate one 0.1-second epoch of SC16 IQ samples
 ////////////////////////////////////////////////////////////
 
+static void prepareEpoch(channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
+                         ephem_t *active_eph, ionoutc_t *ionoutc,
+                         gpstime_t grx, double epoch_duration, double delt,
+                         int path_loss_enable, int fixed_gain,
+                         double ant_pat[37], int attack_enabled,
+                         const attack_config_t *attack_cfg) {
+  int i;
+
+  for (i = 0; i < MAX_CHAN; i++) {
+    if (chan[i].prn > 0) {
+      range_t rho;
+      int sv = chan[i].prn - 1;
+      double path_loss;
+      double ant_gain;
+      int ibs;
+
+      computeRange(&rho, active_eph[sv], ionoutc, grx, xyz[0]);
+      chan[i].azel[0] = rho.azel[0];
+      chan[i].azel[1] = rho.azel[1];
+      computeCodePhase(&chan[i], rho, epoch_duration);
+#ifndef FLOAT_CARR_PHASE
+      chan[i].carr_phasestep =
+          (int)round(512.0 * 65536.0 * chan[i].f_carr * delt);
+#endif
+      path_loss = 20200000.0 / rho.d;
+      ibs = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
+      ant_gain = ant_pat[ibs];
+      gain[i] = path_loss_enable == TRUE
+                    ? (int)(path_loss * ant_gain * 128.0)
+                    : fixed_gain;
+      if (attack_enabled == TRUE)
+        applyGainAttack(attack_cfg, chan[i].prn, &gain[i]);
+      if (attack_cfg != nullptr && attack_cfg->partial_mode &&
+          attack_cfg->gain_boost_db != 0.0)
+        gain[i] =
+            (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
+    }
+  }
+}
+
+static int cleanCarrierTableIndex(const channel_t *channel) {
+#ifdef FLOAT_CARR_PHASE
+  return (int)floor(channel->carr_phase * 512.0);
+#else
+  return (channel->carr_phase >> 16) & 0x1ff;
+#endif
+}
+
+static void advanceCleanChannelSample(channel_t *channel, double delt) {
+  channel->code_phase += channel->f_code * delt;
+  if (channel->code_phase >= CA_SEQ_LEN) {
+    channel->code_phase -= CA_SEQ_LEN;
+    ++channel->icode;
+    if (channel->icode >= 20) {
+      channel->icode = 0;
+      ++channel->ibit;
+      if (channel->ibit >= 30) {
+        channel->ibit = 0;
+        ++channel->iword;
+      }
+      channel->dataBit =
+          (int)((channel->dwrd[channel->iword] >> (29 - channel->ibit)) &
+                0x1UL) *
+              2 -
+          1;
+    }
+  }
+  channel->codeCA = channel->ca[(int)channel->code_phase] * 2 - 1;
+#ifdef FLOAT_CARR_PHASE
+  channel->carr_phase += channel->f_carr * delt;
+  if (channel->carr_phase >= 1.0)
+    channel->carr_phase -= 1.0;
+  else if (channel->carr_phase < 0.0)
+    channel->carr_phase += 1.0;
+#else
+  channel->carr_phase += channel->carr_phasestep;
+#endif
+}
+
 static void
 generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
               int gain[MAX_CHAN], ephem_t *active_eph, ionoutc_t *ionoutc,
@@ -416,44 +567,12 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
               double ant_pat[37], int attack_enabled,
               const attack_config_t *attack_cfg,
               unsigned int attack_noise_state[MAX_SAT], double jam_js_linear) {
-  int i, sv, isamp;
+  int i, isamp;
   int ip, qp, iTable;
-  int ibs;
-  double path_loss, ant_gain;
 
-  // Per-channel: compute range, code phase, gain
-  for (i = 0; i < MAX_CHAN; i++) {
-    if (chan[i].prn > 0) {
-      range_t rho;
-      sv = chan[i].prn - 1;
-
-      computeRange(&rho, active_eph[sv], ionoutc, grx, xyz[0]);
-
-      chan[i].azel[0] = rho.azel[0];
-      chan[i].azel[1] = rho.azel[1];
-
-      computeCodePhase(&chan[i], rho, epoch_duration);
-#ifndef FLOAT_CARR_PHASE
-      chan[i].carr_phasestep =
-          (int)round(512.0 * 65536.0 * chan[i].f_carr * delt);
-#endif
-      path_loss = 20200000.0 / rho.d;
-
-      ibs = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
-      ant_gain = ant_pat[ibs];
-
-      if (path_loss_enable == TRUE)
-        gain[i] = (int)(path_loss * ant_gain * 128.0);
-      else
-        gain[i] = fixed_gain;
-
-      if (attack_enabled == TRUE)
-        applyGainAttack(attack_cfg, chan[i].prn, &gain[i]);
-
-      if (attack_cfg->partial_mode && attack_cfg->gain_boost_db != 0.0)
-        gain[i] = (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
-    }
-  }
+  prepareEpoch(chan, gain, active_eph, ionoutc, grx, epoch_duration, delt,
+               path_loss_enable, fixed_gain, ant_pat, attack_enabled,
+               attack_cfg);
 
   // Per-sample: accumulate IQ from all channels
   for (isamp = 0; isamp < sample_count; isamp++) {
@@ -466,11 +585,7 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
         if (attack_enabled == TRUE)
           attack_method = getAttackMethod(attack_cfg, chan[i].prn);
 
-#ifdef FLOAT_CARR_PHASE
-        iTable = (int)floor(chan[i].carr_phase * 512.0);
-#else
-        iTable = (chan[i].carr_phase >> 16) & 0x1ff;
-#endif
+        iTable = cleanCarrierTableIndex(&chan[i]);
         if (attack_method == ATTACK_METHOD_JAM_NOISE) {
           unsigned int *state = &attack_noise_state[chan[i].prn - 1];
           double noise_amp = (double)gain[i] * jam_js_linear;
@@ -489,41 +604,7 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
         i_acc += ip;
         q_acc += qp;
 
-        // Update code phase
-        chan[i].code_phase += chan[i].f_code * delt;
-
-        if (chan[i].code_phase >= CA_SEQ_LEN) {
-          chan[i].code_phase -= CA_SEQ_LEN;
-          chan[i].icode++;
-
-          if (chan[i].icode >= 20) {
-            chan[i].icode = 0;
-            chan[i].ibit++;
-
-            if (chan[i].ibit >= 30) {
-              chan[i].ibit = 0;
-              chan[i].iword++;
-            }
-
-            chan[i].dataBit =
-                (int)((chan[i].dwrd[chan[i].iword] >> (29 - chan[i].ibit)) &
-                      0x1UL) *
-                    2 -
-                1;
-          }
-        }
-
-        chan[i].codeCA = chan[i].ca[(int)chan[i].code_phase] * 2 - 1;
-
-#ifdef FLOAT_CARR_PHASE
-        chan[i].carr_phase += chan[i].f_carr * delt;
-        if (chan[i].carr_phase >= 1.0)
-          chan[i].carr_phase -= 1.0;
-        else if (chan[i].carr_phase < 0.0)
-          chan[i].carr_phase += 1.0;
-#else
-        chan[i].carr_phase += chan[i].carr_phasestep;
-#endif
+        advanceCleanChannelSample(&chan[i], delt);
       }
     }
 
@@ -532,6 +613,122 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
 
     iq_buff[isamp * 2] = clipInt16(i_acc);
     iq_buff[isamp * 2 + 1] = clipInt16(q_acc);
+  }
+}
+
+static void renderCleanEpochWide(double *iq_buff, int sample_count,
+                                 channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
+                                 double delt) {
+  int isamp;
+
+  for (isamp = 0; isamp < sample_count; ++isamp) {
+    int i_acc = 0;
+    int q_acc = 0;
+    int i;
+
+    for (i = 0; i < MAX_CHAN; ++i) {
+      int i_table;
+      int ip;
+      int qp;
+
+      if (chan[i].prn <= 0)
+        continue;
+      i_table = cleanCarrierTableIndex(&chan[i]);
+      ip = chan[i].dataBit * chan[i].codeCA * cosTable512[i_table] * gain[i];
+      qp = chan[i].dataBit * chan[i].codeCA * sinTable512[i_table] * gain[i];
+      i_acc += ip;
+      q_acc += qp;
+
+      advanceCleanChannelSample(&chan[i], delt);
+    }
+
+    iq_buff[2 * isamp] = (double)i_acc / 128.0;
+    iq_buff[2 * isamp + 1] = (double)q_acc / 128.0;
+  }
+}
+
+static bool captureMatchedTargetStates(
+    const matched_code_plan_t &plan, const channel_t chan[MAX_CHAN],
+    const int gain[MAX_CHAN], uint64_t sample_offset,
+    matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS],
+    std::string *error) {
+  for (size_t index = 0; index < plan.target_count; ++index) {
+    int prn = plan.target_prns[index];
+    int channel = allocatedSat[prn - 1];
+
+    if (channel < 0 || channel >= MAX_CHAN || chan[channel].prn != prn ||
+        gain[channel] <= 0) {
+      std::ostringstream message;
+      message << "target PRN " << prn
+              << " is not allocated with positive clean gain at sample "
+              << sample_offset;
+      *error = message.str();
+      return false;
+    }
+    states[index].sample_offset = sample_offset;
+    states[index].prn = prn;
+    states[index].code_phase_chips = chan[channel].code_phase;
+    states[index].carrier_doppler_hz = chan[channel].f_carr;
+    states[index].code_rate_chips_per_s = chan[channel].f_code;
+    states[index].clean_gain = gain[channel];
+  }
+  return true;
+}
+
+static bool validateMatchedTargetUsability(
+    const matched_code_plan_t &plan, const ephem_t active_ephemeris[MAX_SAT],
+    const synth_config_t *synth_config, gpstime_t boundary_time,
+    double elevation_mask, uint64_t sample_offset, std::string *error) {
+  for (size_t index = 0; index < plan.target_count; ++index) {
+    int prn = plan.target_prns[index];
+    int satellite = prn - 1;
+    bool synthetic = synth_config != nullptr && synth_config->enabled &&
+                     synth_config->mode[satellite] != SYNTH_NONE;
+    double azimuth_elevation[2];
+    int usable = synthetic
+                     ? (active_ephemeris[satellite].vflg == 1 ? TRUE : FALSE)
+                     : checkSatVisibility(active_ephemeris[satellite],
+                                          boundary_time, xyz[0],
+                                          elevation_mask,
+                                          azimuth_elevation);
+
+    if (usable != TRUE) {
+      std::ostringstream message;
+      message << "target PRN " << prn
+              << " is not geometrically usable at sample " << sample_offset;
+      *error = message.str();
+      return false;
+    }
+  }
+  return true;
+}
+
+static void writeTrajectoryHeader(std::ofstream &trajectory,
+                                  const matched_code_plan_t &plan,
+                                  gpstime_t start_time) {
+  trajectory << std::setprecision(17);
+  trajectory << "# schema=gps-sdr-sim.target-trajectory.v1\n";
+  trajectory << "# sample_rate_hz=" << plan.sample_rate_hz << "\n";
+  trajectory << "# epoch_cadence_samples="
+             << static_cast<uint64_t>(std::llround(plan.sample_rate_hz *
+                                                   EPOCH_TARGET_SEC))
+             << "\n";
+  trajectory << "# gps_week=" << start_time.week << "\n";
+  trajectory << "# gps_tow=" << start_time.sec << "\n";
+  trajectory << "# boundary=first_sample\n";
+  trajectory << "sample_offset,prn,code_phase_chips,carrier_doppler_hz,"
+                "code_rate_chips_per_s,clean_gain\n";
+}
+
+static void writeTrajectoryStates(
+    std::ofstream &trajectory, const matched_code_target_state_t *states,
+    size_t state_count) {
+  for (size_t index = 0; index < state_count; ++index) {
+    const matched_code_target_state_t &state = states[index];
+    trajectory << state.sample_offset << ',' << state.prn << ','
+               << state.code_phase_chips << ',' << state.carrier_doppler_hz
+               << ',' << state.code_rate_chips_per_s << ',' << state.clean_gain
+               << '\n';
   }
 }
 
@@ -544,7 +741,8 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
                             double elvmask, int trimble_rtcm_mode,
                             int *trimble_rtcm_alive,
                             rtcm3_nav_stream_t *trimble_rtcm_stream,
-                            const attack_config_t *attack_cfg) {
+                            const attack_config_t *attack_cfg,
+                            const int *required_prns) {
   int i;
   int eph_changed = FALSE;
 
@@ -598,8 +796,932 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
       generateNavMsg(grx, &chan[i], 0);
   }
 
-      allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask,
-                      attack_cfg, synth_cfg, nullptr);
+  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask,
+                  attack_cfg, synth_cfg, required_prns);
+}
+
+static std::string jsonEscape(const std::string &value) {
+  std::ostringstream escaped;
+
+  for (unsigned char character : value) {
+    switch (character) {
+    case '"': escaped << "\\\""; break;
+    case '\\': escaped << "\\\\"; break;
+    case '\b': escaped << "\\b"; break;
+    case '\f': escaped << "\\f"; break;
+    case '\n': escaped << "\\n"; break;
+    case '\r': escaped << "\\r"; break;
+    case '\t': escaped << "\\t"; break;
+    default:
+      if (character < 0x20) {
+        escaped << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                << static_cast<int>(character) << std::dec;
+      } else {
+        escaped << static_cast<char>(character);
+      }
+    }
+  }
+  return escaped.str();
+}
+
+static bool writeMatchedManifestAtomic(
+    const MatchedCodeOptions &options, const matched_code_plan_t &plan,
+    const MatchedCodeRunResult &result, const char *navfile,
+    const std::string &ephemeris_sha256,
+    const std::string &scenario_sha256, gpstime_t sample_zero,
+    const double reference_xyz[3], double requested_rate_hz,
+    const char *device_address, size_t tx_channel, const char *tx_antenna,
+    double requested_gain_db, const char *clock_source,
+    const char *time_source, int prebuffer_count, long long tx_delay_cal_ns,
+    double gps_time_ppm, bool trimble_mode) {
+  std::string temporary_path = options.manifest_path + ".tmp";
+  std::ofstream manifest(temporary_path, std::ios::out | std::ios::trunc);
+  double clean_rms = 0.0;
+  double jammer_rms = 0.0;
+  double composite_rms = 0.0;
+  double achieved_js = matched_code_mix_achieved_js_db(&result.mix_metrics);
+  matched_code_source_config_t source_config{};
+  matched_code_source_t phase_source;
+  char source_error[128];
+
+  if (!manifest)
+    return false;
+  if (result.mix_metrics.plateau_samples > 0) {
+    clean_rms = sqrt((double)(result.mix_metrics.clean_power /
+                              result.mix_metrics.plateau_samples));
+    jammer_rms = sqrt((double)(result.mix_metrics.jammer_power /
+                               result.mix_metrics.plateau_samples));
+    composite_rms = sqrt((double)(result.mix_metrics.composite_power /
+                                  result.mix_metrics.plateau_samples));
+  }
+  source_config.sample_rate_hz = plan.sample_rate_hz;
+  source_config.total_samples = plan.total_samples;
+  source_config.onset_sample = plan.onset_sample;
+  source_config.offset_sample = plan.offset_sample;
+  source_config.ramp_samples = plan.ramp_samples;
+  source_config.amplitude = 1.0;
+  source_config.phase_seed = plan.phase_seed;
+  source_config.target_count = plan.target_count;
+  for (size_t index = 0; index < plan.target_count; ++index)
+    source_config.target_prns[index] = plan.target_prns[index];
+  bool phases_available =
+      matched_code_source_init(&phase_source, &source_config, source_error,
+                               sizeof(source_error)) == 0;
+
+  manifest << std::setprecision(17);
+  manifest << "{\n";
+  manifest << "  \"schema\": \"gps-sdr-sim.x300tx-matched-code.v1\",\n";
+  manifest << "  \"tool\": \"x300tx\",\n";
+  manifest << "  \"status\": \"" << jsonEscape(result.status) << "\",\n";
+  manifest << "  \"failure_reason\": ";
+  if (result.failure_reason.empty())
+    manifest << "null";
+  else
+    manifest << "\"" << jsonEscape(result.failure_reason) << "\"";
+  manifest << ",\n";
+  manifest << "  \"exit_status\": " << result.exit_status << ",\n";
+  manifest << "  \"acceptance_scope\": "
+              "\"transmitter-only; RF waveform fidelity, propagation, "
+              "receiver-input power, RF code alignment, and receiver behavior "
+              "were not measured\",\n";
+  manifest << "  \"safety\": {\"controlled_rf_only\": true, "
+              "\"controlled_rf_confirmed\": "
+           << (options.controlled_rf_confirmed ? "true" : "false")
+           << ", \"calibration_id\": ";
+  if (options.calibration_id.empty())
+    manifest << "null";
+  else
+    manifest << "\"" << jsonEscape(options.calibration_id) << "\"";
+  manifest << "},\n";
+  manifest << "  \"scenario\": {\"schema\": "
+              "\"gps-sdr-sim.x300tx-frozen-scenario.v1\", "
+              "\"sha256\": \""
+           << jsonEscape(scenario_sha256) << "\", \"ephemeris_path\": \""
+           << jsonEscape(navfile != nullptr ? navfile : "")
+           << "\", \"ephemeris_sha256\": \""
+           << jsonEscape(ephemeris_sha256)
+           << "\", \"reference_ecef_m\": [" << reference_xyz[0] << ", "
+           << reference_xyz[1] << ", " << reference_xyz[2]
+           << "], \"sample_zero_gps_week\": " << sample_zero.week
+           << ", \"sample_zero_gps_tow\": " << sample_zero.sec
+           << ", \"requested_target_prns\": [";
+  for (size_t index = 0; index < plan.target_count; ++index)
+    manifest << (index == 0 ? "" : ", ") << plan.target_prns[index];
+  manifest << "], \"selected_target_prns\": [";
+  for (size_t index = 0; index < plan.target_count; ++index)
+    manifest << (index == 0 ? "" : ", ") << plan.target_prns[index];
+  manifest << "], \"full_run_target_allocation_passed\": "
+           << (result.target_allocation_passed ? "true" : "false") << "},\n";
+  manifest << "  \"trajectory\": {\"schema\": "
+              "\"gps-sdr-sim.target-trajectory.v1\", \"path\": \""
+           << jsonEscape(options.trajectory_path) << "\", \"sha256\": \""
+           << jsonEscape(result.trajectory_sha256) << "\"},\n";
+  manifest << "  \"waveform\": {\"taxonomy\": "
+              "\"navigation-data-free-gps-l1-ca-matched-code\", "
+              "\"data_symbol_policy\": \"constant_positive\", "
+              "\"carrier_phase_policy\": \"independent_deterministic\", "
+              "\"phase_seed\": "
+           << plan.phase_seed << ", \"equal_component_weight\": "
+           << 1.0 / sqrt((double)plan.target_count)
+           << ", \"target_count_normalization\": \"sqrt_n\", "
+              "\"initial_carrier_phases_rad\": [";
+  for (size_t index = 0; index < plan.target_count; ++index) {
+    double phase = phases_available
+                       ? matched_code_source_initial_phase_rad(&phase_source,
+                                                               index)
+                       : 0.0;
+    manifest << (index == 0 ? "" : ", ") << phase;
+  }
+  manifest << "], \"requested_js_db\": " << plan.requested_js_db
+           << ", \"reference_js_db\": " << plan.reference_js_db
+           << ", \"jammer_scale\": " << plan.jammer_scale
+           << ", \"common_gain\": " << plan.common_gain
+           << ", \"predicted_component_bound\": "
+           << plan.predicted_composite_bound
+           << ", \"predicted_headroom_db\": "
+           << plan.predicted_headroom_db << "},\n";
+  manifest << "  \"sample_contract\": {\"requested_rate_hz\": "
+           << requested_rate_hz << ", \"actual_rate_hz\": "
+           << result.actual_rate_hz
+           << ", \"format\": \"sc16_le\", \"iq_order\": \"IQ\", "
+              "\"planned_samples\": "
+           << plan.total_samples << ", \"rendered_clean_samples\": "
+           << result.rendered_clean_samples
+           << ", \"rendered_jammer_samples\": "
+           << result.rendered_jammer_samples
+           << ", \"quantized_composite_samples\": "
+           << result.quantized_samples << ", \"sent_samples\": "
+           << result.sent_samples << "},\n";
+  manifest << "  \"envelope\": {\"onset_sample\": " << plan.onset_sample
+           << ", \"offset_sample\": " << plan.offset_sample
+           << ", \"ramp_samples\": " << plan.ramp_samples
+           << ", \"reference_start_sample\": "
+           << plan.reference_start_sample
+           << ", \"reference_end_sample\": "
+           << plan.reference_end_sample << "},\n";
+  manifest << "  \"timing\": {\"start_mode\": \""
+           << jsonEscape(result.start_mode.empty()
+                             ? (trimble_mode ? "trimble_time_tag"
+                                             : "explicit_gps_time")
+                             : result.start_mode)
+           << "\", \"gps_week\": " << sample_zero.week
+           << ", \"gps_tow\": " << sample_zero.sec
+           << ", \"tx_delay_calibration_ns\": " << tx_delay_cal_ns
+           << ", \"gps_time_ppm\": " << gps_time_ppm
+           << ", \"prebuffer_epochs\": " << prebuffer_count
+           << ", \"prebuffer_samples\": "
+           << (uint64_t)prebuffer_count *
+                  (uint64_t)llround(plan.sample_rate_hz * EPOCH_TARGET_SEC)
+           << ", \"uhd_timed_start_s\": "
+           << result.uhd_start_time_seconds
+           << ", \"start_margin_met\": "
+           << (result.start_margin_met ? "true" : "false") << "},\n";
+  manifest << "  \"hardware\": {\"device_type\": \""
+           << jsonEscape(result.device_type) << "\", \"product\": \""
+           << jsonEscape(result.device_product) << "\", \"serial\": \""
+           << jsonEscape(result.device_serial) << "\", \"address\": \""
+           << jsonEscape(device_address) << "\", \"tx_channel_count\": "
+           << result.tx_channel_count << ", \"selected_channel\": "
+           << tx_channel << ", \"requested_antenna\": \""
+           << jsonEscape(tx_antenna) << "\", \"actual_antenna\": \""
+           << jsonEscape(result.actual_antenna)
+           << "\", \"requested_center_frequency_hz\": " << TX_FREQUENCY
+           << ", \"actual_center_frequency_hz\": "
+           << result.actual_frequency_hz << ", \"clock_source\": \""
+           << jsonEscape(clock_source) << "\", \"time_source\": \""
+           << jsonEscape(time_source) << "\", \"requested_gain_db\": "
+           << requested_gain_db << ", \"actual_gain_db\": "
+           << result.actual_gain_db << "},\n";
+  manifest << "  \"measurements\": {\"clean_rms_sc16\": " << clean_rms
+           << ", \"jammer_rms_sc16\": " << jammer_rms
+           << ", \"composite_rms_sc16\": " << composite_rms
+           << ", \"composite_peak_sc16\": "
+           << result.mix_metrics.composite_peak << ", \"achieved_js_db\": ";
+  if (std::isfinite(achieved_js))
+    manifest << achieved_js;
+  else
+    manifest << "null";
+  manifest << ", \"minimum_epoch_js_db\": ";
+  if (std::isfinite(result.minimum_epoch_js_db))
+    manifest << result.minimum_epoch_js_db;
+  else
+    manifest << "null";
+  manifest << ", \"maximum_epoch_js_db\": ";
+  if (std::isfinite(result.maximum_epoch_js_db))
+    manifest << result.maximum_epoch_js_db;
+  else
+    manifest << "null";
+  manifest << ", \"clipped_components\": "
+           << result.mix_metrics.clipped_components
+           << ", \"underflows\": " << result.underflows
+           << ", \"sequence_errors\": " << result.sequence_errors
+           << ", \"time_errors\": " << result.time_errors
+           << ", \"interrupted\": "
+           << (result.interrupted ? "true" : "false") << "}\n";
+  manifest << "}\n";
+  manifest.close();
+  if (!manifest || std::rename(temporary_path.c_str(),
+                               options.manifest_path.c_str()) != 0) {
+    std::remove(temporary_path.c_str());
+    return false;
+  }
+  return true;
+}
+
+struct MatchedSimulationState {
+  channel_t channels[MAX_CHAN];
+  int gains[MAX_CHAN];
+  ephem_t active_ephemeris[MAX_SAT];
+  synth_ephem_store_t synthetic_ephemeris;
+  int ephemeris_index = 0;
+  epoch_plan_t epoch_plan{};
+  uint64_t sample_offset = 0;
+  gpstime_t receiver_time{};
+};
+
+static void initializeMatchedSimulationState(
+    MatchedSimulationState *state, const channel_t channels[MAX_CHAN],
+    const int gains[MAX_CHAN], const ephem_t active_ephemeris[MAX_SAT],
+    const synth_ephem_store_t *synthetic_ephemeris, int ephemeris_index,
+    const epoch_plan_t *epoch_plan, gpstime_t start_time) {
+  memcpy(state->channels, channels, sizeof(state->channels));
+  memcpy(state->gains, gains, sizeof(state->gains));
+  memcpy(state->active_ephemeris, active_ephemeris,
+         sizeof(state->active_ephemeris));
+  state->synthetic_ephemeris = *synthetic_ephemeris;
+  state->ephemeris_index = ephemeris_index;
+  state->epoch_plan = *epoch_plan;
+  state->sample_offset = 0;
+  state->receiver_time = start_time;
+}
+
+static int nextMatchedFrameSampleCount(MatchedSimulationState *state,
+                                       uint64_t total_samples) {
+  uint64_t remaining = total_samples - state->sample_offset;
+  int epoch_samples = nextEpochSampleCount(&state->epoch_plan);
+  return remaining < (uint64_t)epoch_samples ? (int)remaining : epoch_samples;
+}
+
+static bool prepareMatchedFrame(
+    MatchedSimulationState *state, const matched_code_plan_t &plan,
+    gpstime_t sample_zero, ionoutc_t *ionoutc, double gps_time_ppm,
+    double delt, int path_loss_enable, int fixed_gain, double ant_pat[37],
+    const synth_config_t *synth_config, double elevation_mask,
+    matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS],
+    int *sample_count, std::string *error) {
+  gpstime_t block_start = getGpsTimeAtSampleOffset(
+      sample_zero, (long long)state->sample_offset, plan.sample_rate_hz,
+      gps_time_ppm);
+  gpstime_t block_end;
+
+  *sample_count = nextMatchedFrameSampleCount(state, plan.total_samples);
+  if (!validateMatchedTargetUsability(
+          plan, state->active_ephemeris, synth_config, block_start,
+          elevation_mask, state->sample_offset, error))
+    return false;
+  block_end = getGpsTimeAtSampleOffset(
+      sample_zero, (long long)(state->sample_offset + *sample_count),
+      plan.sample_rate_hz, gps_time_ppm);
+  state->receiver_time = block_end;
+  prepareEpoch(state->channels, state->gains, state->active_ephemeris,
+               ionoutc, block_end, subGpsTime(block_end, block_start), delt,
+               path_loss_enable, fixed_gain, ant_pat, FALSE, nullptr);
+  return captureMatchedTargetStates(plan, state->channels, state->gains,
+                                    state->sample_offset, states, error);
+}
+
+static void refreshMatchedStateIfNeeded(
+    MatchedSimulationState *state, ephem_t eph[][MAX_SAT],
+    const ephem_t synth_source[][MAX_SAT], int neph, ionoutc_t *ionoutc,
+    const synth_config_t *synth_config, const attack_config_t *attack_config,
+    double elevation_mask, const int *required_prns,
+    double sample_rate_hz) {
+  uint64_t refresh_samples =
+      (uint64_t)llround(SYNTH_EPHEM_REFRESH_SEC * sample_rate_hz);
+
+  if (refresh_samples == 0 || state->sample_offset == 0 ||
+      state->sample_offset % refresh_samples != 0)
+    return;
+  int rtcm_alive = FALSE;
+  refreshNavState(state->channels, eph, synth_source, neph,
+                  &state->ephemeris_index, state->active_ephemeris,
+                  &state->synthetic_ephemeris, synth_config, ionoutc,
+                  state->receiver_time, elevation_mask, FALSE, &rtcm_alive,
+                  nullptr, attack_config, required_prns);
+}
+
+static matched_code_source_config_t matchedSourceConfig(
+    const matched_code_plan_t &plan) {
+  matched_code_source_config_t config{};
+
+  config.sample_rate_hz = plan.sample_rate_hz;
+  config.total_samples = plan.total_samples;
+  config.onset_sample = plan.onset_sample;
+  config.offset_sample = plan.offset_sample;
+  config.ramp_samples = plan.ramp_samples;
+  config.amplitude = 1.0;
+  config.phase_seed = plan.phase_seed;
+  config.target_count = plan.target_count;
+  for (size_t index = 0; index < plan.target_count; ++index)
+    config.target_prns[index] = plan.target_prns[index];
+  return config;
+}
+
+static void mergeMixMetrics(matched_code_mix_metrics_t *total,
+                            const matched_code_mix_metrics_t &epoch) {
+  total->samples += epoch.samples;
+  total->plateau_samples += epoch.plateau_samples;
+  total->clipped_components += epoch.clipped_components;
+  total->clean_power += epoch.clean_power;
+  total->jammer_power += epoch.jammer_power;
+  total->composite_power += epoch.composite_power;
+  total->composite_peak =
+      std::max(total->composite_peak, epoch.composite_peak);
+}
+
+static bool renderMatchedFrame(
+    MatchedSimulationState *state, matched_code_source_t *source,
+    const matched_code_plan_t &plan, gpstime_t sample_zero,
+    ionoutc_t *ionoutc, double gps_time_ppm, double delt,
+    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    const synth_config_t *synth_config, double elevation_mask,
+    std::vector<double> *clean, std::vector<double> *jammer,
+    std::vector<int16_t> *composite, std::ofstream *trajectory,
+    MatchedCodeRunResult *result, int *sample_count, std::string *error) {
+  matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS];
+  char source_error[256];
+
+  if (!prepareMatchedFrame(state, plan, sample_zero, ionoutc, gps_time_ppm,
+                           delt, path_loss_enable, fixed_gain, ant_pat,
+                           synth_config, elevation_mask, states, sample_count,
+                           error))
+    return false;
+  if (trajectory != nullptr)
+    writeTrajectoryStates(*trajectory, states, plan.target_count);
+  if (matched_code_source_set_epoch(source, states, plan.target_count,
+                                    source_error, sizeof(source_error)) != 0) {
+    *error = source_error;
+    return false;
+  }
+  clean->resize((size_t)*sample_count * 2);
+  jammer->resize((size_t)*sample_count * 2);
+  composite->resize((size_t)*sample_count * 2);
+  renderCleanEpochWide(clean->data(), *sample_count, state->channels,
+                       state->gains, delt);
+  if (matched_code_source_render_f64(source, jammer->data(),
+                                     (size_t)*sample_count) !=
+      (size_t)*sample_count) {
+    *error = "shared matched-code renderer stopped before the epoch ended";
+    return false;
+  }
+  matched_code_mix_metrics_t epoch_metrics;
+  matched_code_mix_metrics_init(&epoch_metrics);
+  if (matched_code_mix_sc16(&plan, state->sample_offset, clean->data(),
+                            jammer->data(), composite->data(),
+                            (size_t)*sample_count, &epoch_metrics) != 0) {
+    *error = "wide digital mixer rejected the epoch";
+    return false;
+  }
+  mergeMixMetrics(&result->mix_metrics, epoch_metrics);
+  double epoch_js = matched_code_mix_achieved_js_db(&epoch_metrics);
+  if (std::isfinite(epoch_js)) {
+    result->minimum_epoch_js_db =
+        std::min(result->minimum_epoch_js_db, epoch_js);
+    result->maximum_epoch_js_db =
+        std::max(result->maximum_epoch_js_db, epoch_js);
+  }
+  result->rendered_clean_samples += (uint64_t)*sample_count;
+  result->rendered_jammer_samples += (uint64_t)*sample_count;
+  result->quantized_samples += (uint64_t)*sample_count;
+  state->sample_offset += (uint64_t)*sample_count;
+  return true;
+}
+
+static bool runMatchedPreflight(
+    matched_code_plan_t *plan, MatchedCodeRunResult *result,
+    const MatchedCodeOptions &options, const channel_t initial_channels[MAX_CHAN],
+    const int initial_gains[MAX_CHAN],
+    const ephem_t initial_active_ephemeris[MAX_SAT],
+    const synth_ephem_store_t *initial_synthetic_ephemeris,
+    int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
+    ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
+    gpstime_t sample_zero, ionoutc_t *ionoutc,
+    const synth_config_t *synth_config,
+    const attack_config_t *attack_config, double elevation_mask,
+    const int *required_prns, double gps_time_ppm, double delt,
+    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    std::string *error) {
+  MatchedSimulationState state;
+  matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS];
+  int saved_allocated[MAX_SAT];
+  double clean_component_bound = 0.0;
+  std::string trajectory_temporary = options.trajectory_path + ".tmp";
+  std::ofstream trajectory(trajectory_temporary,
+                           std::ios::out | std::ios::trunc);
+
+  if (!trajectory) {
+    *error = "cannot create target trajectory artifact";
+    return false;
+  }
+  writeTrajectoryHeader(trajectory, *plan, sample_zero);
+  memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
+  initializeMatchedSimulationState(
+      &state, initial_channels, initial_gains, initial_active_ephemeris,
+      initial_synthetic_ephemeris, initial_ephemeris_index,
+      initial_epoch_plan, sample_zero);
+
+  while (state.sample_offset < plan->total_samples) {
+    int sample_count;
+    if (!prepareMatchedFrame(&state, *plan, sample_zero, ionoutc,
+                             gps_time_ppm, delt, path_loss_enable, fixed_gain,
+                             ant_pat, synth_config, elevation_mask, states,
+                             &sample_count, error)) {
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    writeTrajectoryStates(trajectory, states, plan->target_count);
+    double epoch_bound = 0.0;
+    for (int channel = 0; channel < MAX_CHAN; ++channel) {
+      if (state.channels[channel].prn > 0)
+        epoch_bound += fabs((double)state.gains[channel]) * 250.0 / 128.0;
+    }
+    clean_component_bound = std::max(clean_component_bound, epoch_bound);
+    state.sample_offset += (uint64_t)sample_count;
+    refreshMatchedStateIfNeeded(
+        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
+        elevation_mask, required_prns, plan->sample_rate_hz);
+  }
+  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+  trajectory.close();
+  if (!trajectory ||
+      std::rename(trajectory_temporary.c_str(),
+                  options.trajectory_path.c_str()) != 0) {
+    std::remove(trajectory_temporary.c_str());
+    *error = "cannot finalize target trajectory artifact";
+    return false;
+  }
+  char trajectory_hash[SHA256_HEX_SIZE];
+  if (sha256_file_hex(options.trajectory_path.c_str(), trajectory_hash) != 0) {
+    *error = "cannot checksum target trajectory artifact";
+    return false;
+  }
+  result->trajectory_sha256 = trajectory_hash;
+  result->target_allocation_passed = true;
+
+  initializeMatchedSimulationState(
+      &state, initial_channels, initial_gains, initial_active_ephemeris,
+      initial_synthetic_ephemeris, initial_ephemeris_index,
+      initial_epoch_plan, sample_zero);
+  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+  matched_code_source_config_t source_config = matchedSourceConfig(*plan);
+  matched_code_source_t source;
+  char source_error[256];
+  if (matched_code_source_init(&source, &source_config, source_error,
+                               sizeof(source_error)) != 0) {
+    *error = source_error;
+    return false;
+  }
+  int max_epoch_samples = state.epoch_plan.max_samples;
+  std::vector<double> clean((size_t)max_epoch_samples * 2);
+  std::vector<double> jammer((size_t)max_epoch_samples * 2);
+  long double clean_reference_power = 0.0L;
+  long double jammer_reference_power = 0.0L;
+  uint64_t reference_samples = 0;
+
+  while (state.sample_offset < plan->reference_end_sample) {
+    int sample_count;
+    if (!prepareMatchedFrame(&state, *plan, sample_zero, ionoutc,
+                             gps_time_ppm, delt, path_loss_enable, fixed_gain,
+                             ant_pat, synth_config, elevation_mask, states,
+                             &sample_count, error)) {
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    if (matched_code_source_set_epoch(&source, states, plan->target_count,
+                                      source_error,
+                                      sizeof(source_error)) != 0) {
+      *error = source_error;
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    renderCleanEpochWide(clean.data(), sample_count, state.channels,
+                         state.gains, delt);
+    if (matched_code_source_render_f64(&source, jammer.data(), sample_count) !=
+        (size_t)sample_count) {
+      *error = "shared matched-code renderer stopped during power preflight";
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    for (int index = 0; index < sample_count; ++index) {
+      uint64_t sample = state.sample_offset + (uint64_t)index;
+      if (sample < plan->reference_start_sample ||
+          sample >= plan->reference_end_sample)
+        continue;
+      clean_reference_power +=
+          (long double)clean[2 * index] * clean[2 * index] +
+          (long double)clean[2 * index + 1] * clean[2 * index + 1];
+      jammer_reference_power +=
+          (long double)jammer[2 * index] * jammer[2 * index] +
+          (long double)jammer[2 * index + 1] * jammer[2 * index + 1];
+      ++reference_samples;
+    }
+    state.sample_offset += (uint64_t)sample_count;
+    refreshMatchedStateIfNeeded(
+        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
+        elevation_mask, required_prns, plan->sample_rate_hz);
+  }
+  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+  if (reference_samples == 0) {
+    *error = "digital J/S reference interval is empty";
+    return false;
+  }
+  double clean_reference_rms =
+      sqrt((double)(clean_reference_power / reference_samples));
+  double jammer_reference_rms =
+      sqrt((double)(jammer_reference_power / reference_samples));
+  if (matched_code_plan_calibrate(
+          plan, clean_reference_rms, jammer_reference_rms,
+          clean_component_bound, sqrt((double)plan->target_count),
+          source_error, sizeof(source_error)) != 0) {
+    *error = source_error;
+    return false;
+  }
+  return true;
+}
+
+static void accountMatchedAsyncEvent(const uhd::async_metadata_t &metadata,
+                                     MatchedCodeRunResult *result,
+                                     bool *fatal) {
+  if (metadata.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW ||
+      metadata.event_code ==
+          uhd::async_metadata_t::EVENT_CODE_UNDERFLOW_IN_PACKET) {
+    ++result->underflows;
+    *fatal = true;
+    fprintf(stderr, "[UHD] ERROR: matched-code TX underflow #%llu\n",
+            (unsigned long long)result->underflows);
+  } else if (metadata.event_code ==
+                 uhd::async_metadata_t::EVENT_CODE_SEQ_ERROR ||
+             metadata.event_code ==
+                 uhd::async_metadata_t::EVENT_CODE_SEQ_ERROR_IN_BURST) {
+    ++result->sequence_errors;
+    *fatal = true;
+    fprintf(stderr, "[UHD] ERROR: matched-code TX sequence error #%llu\n",
+            (unsigned long long)result->sequence_errors);
+  } else if (metadata.event_code ==
+             uhd::async_metadata_t::EVENT_CODE_TIME_ERROR) {
+    ++result->time_errors;
+    *fatal = true;
+    fprintf(stderr, "[UHD] ERROR: matched-code timed start was missed\n");
+  }
+}
+
+static void drainMatchedAsync(const uhd::tx_streamer::sptr &stream,
+                              double first_timeout,
+                              MatchedCodeRunResult *result, bool *fatal) {
+  uhd::async_metadata_t metadata;
+  double timeout = first_timeout;
+
+  while (stream->recv_async_msg(metadata, timeout)) {
+    accountMatchedAsyncEvent(metadata, result, fatal);
+    timeout = 0.0;
+  }
+}
+
+static bool runMatchedDryRender(
+    const matched_code_plan_t &plan, MatchedCodeRunResult *result,
+    const channel_t initial_channels[MAX_CHAN],
+    const int initial_gains[MAX_CHAN],
+    const ephem_t initial_active_ephemeris[MAX_SAT],
+    const synth_ephem_store_t *initial_synthetic_ephemeris,
+    int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
+    ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
+    gpstime_t sample_zero, ionoutc_t *ionoutc,
+    const synth_config_t *synth_config,
+    const attack_config_t *attack_config, double elevation_mask,
+    const int *required_prns, double gps_time_ppm, double delt,
+    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    std::string *error) {
+  MatchedSimulationState state;
+  int saved_allocated[MAX_SAT];
+  matched_code_source_config_t source_config = matchedSourceConfig(plan);
+  matched_code_source_t source;
+  char source_error[256];
+  std::vector<double> clean;
+  std::vector<double> jammer;
+  std::vector<int16_t> composite;
+
+  if (matched_code_source_init(&source, &source_config, source_error,
+                               sizeof(source_error)) != 0) {
+    *error = source_error;
+    return false;
+  }
+  matched_code_mix_metrics_init(&result->mix_metrics);
+  result->rendered_clean_samples = 0;
+  result->rendered_jammer_samples = 0;
+  result->quantized_samples = 0;
+  memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
+  initializeMatchedSimulationState(
+      &state, initial_channels, initial_gains, initial_active_ephemeris,
+      initial_synthetic_ephemeris, initial_ephemeris_index,
+      initial_epoch_plan, sample_zero);
+
+  while (state.sample_offset < plan.total_samples) {
+    int sample_count;
+    if (!renderMatchedFrame(
+            &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
+            path_loss_enable, fixed_gain, ant_pat, synth_config,
+            elevation_mask, &clean, &jammer, &composite, nullptr, result,
+            &sample_count, error)) {
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    refreshMatchedStateIfNeeded(
+        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
+        elevation_mask, required_prns, plan.sample_rate_hz);
+    if (result->mix_metrics.clipped_components > 0) {
+      *error = "unexpected SC16 clipping during dry-run render";
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+  }
+  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+  matched_code_source_get_metrics(&source, &result->source_metrics);
+  return matched_code_source_done(&source) &&
+         result->rendered_clean_samples == plan.total_samples &&
+         result->rendered_jammer_samples == plan.total_samples &&
+         result->quantized_samples == plan.total_samples;
+}
+
+struct MatchedFrame {
+  std::vector<int16_t> samples;
+  size_t sample_count = 0;
+};
+
+static bool runMatchedTransmitter(
+    const matched_code_plan_t &plan, const MatchedCodeOptions &options,
+    MatchedCodeRunResult *result,
+    const uhd::usrp::multi_usrp::sptr &usrp,
+    const uhd::tx_streamer::sptr &stream, size_t max_send_samples,
+    double requested_start_delay_seconds, double trimble_tag_monotonic,
+    double trimble_tag_lead_seconds, double trimble_start_offset_seconds,
+    int prebuffer_count,
+    const channel_t initial_channels[MAX_CHAN],
+    const int initial_gains[MAX_CHAN],
+    const ephem_t initial_active_ephemeris[MAX_SAT],
+    const synth_ephem_store_t *initial_synthetic_ephemeris,
+    int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
+    ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
+    gpstime_t sample_zero, ionoutc_t *ionoutc,
+    const synth_config_t *synth_config,
+    const attack_config_t *attack_config, double elevation_mask,
+    const int *required_prns, double gps_time_ppm, double delt,
+    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    std::string *error) {
+  MatchedSimulationState state;
+  int saved_allocated[MAX_SAT];
+  matched_code_source_config_t source_config = matchedSourceConfig(plan);
+  matched_code_source_t source;
+  char source_error[256];
+  std::vector<double> clean;
+  std::vector<double> jammer;
+  std::vector<int16_t> composite;
+  std::deque<MatchedFrame> queue;
+  std::string trajectory_temporary = options.trajectory_path + ".tmp";
+  std::ofstream trajectory(trajectory_temporary,
+                           std::ios::out | std::ios::trunc);
+  bool fatal = false;
+
+  if (!trajectory) {
+    *error = "cannot create live target trajectory artifact";
+    return false;
+  }
+  writeTrajectoryHeader(trajectory, plan, sample_zero);
+  if (matched_code_source_init(&source, &source_config, source_error,
+                               sizeof(source_error)) != 0) {
+    *error = source_error;
+    return false;
+  }
+  matched_code_mix_metrics_init(&result->mix_metrics);
+  result->rendered_clean_samples = 0;
+  result->rendered_jammer_samples = 0;
+  result->quantized_samples = 0;
+  result->sent_samples = 0;
+  memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
+  initializeMatchedSimulationState(
+      &state, initial_channels, initial_gains, initial_active_ephemeris,
+      initial_synthetic_ephemeris, initial_ephemeris_index,
+      initial_epoch_plan, sample_zero);
+  installSignalHandlers();
+
+  for (int buffered = 0;
+       buffered < prebuffer_count && state.sample_offset < plan.total_samples &&
+       !stop_requested;
+       ++buffered) {
+    MatchedFrame frame;
+    int sample_count;
+    if (!renderMatchedFrame(
+            &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
+            path_loss_enable, fixed_gain, ant_pat, synth_config,
+            elevation_mask, &clean, &jammer, &composite, &trajectory, result,
+            &sample_count, error)) {
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+    frame.sample_count = (size_t)sample_count;
+    frame.samples.assign(composite.begin(), composite.end());
+    queue.push_back(std::move(frame));
+    refreshMatchedStateIfNeeded(
+        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
+        elevation_mask, required_prns, plan.sample_rate_hz);
+  }
+  if (queue.empty()) {
+    *error = stop_requested ? "interrupted during prebuffer"
+                            : "prebuffer produced no samples";
+    result->interrupted = stop_requested != 0;
+    memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+    return false;
+  }
+  if (result->mix_metrics.clipped_components > 0) {
+    *error = "unexpected SC16 clipping during prebuffer";
+    memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+    return false;
+  }
+
+  double start_delay_seconds = requested_start_delay_seconds;
+  if (trimble_tag_monotonic >= 0.0) {
+    double planned_delay =
+        trimble_tag_lead_seconds + trimble_start_offset_seconds;
+    double elapsed = getMonotonicSeconds() - trimble_tag_monotonic;
+    start_delay_seconds = planned_delay - elapsed;
+    fprintf(stderr,
+            "[TRIMBLE] Matched-code preflight+prebuffer elapsed %.3f ms; "
+            "remaining start margin %.3f ms\n",
+            elapsed * 1000.0, start_delay_seconds * 1000.0);
+    if (start_delay_seconds < TX_START_LEAD_MIN_SEC) {
+      *error = "calibrated Trimble start became stale during preflight";
+      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+      return false;
+    }
+  }
+  if (start_delay_seconds < TX_START_LEAD_MIN_SEC) {
+    *error =
+        "hardware timed start became stale or lacks the minimum future margin";
+    memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+    return false;
+  }
+
+  bool burst_started = false;
+  bool burst_finished = false;
+  auto best_effort_end_of_burst = [&]() {
+    if (!burst_started || burst_finished)
+      return;
+    try {
+      uhd::tx_metadata_t end_metadata;
+      end_metadata.start_of_burst = false;
+      end_metadata.end_of_burst = true;
+      end_metadata.has_time_spec = false;
+      stream->send("", 0, end_metadata, 3.0);
+      burst_finished = true;
+      bool ignored_fatal = false;
+      drainMatchedAsync(stream, 0.5, result, &ignored_fatal);
+    } catch (const std::exception &shutdown_error) {
+      fprintf(stderr, "[UHD] ERROR: best-effort end-of-burst failed: %s\n",
+              shutdown_error.what());
+    } catch (...) {
+      fprintf(stderr,
+              "[UHD] ERROR: best-effort end-of-burst failed unexpectedly\n");
+    }
+  };
+
+  try {
+  usrp->set_time_now(uhd::time_spec_t(0.0));
+  result->uhd_start_time_seconds = start_delay_seconds;
+  result->start_margin_met = start_delay_seconds >= TX_START_LEAD_MIN_SEC;
+  uhd::tx_metadata_t metadata;
+  metadata.start_of_burst = true;
+  metadata.end_of_burst = false;
+  metadata.has_time_spec = true;
+  metadata.time_spec = uhd::time_spec_t(start_delay_seconds);
+  fprintf(stderr,
+          "[TX] Matched-code composite timed start in %.3f ms with %zu "
+          "prebuffered frame(s)\n",
+          start_delay_seconds * 1000.0, queue.size());
+
+  while (!queue.empty() && !fatal && !stop_requested) {
+    MatchedFrame &frame = queue.front();
+    size_t sent_from_frame = 0;
+    double timeout = metadata.has_time_spec ? start_delay_seconds + 1.0 : 3.0;
+
+    while (sent_from_frame < frame.sample_count && !fatal &&
+           !stop_requested) {
+      size_t request =
+          std::min(max_send_samples, frame.sample_count - sent_from_frame);
+      burst_started = true;
+      size_t sent = stream->send(&frame.samples[sent_from_frame * 2], request,
+                                 metadata, timeout);
+      if (sent == 0) {
+        *error = "UHD send returned zero samples";
+        fatal = true;
+        break;
+      }
+      sent_from_frame += sent;
+      result->sent_samples += (uint64_t)sent;
+      metadata.start_of_burst = false;
+      metadata.has_time_spec = false;
+      timeout = 3.0;
+    }
+    drainMatchedAsync(stream, 0.0, result, &fatal);
+    queue.pop_front();
+
+    if (!fatal && !stop_requested &&
+        state.sample_offset < plan.total_samples) {
+      MatchedFrame next_frame;
+      int sample_count;
+      if (!renderMatchedFrame(
+              &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
+              path_loss_enable, fixed_gain, ant_pat, synth_config,
+              elevation_mask, &clean, &jammer, &composite, &trajectory,
+              result, &sample_count, error)) {
+        fatal = true;
+        break;
+      }
+      next_frame.sample_count = (size_t)sample_count;
+      next_frame.samples.assign(composite.begin(), composite.end());
+      queue.push_back(std::move(next_frame));
+      refreshMatchedStateIfNeeded(
+          &state, eph, synth_source, neph, ionoutc, synth_config,
+          attack_config, elevation_mask, required_prns, plan.sample_rate_hz);
+      if (result->mix_metrics.clipped_components > 0) {
+        *error = "unexpected SC16 clipping during live render";
+        fatal = true;
+      }
+    }
+  }
+
+  metadata.start_of_burst = false;
+  metadata.end_of_burst = true;
+  metadata.has_time_spec = false;
+  stream->send("", 0, metadata, 3.0);
+  burst_finished = true;
+  drainMatchedAsync(stream, 0.5, result, &fatal);
+  } catch (const std::exception &transmit_error) {
+    fatal = true;
+    if (error->empty())
+      *error = std::string("UHD live transmission failed: ") +
+               transmit_error.what();
+    fprintf(stderr, "[UHD] ERROR: %s\n", transmit_error.what());
+    best_effort_end_of_burst();
+  } catch (...) {
+    fatal = true;
+    if (error->empty())
+      *error = "UHD live transmission failed with an unknown exception";
+    fprintf(stderr, "[UHD] ERROR: live transmission failed unexpectedly\n");
+    best_effort_end_of_burst();
+  }
+  result->interrupted = stop_requested != 0;
+  matched_code_source_get_metrics(&source, &result->source_metrics);
+  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
+  trajectory.close();
+  if (!trajectory ||
+      std::rename(trajectory_temporary.c_str(),
+                  options.trajectory_path.c_str()) != 0) {
+    *error = "cannot finalize live target trajectory artifact";
+    fatal = true;
+  } else {
+    char trajectory_hash[SHA256_HEX_SIZE];
+    if (sha256_file_hex(options.trajectory_path.c_str(), trajectory_hash) !=
+        0) {
+      *error = "cannot checksum live target trajectory artifact";
+      fatal = true;
+    } else {
+      result->trajectory_sha256 = trajectory_hash;
+    }
+  }
+
+  bool exact_counts =
+      result->rendered_clean_samples == plan.total_samples &&
+      result->rendered_jammer_samples == plan.total_samples &&
+      result->quantized_samples == plan.total_samples &&
+      result->sent_samples == plan.total_samples &&
+      matched_code_source_done(&source);
+  if (error->empty()) {
+    if (result->time_errors > 0)
+      *error = "UHD reported a timed-transmission error";
+    else if (result->sequence_errors > 0)
+      *error = "UHD reported a TX sequence error";
+    else if (result->underflows > 0)
+      *error = "UHD reported a TX underflow";
+    else if (result->mix_metrics.clipped_components > 0)
+      *error = "the composite clipped during live rendering";
+    else if (result->interrupted)
+      *error = "the finite matched-code run was interrupted";
+    else if (!exact_counts)
+      *error = "rendered, quantized, and sent sample counts are not exact";
+  }
+  return !fatal && !result->interrupted && exact_counts &&
+         result->underflows == 0 && result->sequence_errors == 0 &&
+         result->time_errors == 0 &&
+         result->mix_metrics.clipped_components == 0;
 }
 
 ////////////////////////////////////////////////////////////
@@ -655,6 +1777,19 @@ static void x300_usage(void) {
       "  --channel <N>               TX channel index (default 0; often 1 "
       "for RF B)\n"
       "  --antenna <name>            TX antenna (default TX/RX)\n"
+      "\n"
+      "Finite matched-code composite mode:\n"
+      "  --matched-code-target-prns <list>  Enable mode with ordered PRNs\n"
+      "  --matched-code-js-db <dB>          Total digital matched-code J/S\n"
+      "  --matched-code-phase-seed <N>      Independent carrier-phase seed\n"
+      "  --matched-code-onset <sec>         Jammer rise start\n"
+      "  --matched-code-offset <sec>        Jammer fall end\n"
+      "  --matched-code-ramp <sec>          Raised-cosine ramp (default 0.01)\n"
+      "  --manifest <file>                  Required run manifest output\n"
+      "  --trajectory <file>                Target-state artifact output\n"
+      "  --calibration-id <text>            Controlled setup identity\n"
+      "  --confirm-controlled-rf            Required for live matched-code TX\n"
+      "  --dry-run                          Validate without opening UHD\n"
       "\n"
       "Trimble 1PPS time-tag options (mutually exclusive with -n and "
       "--gps-week/tow):\n"
@@ -773,6 +1908,7 @@ int main(int argc, char *argv[]) {
   double explicit_gps_tow = 0.0;
   long long tx_advance_ns = TX_START_LEAD_DEFAULT_NS;
   char usrp_addr[64] = "192.168.10.2";
+  double requested_samp_freq;
   double tx_gain = 0.0;
   int tx_gain_set = FALSE;
   int compat_txvga1_set = FALSE;
@@ -784,6 +1920,12 @@ int main(int argc, char *argv[]) {
   int prebuffer_count = PREBUFFER_DEFAULT;
   size_t tx_channel = 0;
   char tx_antenna[32] = "TX/RX";
+  MatchedCodeOptions matched_options;
+  matched_code_plan_t matched_plan{};
+  MatchedCodeRunResult matched_result;
+  int matched_required_prns[MAX_SAT] = {0};
+  std::string matched_scenario_sha256;
+  std::string matched_ephemeris_sha256;
 
   // Trimble time-tag mode
   char trimble_host[256] = "";
@@ -810,6 +1952,7 @@ int main(int argc, char *argv[]) {
 
   epoch_plan_t epoch_plan;
   size_t max_samps = 0;
+  uhd::usrp::multi_usrp::sptr usrp;
   uhd::tx_streamer::sptr tx_stream;
   gpstime_t first_sample_gps_time;
   long long generated_samples = 0;
@@ -824,7 +1967,9 @@ int main(int argc, char *argv[]) {
 
   navfile[0] = 0;
   samp_freq = TX_SAMPLERATE;
+  requested_samp_freq = TX_SAMPLERATE;
   g0.week = -1;
+  g0.sec = 0.0;
   iduration = USER_MOTION_SIZE;
   duration = (double)iduration / 10.0;
   ionoutc.enable = TRUE;
@@ -861,6 +2006,14 @@ int main(int argc, char *argv[]) {
       x300_usage();
       return 0;
     }
+    if (strcmp(opt, "dry-run") == 0) {
+      matched_options.dry_run = true;
+      continue;
+    }
+    if (strcmp(opt, "confirm-controlled-rf") == 0) {
+      matched_options.controlled_rf_confirmed = true;
+      continue;
+    }
 
     if (i + 1 >= argc) {
       fprintf(stderr, "ERROR: Missing value for option --%s.\n", opt);
@@ -870,28 +2023,51 @@ int main(int argc, char *argv[]) {
     const char *val = argv[++i];
 
     if (strcmp(opt, "gps-week") == 0) {
-      explicit_gps_week = atoi(val);
+      char *end = NULL;
+      errno = 0;
+      long parsed = strtol(val, &end, 10);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          parsed < 0 || parsed > 65535) {
+        fprintf(stderr,
+                "ERROR: --gps-week must be an integer in 0..65535.\n");
+        return 1;
+      }
+      explicit_gps_week = (int)parsed;
       gps_week_set = TRUE;
       continue;
     }
     if (strcmp(opt, "gps-tow") == 0) {
-      explicit_gps_tow = atof(val);
+      char *end = NULL;
+      errno = 0;
+      double parsed = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(parsed) || parsed < 0.0 || parsed >= 604800.0) {
+        fprintf(stderr,
+                "ERROR: --gps-tow must be a finite value in [0, 604800).\n");
+        return 1;
+      }
+      explicit_gps_tow = parsed;
       gps_tow_set = TRUE;
       continue;
     }
     if (strcmp(opt, "tx-advance-ns") == 0) {
-      tx_advance_ns = atoll(val);
-      if (tx_advance_ns < 0 ||
-          tx_advance_ns > (long long)(TX_START_LEAD_MAX_SEC * 1.0e9)) {
+      char *end = NULL;
+      errno = 0;
+      long long parsed = strtoll(val, &end, 10);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          parsed < 0 ||
+          parsed > (long long)(TX_START_LEAD_MAX_SEC * 1.0e9)) {
         fprintf(stderr, "ERROR: --tx-advance-ns must be 0-%.0f seconds.\n",
                 TX_START_LEAD_MAX_SEC);
         return 1;
       }
+      tx_advance_ns = parsed;
       continue;
     }
     if (strcmp(opt, "addr") == 0) {
       strncpy(usrp_addr, val, sizeof(usrp_addr) - 1);
       usrp_addr[sizeof(usrp_addr) - 1] = '\0';
+      matched_options.address_set = true;
       continue;
     }
     if (strcmp(opt, "rate") == 0) {
@@ -904,6 +2080,7 @@ int main(int argc, char *argv[]) {
         return 1;
       }
       samp_freq = parsed;
+      requested_samp_freq = parsed;
       continue;
     }
     if (strcmp(opt, "gps-time-ppm") == 0 ||
@@ -923,7 +2100,15 @@ int main(int argc, char *argv[]) {
       continue;
     }
     if (strcmp(opt, "gain") == 0) {
-      tx_gain = atof(val);
+      char *end = NULL;
+      errno = 0;
+      double parsed = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(parsed)) {
+        fprintf(stderr, "ERROR: --gain must be a finite number of dB.\n");
+        return 1;
+      }
+      tx_gain = parsed;
       tx_gain_set = TRUE;
       continue;
     }
@@ -973,11 +2158,81 @@ int main(int argc, char *argv[]) {
         return 1;
       }
       tx_channel = (size_t)parsed;
+      matched_options.channel_set = true;
       continue;
     }
     if (strcmp(opt, "antenna") == 0) {
       strncpy(tx_antenna, val, sizeof(tx_antenna) - 1);
       tx_antenna[sizeof(tx_antenna) - 1] = '\0';
+      matched_options.antenna_set = true;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-target-prns") == 0) {
+      matched_options.enabled = true;
+      matched_options.target_prns = val;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-js-db") == 0) {
+      char *end = NULL;
+      errno = 0;
+      matched_options.js_db = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(matched_options.js_db)) {
+        fprintf(stderr, "ERROR: --matched-code-js-db must be finite.\n");
+        return 1;
+      }
+      matched_options.js_set = true;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-phase-seed") == 0) {
+      char *end = NULL;
+      unsigned long long parsed;
+      errno = 0;
+      parsed = strtoull(val, &end, 10);
+      if (val[0] == '\0' || val[0] == '-' || errno == ERANGE || end == NULL ||
+          *end != '\0') {
+        fprintf(stderr,
+                "ERROR: --matched-code-phase-seed must be an unsigned integer.\n");
+        return 1;
+      }
+      matched_options.phase_seed = (uint64_t)parsed;
+      matched_options.phase_seed_set = true;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-onset") == 0 ||
+        strcmp(opt, "matched-code-offset") == 0 ||
+        strcmp(opt, "matched-code-ramp") == 0) {
+      char *end = NULL;
+      double parsed;
+      errno = 0;
+      parsed = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(parsed) || parsed < 0.0) {
+        fprintf(stderr, "ERROR: --%s must be a non-negative number.\n", opt);
+        return 1;
+      }
+      if (strcmp(opt, "matched-code-onset") == 0) {
+        matched_options.onset_seconds = parsed;
+        matched_options.onset_set = true;
+      } else if (strcmp(opt, "matched-code-offset") == 0) {
+        matched_options.offset_seconds = parsed;
+        matched_options.offset_set = true;
+      } else {
+        matched_options.ramp_seconds = parsed;
+        matched_options.ramp_set = true;
+      }
+      continue;
+    }
+    if (strcmp(opt, "manifest") == 0) {
+      matched_options.manifest_path = val;
+      continue;
+    }
+    if (strcmp(opt, "trajectory") == 0) {
+      matched_options.trajectory_path = val;
+      continue;
+    }
+    if (strcmp(opt, "calibration-id") == 0) {
+      matched_options.calibration_id = val;
       continue;
     }
 
@@ -1146,10 +2401,12 @@ int main(int argc, char *argv[]) {
       attack_enabled = TRUE;
       break;
     case 'J':
+      matched_options.legacy_js_set = true;
       attack_cfg.jam_js_db = atof(optarg);
       jam_js_linear = pow(10.0, attack_cfg.jam_js_db / 20.0);
       break;
     case 'G':
+      matched_options.legacy_gain_boost_set = true;
       attack_cfg.gain_boost_db = atof(optarg);
       break;
     case 'r': {
@@ -1293,6 +2550,137 @@ int main(int argc, char *argv[]) {
   stream_forever = (stream_mode == TRUE && staticLocationMode == TRUE &&
                     duration_specified == FALSE);
 
+  if (!matched_options.enabled &&
+      (matched_options.dry_run || matched_options.controlled_rf_confirmed ||
+       !matched_options.manifest_path.empty() ||
+       !matched_options.trajectory_path.empty() ||
+       !matched_options.calibration_id.empty())) {
+    fprintf(stderr,
+            "ERROR: matched-code-only options require "
+            "--matched-code-target-prns.\n");
+    return 1;
+  }
+
+  if (matched_options.enabled) {
+    char plan_error[256] = "";
+
+    if (!duration_specified || !matched_options.js_set ||
+        !matched_options.phase_seed_set || !matched_options.onset_set ||
+        !matched_options.offset_set || matched_options.manifest_path.empty()) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires -d, target PRNs, digital "
+              "J/S, phase seed, onset, offset, and --manifest.\n");
+      return 1;
+    }
+    if (stream_forever || current_time_mode == TRUE) {
+      fprintf(stderr,
+              "ERROR: matched-code mode is finite and rejects stream-now/"
+              "continuous timing.\n");
+      return 1;
+    }
+    if (attack_enabled || matched_options.legacy_js_set ||
+        matched_options.legacy_gain_boost_set) {
+      fprintf(stderr,
+              "ERROR: matched-code mode is mutually exclusive with -A, -J, "
+              "and -G legacy attack controls.\n");
+      return 1;
+    }
+    if (trimble_rtcm_mode == TRUE) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires frozen RINEX ephemeris; "
+              "live RTCM is not allowed after preflight.\n");
+      return 1;
+    }
+    if (fabs(samp_freq * EPOCH_TARGET_SEC -
+             round(samp_freq * EPOCH_TARGET_SEC)) > 1.0e-6) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires a rate with an integer "
+              "100 ms epoch sample count.\n");
+      return 1;
+    }
+    if (matched_code_plan_init(
+            &matched_plan, samp_freq, duration, matched_options.onset_seconds,
+            matched_options.offset_seconds, matched_options.ramp_seconds,
+            matched_options.target_prns.c_str(), matched_options.js_db,
+            matched_options.phase_seed, plan_error, sizeof(plan_error)) != 0) {
+      fprintf(stderr, "ERROR: invalid matched-code plan: %s\n", plan_error);
+      return 1;
+    }
+    for (size_t target = 0; target < matched_plan.target_count; ++target) {
+      int prn = matched_plan.target_prns[target];
+      matched_required_prns[prn - 1] = 1;
+      if (attack_cfg.partial_mode && !attack_cfg.prn_select[prn - 1]) {
+        fprintf(stderr,
+                "ERROR: partial constellation does not contain target PRN "
+                "%d.\n",
+                prn);
+        return 1;
+      }
+    }
+    if (matched_options.trajectory_path.empty()) {
+      std::string base = matched_options.manifest_path;
+      if (base.size() >= 5 && base.substr(base.size() - 5) == ".json")
+        base.resize(base.size() - 5);
+      matched_options.trajectory_path = base + ".trajectory.csv";
+    }
+    {
+      std::error_code manifest_path_error;
+      std::error_code trajectory_path_error;
+      std::filesystem::path manifest_absolute = std::filesystem::absolute(
+          matched_options.manifest_path, manifest_path_error);
+      std::filesystem::path trajectory_absolute = std::filesystem::absolute(
+          matched_options.trajectory_path, trajectory_path_error);
+      if (manifest_path_error || trajectory_path_error) {
+        fprintf(stderr,
+                "ERROR: matched-code artifact paths cannot be resolved.\n");
+        return 1;
+      }
+      if (manifest_absolute.lexically_normal() ==
+          trajectory_absolute.lexically_normal()) {
+        fprintf(stderr,
+                "ERROR: --manifest and --trajectory must use different "
+                "paths.\n");
+        return 1;
+      }
+    }
+    if (!matched_options.dry_run) {
+      if (!matched_options.address_set || !matched_options.channel_set ||
+          !matched_options.antenna_set || !tx_gain_set ||
+          !std::isfinite(tx_gain) || matched_options.calibration_id.empty() ||
+          !matched_options.controlled_rf_confirmed) {
+        fprintf(stderr,
+                "ERROR: live matched-code TX requires explicit --addr, "
+                "--channel, --antenna, --gain, --calibration-id, and "
+                "--confirm-controlled-rf.\n");
+        return 1;
+      }
+      if (!trimble_mode &&
+          (!(gps_week_set && gps_tow_set) ||
+           strcmp(time_source, "internal") == 0)) {
+        fprintf(stderr,
+                "ERROR: accepted live matched-code TX requires the Trimble "
+                "time-tag path or explicit GPS week/TOW with an external/"
+                "GPSDO time source.\n");
+        return 1;
+      }
+    }
+    {
+      std::string probe_path = matched_options.manifest_path + ".probe";
+      std::ofstream probe(probe_path, std::ios::out | std::ios::trunc);
+      if (!probe) {
+        fprintf(stderr, "ERROR: manifest path is not writable: %s\n",
+                matched_options.manifest_path.c_str());
+        return 1;
+      }
+      probe.close();
+      if (!probe || std::remove(probe_path.c_str()) != 0) {
+        fprintf(stderr, "ERROR: manifest path cannot be finalized: %s\n",
+                matched_options.manifest_path.c_str());
+        return 1;
+      }
+    }
+  }
+
   if (!stream_forever && duration < 0.0) {
     fprintf(stderr, "ERROR: Invalid duration.\n");
     return 1;
@@ -1310,6 +2698,58 @@ int main(int argc, char *argv[]) {
           xyz[0][2]);
   fprintf(stderr, "llh = %11.6f, %11.6f, %11.1f\n", llh[0] * R2D, llh[1] * R2D,
           llh[2]);
+
+  if (matched_options.enabled) {
+    matched_result.status = "incomplete";
+    matched_result.exit_status = 1;
+    matched_result.device_address = usrp_addr;
+    if (trimble_mode)
+      matched_result.start_mode = "trimble_time_tag";
+    else if (gps_week_set && gps_tow_set)
+      matched_result.start_mode = "explicit_gps_time";
+    else if (timeoverwrite)
+      matched_result.start_mode = "explicit_utc_time";
+    else
+      matched_result.start_mode = "frozen_rinex_epoch";
+    if (matched_options.dry_run) {
+      matched_result.device_type = "not_opened";
+      matched_result.device_product = "not_opened";
+      matched_result.actual_rate_hz = requested_samp_freq;
+      matched_result.actual_frequency_hz = TX_FREQUENCY;
+      matched_result.actual_gain_db = tx_gain_set ? tx_gain : 0.0;
+      matched_result.actual_antenna = tx_antenna;
+    }
+    if (!writeMatchedManifestAtomic(
+            matched_options, matched_plan, matched_result, navfile,
+            matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+            clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+            gps_time_ppm, trimble_mode)) {
+      fprintf(stderr,
+              "ERROR: cannot write initial matched-code manifest before "
+              "preflight.\n");
+      return 1;
+    }
+  }
+
+  auto finish_matched_early_failure =
+      [&](const char *status, const std::string &reason) -> int {
+    if (matched_options.enabled) {
+      matched_result.status = status;
+      matched_result.failure_reason = reason;
+      matched_result.exit_status = 1;
+      if (!writeMatchedManifestAtomic(
+              matched_options, matched_plan, matched_result, navfile,
+              matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+              requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+              clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+              gps_time_ppm, trimble_mode)) {
+        fprintf(stderr,
+                "ERROR: cannot finalize failed matched-code manifest.\n");
+      }
+    }
+    return 1;
+  };
 
   ////////////////////////////////////////////////////////////
   // Read ephemeris
@@ -1425,10 +2865,12 @@ int main(int argc, char *argv[]) {
     neph = readRinexNavAll(eph, &ionoutc, navfile);
     if (neph == 0) {
       fprintf(stderr, "ERROR: No ephemeris available.\n");
-      return 1;
+      return finish_matched_early_failure(
+          "preflight_error", "frozen navigation file contains no ephemeris");
     } else if (neph == -1) {
       fprintf(stderr, "ERROR: Ephemeris file not found.\n");
-      return 1;
+      return finish_matched_early_failure(
+          "preflight_error", "frozen navigation file was not found");
     }
 
     if (has_revive_mode == TRUE)
@@ -1459,49 +2901,103 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if (matched_options.enabled) {
+    char digest[SHA256_HEX_SIZE];
+    if (sha256_file_hex(navfile, digest) != 0) {
+      fprintf(stderr,
+              "ERROR: cannot checksum frozen navigation file '%s'.\n",
+              navfile);
+      return finish_matched_early_failure(
+          "preflight_error", "cannot checksum frozen navigation file");
+    }
+    matched_ephemeris_sha256 = digest;
+  }
+
   ////////////////////////////////////////////////////////////
   // Configure USRP X300
   ////////////////////////////////////////////////////////////
 
-  fprintf(stderr, "\n[UHD] Configuring USRP X300 at %s ...\n", usrp_addr);
+  if (matched_options.enabled && matched_options.dry_run) {
+    fprintf(stderr,
+            "\n[DRY-RUN] UHD discovery/open/configuration is intentionally "
+            "skipped.\n");
+    matched_result.device_type = "not_opened";
+    matched_result.device_product = "not_opened";
+    matched_result.device_address = usrp_addr;
+    matched_result.actual_rate_hz = samp_freq;
+    matched_result.actual_frequency_hz = TX_FREQUENCY;
+    matched_result.actual_gain_db = tx_gain_set ? tx_gain : 0.0;
+    matched_result.actual_antenna = tx_antenna;
+  } else {
+    fprintf(stderr, "\n[UHD] Configuring USRP X300 at %s ...\n", usrp_addr);
 
-  uhd::device_addr_t dev_addr;
-  dev_addr["addr"] = usrp_addr;
-
-  uhd::usrp::multi_usrp::sptr usrp;
-  try {
-    usrp = uhd::usrp::multi_usrp::make(dev_addr);
-  } catch (const std::exception &e) {
-    fprintf(stderr, "ERROR: Failed to open USRP: %s\n", e.what());
-    return 1;
-  }
-
-  usrp->set_clock_source(clock_source);
-  usrp->set_time_source(time_source);
-
-  {
-    size_t tx_channels = usrp->get_tx_num_channels();
-    if (tx_channel >= tx_channels) {
-      fprintf(stderr,
-              "ERROR: --channel %zu is invalid; device reports %zu TX "
-              "channel(s).\n",
-              tx_channel, tx_channels);
-      return 1;
+    try {
+    uhd::device_addr_t dev_addr;
+    dev_addr["addr"] = usrp_addr;
+    if (matched_options.enabled) {
+      uhd::device_addrs_t discovered = uhd::device::find(dev_addr);
+      if (discovered.size() != 1) {
+        fprintf(stderr,
+                "ERROR: matched-code preflight found %zu UHD devices at "
+                "explicit address %s; exactly one is required.\n",
+                discovered.size(), usrp_addr);
+        return finish_matched_early_failure(
+            "device_error", "device discovery did not return exactly one device");
+      }
+      std::string discovered_type =
+          discovered[0].has_key("type") ? discovered[0]["type"] : "";
+      std::string discovered_product =
+          discovered[0].has_key("product") ? discovered[0]["product"] : "";
+      if (discovered_type != "x300" ||
+          (discovered_product != "X300" && discovered_product != "X310")) {
+        fprintf(stderr,
+                "ERROR: matched-code mode requires an X300/X310, discovered "
+                "type='%s' product='%s'.\n",
+                discovered_type.c_str(), discovered_product.c_str());
+        return finish_matched_early_failure(
+            "device_error", "discovered device is not an X300/X310");
+      }
+      matched_result.device_type = discovered_type;
+      matched_result.device_product = discovered_product;
+      matched_result.device_serial =
+          discovered[0].has_key("serial") ? discovered[0]["serial"] : "";
+      matched_result.device_address =
+          discovered[0].has_key("addr") ? discovered[0]["addr"] : usrp_addr;
+      fprintf(stderr, "[UHD] Discovered %s serial %s at %s\n",
+              discovered_product.c_str(), matched_result.device_serial.c_str(),
+              matched_result.device_address.c_str());
     }
-  }
 
-  fprintf(stderr, "[UHD] TX channel: %zu\n", tx_channel);
+    usrp = uhd::usrp::multi_usrp::make(dev_addr);
 
-  usrp->set_tx_rate(samp_freq, tx_channel);
-  fprintf(stderr, "[UHD] TX rate:    %.0f Hz (actual %.0f Hz)\n", samp_freq,
-          usrp->get_tx_rate(tx_channel));
+    usrp->set_clock_source(clock_source);
+    usrp->set_time_source(time_source);
 
-  uhd::tune_request_t tune_req(TX_FREQUENCY);
-  usrp->set_tx_freq(tune_req, tx_channel);
-  fprintf(stderr, "[UHD] TX freq:    %.0f Hz (actual %.0f Hz)\n", TX_FREQUENCY,
-          usrp->get_tx_freq(tx_channel));
+    {
+      size_t tx_channels = usrp->get_tx_num_channels();
+      matched_result.tx_channel_count = tx_channels;
+      if (tx_channel >= tx_channels) {
+        fprintf(stderr,
+                "ERROR: --channel %zu is invalid; device reports %zu TX "
+                "channel(s).\n",
+                tx_channel, tx_channels);
+        return finish_matched_early_failure(
+            "device_error", "selected TX channel does not exist");
+      }
+    }
 
-  if (compat_txvga1_set || compat_txvga2_set) {
+    fprintf(stderr, "[UHD] TX channel: %zu\n", tx_channel);
+
+    usrp->set_tx_rate(samp_freq, tx_channel);
+    fprintf(stderr, "[UHD] TX rate:    %.0f Hz (actual %.0f Hz)\n", samp_freq,
+            usrp->get_tx_rate(tx_channel));
+
+    uhd::tune_request_t tune_req(TX_FREQUENCY);
+    usrp->set_tx_freq(tune_req, tx_channel);
+    fprintf(stderr, "[UHD] TX freq:    %.0f Hz (actual %.0f Hz)\n",
+            TX_FREQUENCY, usrp->get_tx_freq(tx_channel));
+
+    if (compat_txvga1_set || compat_txvga2_set) {
     fprintf(stderr,
             "[UHD] BladeRF gain option(s) accepted for CLI compatibility:");
     if (compat_txvga1_set)
@@ -1512,50 +3008,99 @@ int main(int argc, char *argv[]) {
     if (tx_gain_set == FALSE)
       fprintf(stderr, " (using default %.1f dB)", tx_gain);
     fprintf(stderr, ".\n");
-  }
+    }
 
-  {
-    uhd::gain_range_t gain_range = usrp->get_tx_gain_range(tx_channel);
-    double min_gain = gain_range.start();
-    double max_gain = gain_range.stop();
+    {
+      uhd::gain_range_t gain_range = usrp->get_tx_gain_range(tx_channel);
+      double min_gain = gain_range.start();
+      double max_gain = gain_range.stop();
 
-    if (tx_gain < min_gain) {
+      if (matched_options.enabled &&
+          (tx_gain < min_gain || tx_gain > max_gain)) {
+        fprintf(stderr,
+                "ERROR: matched-code TX gain %.1f dB is outside device range "
+                "[%.1f, %.1f] dB.\n",
+                tx_gain, min_gain, max_gain);
+        return finish_matched_early_failure(
+            "device_error", "requested TX gain is outside the device range");
+      }
+      if (tx_gain < min_gain) {
       fprintf(stderr,
               "[UHD] WARNING: requested TX gain %.1f dB is below device "
               "minimum %.1f dB; clamping.\n",
               tx_gain, min_gain);
       tx_gain = min_gain;
-    } else if (tx_gain > max_gain) {
+      } else if (tx_gain > max_gain) {
       fprintf(stderr,
               "[UHD] WARNING: requested TX gain %.1f dB is above device "
               "maximum %.1f dB; clamping.\n",
               tx_gain, max_gain);
       tx_gain = max_gain;
+      }
+    }
+
+    usrp->set_tx_gain(tx_gain, tx_channel);
+    fprintf(stderr, "[UHD] TX gain:    %.1f dB (actual %.1f dB)\n", tx_gain,
+            usrp->get_tx_gain(tx_channel));
+
+    usrp->set_tx_antenna(tx_antenna, tx_channel);
+    fprintf(stderr, "[UHD] TX antenna: %s\n",
+            usrp->get_tx_antenna(tx_channel).c_str());
+    fprintf(stderr, "[UHD] Clock src:  %s\n", clock_source);
+    fprintf(stderr, "[UHD] Time src:   %s\n", time_source);
+
+    // Create TX streamer — SC16 on both CPU and wire side
+    uhd::stream_args_t stream_args("sc16", "sc16");
+    stream_args.channels = {tx_channel};
+    tx_stream = usrp->get_tx_stream(stream_args);
+
+    max_samps = tx_stream->get_max_num_samps();
+    fprintf(stderr, "[UHD] Max samples per send: %zu\n", max_samps);
+    samp_freq = usrp->get_tx_rate(tx_channel);
+    if (matched_options.enabled &&
+        fabs(samp_freq - matched_plan.sample_rate_hz) >
+            MATCHED_RATE_TOLERANCE_HZ) {
+      fprintf(stderr,
+              "ERROR: actual TX rate %.9f differs from requested %.9f by "
+              "more than %.1f Hz.\n",
+              samp_freq, matched_plan.sample_rate_hz,
+              MATCHED_RATE_TOLERANCE_HZ);
+      return finish_matched_early_failure(
+          "device_error", "actual TX rate differs from the requested rate");
+    }
+    matched_result.actual_rate_hz = samp_freq;
+    matched_result.actual_frequency_hz = usrp->get_tx_freq(tx_channel);
+    matched_result.actual_gain_db = usrp->get_tx_gain(tx_channel);
+    matched_result.actual_antenna = usrp->get_tx_antenna(tx_channel);
+    } catch (const std::exception &e) {
+      fprintf(stderr, "ERROR: Failed to configure USRP: %s\n", e.what());
+      if (matched_options.enabled)
+        return finish_matched_early_failure("device_error", e.what());
+      return 1;
     }
   }
 
-  usrp->set_tx_gain(tx_gain, tx_channel);
-  fprintf(stderr, "[UHD] TX gain:    %.1f dB (actual %.1f dB)\n", tx_gain,
-          usrp->get_tx_gain(tx_channel));
-
-  usrp->set_tx_antenna(tx_antenna, tx_channel);
-  fprintf(stderr, "[UHD] TX antenna: %s\n",
-          usrp->get_tx_antenna(tx_channel).c_str());
-  fprintf(stderr, "[UHD] Clock src:  %s\n", clock_source);
-  fprintf(stderr, "[UHD] Time src:   %s\n", time_source);
-
-  // Create TX streamer — SC16 on both CPU and wire side
-  uhd::stream_args_t stream_args("sc16", "sc16");
-  stream_args.channels = {tx_channel};
-  tx_stream = usrp->get_tx_stream(stream_args);
-
-  max_samps = tx_stream->get_max_num_samps();
-  fprintf(stderr, "[UHD] Max samples per send: %zu\n", max_samps);
-
-  samp_freq = usrp->get_tx_rate(tx_channel);
   delt = 1.0 / samp_freq;
   initEpochPlan(&epoch_plan, samp_freq);
   iq_buff_size = epoch_plan.max_samples;
+  if (matched_options.enabled) {
+    char plan_error[256] = "";
+    if (fabs(samp_freq * EPOCH_TARGET_SEC -
+             round(samp_freq * EPOCH_TARGET_SEC)) > 1.0e-6 ||
+        matched_code_plan_init(
+            &matched_plan, samp_freq, duration,
+            matched_options.onset_seconds, matched_options.offset_seconds,
+            matched_options.ramp_seconds,
+            matched_options.target_prns.c_str(), matched_options.js_db,
+            matched_options.phase_seed, plan_error, sizeof(plan_error)) != 0) {
+      fprintf(stderr,
+              "ERROR: actual-rate matched-code plan is unsupported: %s\n",
+              plan_error[0] != '\0' ? plan_error
+                                     : "non-integral 100 ms epoch");
+      return finish_matched_early_failure(
+          "preflight_error", "actual-rate matched-code plan is unsupported");
+    }
+  }
 
   fprintf(stderr,
           "[TIMING] Generator sample rate locked to actual TX rate: "
@@ -1587,7 +3132,8 @@ int main(int argc, char *argv[]) {
 
     int tfd = trimbleTcpConnect(trimble_host, trimble_port, trimble_timeout_ms);
     if (tfd < 0)
-      return 1;
+      return finish_matched_early_failure(
+          "preflight_error", "failed to connect to the calibrated time tag");
     fprintf(stderr, "[TRIMBLE] Connected.\n");
 
     int tag_yy, tag_mm, tag_dd, tag_hh, tag_min, tag_sec;
@@ -1603,7 +3149,8 @@ int main(int argc, char *argv[]) {
     if (!got_tag) {
       fprintf(stderr,
               "[TRIMBLE] ERROR: No valid time tag received within timeout.\n");
-      return 1;
+      return finish_matched_early_failure(
+          "preflight_error", "no valid calibrated time tag was received");
     }
 
     int full_year = (tag_yy >= 80) ? 1900 + tag_yy : 2000 + tag_yy;
@@ -1699,6 +3246,24 @@ int main(int argc, char *argv[]) {
   else
     fprintf(stderr, "Duration = %.1f [sec]\n", (double)numd / 10.0);
 
+  if (matched_options.enabled) {
+    std::ostringstream scenario;
+    scenario << std::setprecision(17) << matched_ephemeris_sha256 << '|'
+             << xyz[0][0] << '|' << xyz[0][1] << '|' << xyz[0][2] << '|'
+             << g0.week << '|' << g0.sec << '|' << matched_plan.sample_rate_hz
+             << '|' << matched_plan.total_samples << '|'
+             << matched_options.target_prns << '|';
+    for (sv = 0; sv < MAX_SAT; ++sv) {
+      scenario << (int)synth_cfg.mode[sv] << ':' << synth_cfg.source_prn[sv]
+               << ':' << synth_cfg.azimuth[sv] << ':'
+               << synth_cfg.elevation[sv] << ';';
+    }
+    std::string canonical = scenario.str();
+    char digest[SHA256_HEX_SIZE];
+    sha256_bytes_hex(canonical.data(), canonical.size(), digest);
+    matched_scenario_sha256 = digest;
+  }
+
   ////////////////////////////////////////////////////////////
   // Select ephemeris set
   ////////////////////////////////////////////////////////////
@@ -1717,7 +3282,8 @@ int main(int argc, char *argv[]) {
     }
     if (ieph == -1) {
       fprintf(stderr, "ERROR: No current ephemeris set found.\n");
-      return 1;
+      return finish_matched_early_failure(
+          "preflight_error", "no current frozen ephemeris set was found");
     }
   }
 
@@ -1753,7 +3319,8 @@ int main(int argc, char *argv[]) {
                     "lookback.\n",
                     sv + 1, SYNTH_REVIVE_MAX_LOOKBACK_SEC / 3600.0);
           }
-          return 1;
+          return finish_matched_early_failure(
+              "preflight_error", "revive target scenario is not usable");
         }
       } else if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
           synth_cfg.mode[sv] == SYNTH_AZEL) {
@@ -1808,7 +3375,8 @@ int main(int argc, char *argv[]) {
   iq_buff = (short *)calloc(2 * iq_buff_size, sizeof(short));
   if (!iq_buff) {
     fprintf(stderr, "ERROR: Failed to allocate IQ buffer.\n");
-    return 1;
+    return finish_matched_early_failure(
+        "preflight_error", "failed to allocate the clean IQ buffer");
   }
 
   for (i = 0; i < MAX_CHAN; i++)
@@ -1818,7 +3386,8 @@ int main(int argc, char *argv[]) {
 
   grx = g0;
   allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
-                  &synth_cfg, nullptr);
+                  &synth_cfg,
+                  matched_options.enabled ? matched_required_prns : nullptr);
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)
@@ -1847,6 +3416,165 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "\n");
     if (attack_cfg.gain_boost_db != 0.0)
       fprintf(stderr, "  Power boost: +%.1f dB\n", attack_cfg.gain_boost_db);
+  }
+
+  if (matched_options.enabled) {
+    const ephem_t(*matched_synth_source)[MAX_SAT] =
+        has_revive_mode == TRUE ? revive_scan_eph : eph;
+    std::string matched_error;
+
+    matched_result.status = "incomplete";
+    matched_result.exit_status = 1;
+    if (!writeMatchedManifestAtomic(
+            matched_options, matched_plan, matched_result, navfile,
+            matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
+            tx_gain, clock_source, time_source, prebuffer_count,
+            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+      fprintf(stderr, "ERROR: cannot write incomplete matched-code manifest.\n");
+      return 1;
+    }
+
+    fprintf(stderr,
+            "\n[MATCHED] Preflight: targets=%s samples=%llu onset=%llu "
+            "offset=%llu ramp=%llu\n",
+            matched_options.target_prns.c_str(),
+            (unsigned long long)matched_plan.total_samples,
+            (unsigned long long)matched_plan.onset_sample,
+            (unsigned long long)matched_plan.offset_sample,
+            (unsigned long long)matched_plan.ramp_samples);
+    if (!runMatchedPreflight(
+            &matched_plan, &matched_result, matched_options, chan, gain,
+            active_eph, &synth_eph, ieph, &epoch_plan, eph,
+            matched_synth_source, neph, g0, &ionoutc, &synth_cfg, &attack_cfg,
+            elvmask, matched_required_prns, gps_time_ppm, delt,
+            path_loss_enable, fixed_gain, ant_pat, &matched_error)) {
+      matched_result.status = "preflight_error";
+      matched_result.failure_reason = matched_error;
+      matched_result.exit_status = 1;
+      writeMatchedManifestAtomic(
+          matched_options, matched_plan, matched_result, navfile,
+          matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+          requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
+          tx_gain, clock_source, time_source, prebuffer_count,
+          trimble_tx_cal_ns, gps_time_ppm, trimble_mode);
+      fprintf(stderr, "ERROR: matched-code preflight failed: %s\n",
+              matched_error.c_str());
+      return 1;
+    }
+    fprintf(stderr,
+            "[MATCHED] Reference clean RMS %.6f SC16, source RMS %.9f, "
+            "fixed scale %.9f, common gain %.9f, predicted headroom %.3f "
+            "dB\n",
+            matched_plan.clean_reference_rms,
+            matched_plan.jammer_reference_rms, matched_plan.jammer_scale,
+            matched_plan.common_gain, matched_plan.predicted_headroom_db);
+
+    if (matched_options.dry_run) {
+      if (runMatchedDryRender(
+              matched_plan, &matched_result, chan, gain, active_eph,
+              &synth_eph, ieph, &epoch_plan, eph, matched_synth_source, neph,
+              g0, &ionoutc, &synth_cfg, &attack_cfg, elvmask,
+              matched_required_prns, gps_time_ppm, delt, path_loss_enable,
+              fixed_gain, ant_pat, &matched_error)) {
+        matched_result.status = "dry_run";
+        matched_result.exit_status = 0;
+      } else {
+        matched_result.status =
+            matched_result.mix_metrics.clipped_components > 0
+                ? "clipping"
+                : "preflight_error";
+        matched_result.failure_reason = matched_error;
+        matched_result.exit_status = 1;
+      }
+      if (!writeMatchedManifestAtomic(
+              matched_options, matched_plan, matched_result, navfile,
+              matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+              requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
+              tx_gain, clock_source, time_source, prebuffer_count,
+              trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+        fprintf(stderr, "ERROR: cannot finalize dry-run manifest.\n");
+        return 1;
+      }
+      fprintf(stderr,
+              "[DRY-RUN] status=%s rendered=%llu clipping=%llu; UHD was "
+              "never opened.\n",
+              matched_result.status.c_str(),
+              (unsigned long long)matched_result.quantized_samples,
+              (unsigned long long)
+                  matched_result.mix_metrics.clipped_components);
+      return matched_result.exit_status;
+    }
+
+    if (!writeMatchedManifestAtomic(
+            matched_options, matched_plan, matched_result, navfile,
+            matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
+            tx_gain, clock_source, time_source, prebuffer_count,
+            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+      fprintf(stderr,
+              "ERROR: cannot update matched-code manifest before arming.\n");
+      return 1;
+    }
+
+    bool completed = false;
+    try {
+      completed = runMatchedTransmitter(
+          matched_plan, matched_options, &matched_result, usrp, tx_stream,
+          max_samps, (double)tx_advance_ns * 1.0e-9, trimble_tag_mono,
+          (double)trimble_tag_lead_ms * 1.0e-3,
+          (double)trimble_start_offset, prebuffer_count, chan, gain, active_eph,
+          &synth_eph, ieph, &epoch_plan, eph, matched_synth_source, neph, g0,
+          &ionoutc, &synth_cfg, &attack_cfg, elvmask, matched_required_prns,
+          gps_time_ppm, delt, path_loss_enable, fixed_gain, ant_pat,
+          &matched_error);
+    } catch (const std::exception &transmit_error) {
+      matched_error = std::string("matched-code transmitter failed: ") +
+                      transmit_error.what();
+    } catch (...) {
+      matched_error = "matched-code transmitter failed unexpectedly";
+    }
+    if (completed) {
+      matched_result.status = "complete";
+      matched_result.exit_status = 0;
+    } else {
+      matched_result.failure_reason = matched_error;
+      matched_result.exit_status = 1;
+      if (matched_result.time_errors > 0)
+        matched_result.status = "time_error";
+      else if (matched_result.sequence_errors > 0)
+        matched_result.status = "sequence_error";
+      else if (matched_result.underflows > 0)
+        matched_result.status = "underflow";
+      else if (matched_result.mix_metrics.clipped_components > 0)
+        matched_result.status = "clipping";
+      else if (matched_result.interrupted)
+        matched_result.status = "interrupted";
+      else if (matched_error.find("stale") != std::string::npos)
+        matched_result.status = "preflight_error";
+      else
+        matched_result.status = "device_error";
+    }
+    if (!writeMatchedManifestAtomic(
+            matched_options, matched_plan, matched_result, navfile,
+            matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
+            tx_gain, clock_source, time_source, prebuffer_count,
+            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+      fprintf(stderr, "ERROR: cannot finalize matched-code run manifest.\n");
+      return 1;
+    }
+    fprintf(stderr,
+            "[TX] Matched-code status=%s sent=%llu/%llu underflows=%llu "
+            "sequence-errors=%llu time-errors=%llu clipping=%llu\n",
+            matched_result.status.c_str(),
+            (unsigned long long)matched_result.sent_samples,
+            (unsigned long long)matched_plan.total_samples,
+            (unsigned long long)matched_result.underflows,
+            (unsigned long long)matched_result.sequence_errors,
+            (unsigned long long)matched_result.time_errors,
+            (unsigned long long)matched_result.mix_metrics.clipped_components);
+    return matched_result.exit_status;
   }
 
   ////////////////////////////////////////////////////////////
@@ -1915,7 +3643,8 @@ int main(int argc, char *argv[]) {
       refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
                       neph, &ieph, active_eph, &synth_eph, &synth_cfg,
                       &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
+                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg,
+                      nullptr);
 
     iumd = pb + 2; // Preserve the existing finite-duration loop convention.
   }
@@ -2098,7 +3827,8 @@ int main(int argc, char *argv[]) {
       refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
                       neph, &ieph, active_eph, &synth_eph, &synth_cfg,
                       &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg);
+                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg,
+                      nullptr);
 
       if (verb) {
         fprintf(stderr, "\n");

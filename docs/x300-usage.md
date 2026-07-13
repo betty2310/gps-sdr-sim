@@ -7,6 +7,13 @@ It generates IQ samples in-process and sends them directly via the UHD C++ API
 with timed TX metadata, eliminating the pipe-based latency of the old
 `gps-sdr-sim | gps-sdr-sim-uhd.py` path.
 
+It also supports a finite matched-code composite mode in which simulator-generated
+clean GPS and navigation-data-free, code/Doppler-aligned interference are mixed
+in the same process and sent through one X300 channel. That mode has additional
+controlled-RF, frozen-scenario, artifact, and acceptance requirements. Follow
+the dedicated [matched-code X300 researcher guide](realtime-code-aligned-matched-code-x300.md)
+instead of adapting a clean-only command from this page.
+
 ## Build
 
 ```bash
@@ -36,6 +43,20 @@ Requires UHD library (`pkg-config --exists uhd`).
 ```
 
 ## Options
+
+### Finite Matched-Code Composite Mode
+
+The mode is activated only by `--matched-code-target-prns`. It requires an
+explicit finite duration, target list, digital J/S, phase seed, onset/offset,
+manifest, and trajectory. A live run additionally requires explicit device,
+channel, antenna, gain, timing calibration, calibration identity, and
+`--confirm-controlled-rf` values.
+
+Always validate the exact scenario first with `--dry-run`; dry run does not
+discover or open UHD. Build and command examples, manifest checks, expected
+terminal output, troubleshooting, and the precise transmitter-only evidence
+boundary are in the
+[real-time matched-code X300 guide](realtime-code-aligned-matched-code-x300.md).
 
 ### GPS Simulation Options
 

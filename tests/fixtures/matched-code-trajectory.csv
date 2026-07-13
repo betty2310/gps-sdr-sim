@@ -1,0 +1,13 @@
+# schema=gps-sdr-sim.target-trajectory.v1
+# sample_rate_hz=2600000
+# epoch_cadence_samples=260000
+# gps_week=2400
+# gps_tow=100000.000
+# boundary=first_sample
+sample_offset,prn,code_phase_chips,carrier_doppler_hz,code_rate_chips_per_s,clean_gain
+0,1,123.25,1250,1023000.8115,80
+0,7,731.75,-2300,1022998.5062,64
+260000,1,123.25,1250,1023000.8115,80
+260000,7,731.75,-2300,1022998.5062,64
+520000,1,123.25,1250,1023000.8115,80
+520000,7,731.75,-2300,1022998.5062,64

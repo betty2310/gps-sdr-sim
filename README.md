@@ -155,6 +155,15 @@ optional. See the [real-time X300 multi-waveform guide](docs/realtime-cw-jammer-
 signal model, dry-run workflow, calibration boundary, manifests, receiver evidence,
 and controlled-RF safety requirements.
 
+For finite simulator-aligned matched-code experiments, `x300tx` now generates
+synthetic clean GPS and navigation-data-free, PRN-targeted matched-code
+interference in the same process, mixes them sample-for-sample, and transmits
+one hardware-timed composite through one X300 channel. This is distinct from
+the jammer-only `jammertx` path and does not align to authentic live sky. See
+the [real-time matched-code X300 researcher guide](docs/realtime-code-aligned-matched-code-x300.md)
+for the dry-run-first workflow, parameter-complete live template, manifest
+acceptance script, troubleshooting, and verified X300 transmit result.
+
 The user motion can be specified in either dynamic or static mode:
 
 ```

@@ -111,6 +111,10 @@ class CwDatasetTest(unittest.TestCase):
                 )
 
             self.assertEqual(digest(outputs[0]), digest(outputs[1]))
+            self.assertEqual(
+                digest(outputs[0]),
+                "ec86a743fbc374aaf5ceba51cb39fb4ee4acd19ae4b96fef12fa0f7d7b905223",
+            )
             data = np.fromfile(outputs[0], dtype="<i2").reshape(-1, 2)
             self.assertFalse(np.any(data[:260_000]))
             self.assertFalse(np.any(data[520_000:]))

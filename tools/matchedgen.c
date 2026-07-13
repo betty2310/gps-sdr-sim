@@ -9,13 +9,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "gps_ca.h"
+#include "matched_code_source.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-#define MAX_TARGETS 32
+#define MAX_TARGETS MATCHED_CODE_MAX_TARGETS
 
 typedef struct {
   uint64_t sample_offset;
@@ -31,12 +31,6 @@ typedef struct {
   size_t record_count;
   size_t record_capacity;
   size_t cursor;
-  int8_t code[GPS_CA_CHIPS];
-  double code_phase;
-  double osc_i;
-  double osc_q;
-  double step_i;
-  double step_q;
   double initial_phase_rad;
 } component_t;
 
@@ -251,36 +245,6 @@ static int load_trajectory(const options_t *opt, component_t *components,
   return 0;
 }
 
-static uint64_t splitmix64(uint64_t *state) {
-  uint64_t z = (*state += UINT64_C(0x9e3779b97f4a7c15));
-  z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-  z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
-  return z ^ (z >> 31);
-}
-
-static void set_frequency(component_t *component, double sample_rate) {
-  double radians = 2.0 * M_PI *
-                   component->records[component->cursor].carrier_doppler_hz /
-                   sample_rate;
-  component->step_i = cos(radians);
-  component->step_q = sin(radians);
-}
-
-static double envelope(uint64_t sample, uint64_t onset, uint64_t offset,
-                       uint64_t ramp) {
-  if (sample < onset || sample >= offset)
-    return 0.0;
-  if (ramp > 0 && sample < onset + ramp) {
-    double x = (double)(sample - onset) / (double)ramp;
-    return 0.5 - 0.5 * cos(M_PI * x);
-  }
-  if (ramp > 0 && sample >= offset - ramp) {
-    double x = (double)(offset - sample) / (double)ramp;
-    return 0.5 - 0.5 * cos(M_PI * x);
-  }
-  return 1.0;
-}
-
 static void json_string(FILE *fp, const char *value) {
   const unsigned char *p = (const unsigned char *)value;
   fputc('"', fp);
@@ -390,6 +354,10 @@ int main(int argc, char **argv) {
       {"help", no_argument, NULL, 'h'},
       {NULL, 0, NULL, 0}};
   component_t components[MAX_TARGETS];
+  matched_code_source_config_t source_config;
+  matched_code_source_t source;
+  matched_code_source_metrics_t source_metrics;
+  matched_code_target_state_t states[MAX_TARGETS];
   uint64_t total_samples;
   uint64_t onset;
   uint64_t offset;
@@ -397,11 +365,8 @@ int main(int argc, char **argv) {
   uint64_t cadence;
   int16_t *buffer = NULL;
   FILE *out = NULL;
-  long double plateau_power = 0.0L;
-  uint64_t plateau_samples = 0;
-  uint64_t clipped_components = 0;
-  double peak = 0.0;
   uint64_t next_sample = 0;
+  char source_error[256];
   int c;
   size_t i;
   int status = 1;
@@ -450,23 +415,29 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  memset(&source_config, 0, sizeof(source_config));
+  source_config.sample_rate_hz = (double)opt.sample_rate;
+  source_config.total_samples = total_samples;
+  source_config.onset_sample = onset;
+  source_config.offset_sample = offset;
+  source_config.ramp_samples = ramp;
+  source_config.amplitude = opt.amplitude;
+  source_config.phase_seed = opt.phase_seed;
+  source_config.target_count = opt.target_count;
   for (i = 0; i < opt.target_count; ++i) {
-    uint64_t state = opt.phase_seed ^
-                     ((uint64_t)opt.target_prns[i] * UINT64_C(0xd1b54a32d192ed03));
     components[i].prn = opt.target_prns[i];
-    components[i].initial_phase_rad =
-        2.0 * M_PI * (double)(splitmix64(&state) >> 11) / 9007199254740992.0;
-    if (gps_ca_generate_bipolar(components[i].prn, components[i].code) != 0)
-      goto cleanup;
+    source_config.target_prns[i] = opt.target_prns[i];
   }
+  if (matched_code_source_init(&source, &source_config, source_error,
+                               sizeof(source_error)) != 0) {
+    fprintf(stderr, "matchedgen: %s\n", source_error);
+    goto cleanup;
+  }
+  for (i = 0; i < opt.target_count; ++i)
+    components[i].initial_phase_rad =
+        matched_code_source_initial_phase_rad(&source, i);
   if (load_trajectory(&opt, components, total_samples, &cadence) != 0)
     goto cleanup;
-  for (i = 0; i < opt.target_count; ++i) {
-    components[i].code_phase = components[i].records[0].code_phase_chips;
-    components[i].osc_i = cos(components[i].initial_phase_rad);
-    components[i].osc_q = sin(components[i].initial_phase_rad);
-    set_frequency(&components[i], (double)opt.sample_rate);
-  }
 
   out = fopen(opt.output, "wb");
   if (out == NULL) {
@@ -484,71 +455,35 @@ int main(int argc, char **argv) {
     size_t count = (uint64_t)opt.chunk_samples < total_samples - next_sample
                        ? opt.chunk_samples
                        : (size_t)(total_samples - next_sample);
-    size_t k;
-    for (k = 0; k < count; ++k) {
-      uint64_t sample = next_sample + (uint64_t)k;
-      double sum_i = 0.0;
-      double sum_q = 0.0;
-      double weight = 1.0 / sqrt((double)opt.target_count);
-      double env = envelope(sample, onset, offset, ramp);
-      double raw_i;
-      double raw_q;
-      long qi;
-      long qq;
 
+    if (next_sample % cadence == 0) {
       for (i = 0; i < opt.target_count; ++i) {
         component_t *component = &components[i];
         const trajectory_record_t *record;
-        int chip;
-        double next_i;
-        double next_q;
-
         while (component->cursor + 1 < component->record_count &&
-               component->records[component->cursor + 1].sample_offset <= sample) {
+               component->records[component->cursor + 1].sample_offset <=
+                   next_sample)
           ++component->cursor;
-          component->code_phase =
-              component->records[component->cursor].code_phase_chips;
-          set_frequency(component, (double)opt.sample_rate);
-        }
         record = &component->records[component->cursor];
-        chip = component->code[(int)floor(component->code_phase)];
-        sum_i += weight * (double)chip * component->osc_i;
-        sum_q += weight * (double)chip * component->osc_q;
-
-        component->code_phase +=
-            record->code_rate_chips_per_s / (double)opt.sample_rate;
-        while (component->code_phase >= GPS_CA_CHIPS)
-          component->code_phase -= GPS_CA_CHIPS;
-        next_i = component->osc_i * component->step_i -
-                 component->osc_q * component->step_q;
-        next_q = component->osc_i * component->step_q +
-                 component->osc_q * component->step_i;
-        component->osc_i = next_i;
-        component->osc_q = next_q;
-        if (((sample + 1) % 1048576ULL) == 0) {
-          double norm = hypot(component->osc_i, component->osc_q);
-          component->osc_i /= norm;
-          component->osc_q /= norm;
-        }
+        states[i].sample_offset = record->sample_offset;
+        states[i].prn = component->prn;
+        states[i].code_phase_chips = record->code_phase_chips;
+        states[i].carrier_doppler_hz = record->carrier_doppler_hz;
+        states[i].code_rate_chips_per_s = record->code_rate_chips_per_s;
+        states[i].clean_gain = record->clean_gain;
       }
-
-      raw_i = opt.amplitude * env * sum_i;
-      raw_q = opt.amplitude * env * sum_q;
-      if (fabs(raw_i) > peak) peak = fabs(raw_i);
-      if (fabs(raw_q) > peak) peak = fabs(raw_q);
-      if (sample >= onset + ramp && sample < offset - ramp) {
-        plateau_power += (long double)raw_i * raw_i +
-                         (long double)raw_q * raw_q;
-        ++plateau_samples;
+      if (matched_code_source_set_epoch(&source, states, opt.target_count,
+                                        source_error,
+                                        sizeof(source_error)) != 0) {
+        fprintf(stderr, "matchedgen: %s\n", source_error);
+        goto cleanup;
       }
-      qi = lround(raw_i * 32767.0);
-      qq = lround(raw_q * 32767.0);
-      if (qi > 32767) { qi = 32767; ++clipped_components; }
-      if (qi < -32768) { qi = -32768; ++clipped_components; }
-      if (qq > 32767) { qq = 32767; ++clipped_components; }
-      if (qq < -32768) { qq = -32768; ++clipped_components; }
-      buffer[2 * k] = (int16_t)qi;
-      buffer[2 * k + 1] = (int16_t)qq;
+    }
+    if (cadence - next_sample % cadence < (uint64_t)count)
+      count = (size_t)(cadence - next_sample % cadence);
+    if (matched_code_source_render_sc16(&source, buffer, count) != count) {
+      fprintf(stderr, "matchedgen: shared renderer stopped early\n");
+      goto cleanup;
     }
     if (fwrite(buffer, 2 * sizeof(*buffer), count, out) != count) {
       fprintf(stderr, "matchedgen: failed writing '%s': %s\n", opt.output,
@@ -563,12 +498,12 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
   out = NULL;
+  matched_code_source_get_metrics(&source, &source_metrics);
   if (write_manifest(&opt, components, total_samples, onset, offset, ramp,
-                     cadence,
-                     plateau_samples > 0
-                         ? sqrt((double)(plateau_power / plateau_samples))
-                         : 0.0,
-                     peak, clipped_components, plateau_samples) != 0)
+                     cadence, source_metrics.active_plateau_rms,
+                     source_metrics.peak_component,
+                     source_metrics.clipped_components,
+                     source_metrics.plateau_samples) != 0)
     goto cleanup;
   status = 0;
 
