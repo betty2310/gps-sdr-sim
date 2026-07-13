@@ -598,8 +598,8 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
       generateNavMsg(grx, &chan[i], 0);
   }
 
-  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask, attack_cfg,
-                  synth_cfg);
+      allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask,
+                      attack_cfg, synth_cfg, nullptr);
 }
 
 ////////////////////////////////////////////////////////////
@@ -1818,7 +1818,7 @@ int main(int argc, char *argv[]) {
 
   grx = g0;
   allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
-                  &synth_cfg);
+                  &synth_cfg, nullptr);
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)

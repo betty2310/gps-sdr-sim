@@ -33,6 +33,100 @@ def digest(path: Path) -> str:
 
 
 class CwDatasetTest(unittest.TestCase):
+    def test_matched_code_rejects_incomplete_canonical_campaign(self) -> None:
+        rejected = command(
+            "python",
+            WORKFLOW,
+            "create",
+            "--profile",
+            "canonical",
+            "--jammer-type",
+            "matched-code",
+            "--target-prns",
+            "1",
+            "--clean-input",
+            "unused.bin",
+            "--trajectory-input",
+            "unused.csv",
+            "--output-dir",
+            "unused-output",
+            "--skip-build",
+            check=False,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn(
+            "matched-code canonical campaigns are not implemented yet",
+            rejected.stderr,
+        )
+
+    def test_matchedgen_is_code_aligned_normalized_and_chunk_invariant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            trajectory = directory / "trajectory.csv"
+            rows = [
+                "# schema=gps-sdr-sim.target-trajectory.v1",
+                "# sample_rate_hz=2600000",
+                "# epoch_cadence_samples=260000",
+                "# gps_week=2400",
+                "# gps_tow=100000.000",
+                "# boundary=first_sample",
+                "sample_offset,prn,code_phase_chips,carrier_doppler_hz,code_rate_chips_per_s,clean_gain",
+            ]
+            for offset in (0, 260_000, 520_000):
+                rows.append(f"{offset},1,123.25,1250,1023000.8115,80")
+                rows.append(f"{offset},7,731.75,-2300,1022998.5062,64")
+            trajectory.write_text("\n".join(rows) + "\n")
+
+            outputs = [directory / "a.bin", directory / "b.bin"]
+            manifests = [directory / "a.json", directory / "b.json"]
+            for output, manifest, chunk in zip(
+                outputs, manifests, (65_536, 997), strict=True
+            ):
+                command(
+                    ROOT / "matchedgen",
+                    "--output",
+                    output,
+                    "--manifest",
+                    manifest,
+                    "--trajectory",
+                    trajectory,
+                    "--target-prns",
+                    "1,7",
+                    "--sample-rate",
+                    2_600_000,
+                    "--duration",
+                    0.3,
+                    "--onset",
+                    0.1,
+                    "--offset",
+                    0.2,
+                    "--ramp",
+                    0.01,
+                    "--amplitude",
+                    0.25,
+                    "--phase-seed",
+                    42,
+                    "--chunk-samples",
+                    chunk,
+                )
+
+            self.assertEqual(digest(outputs[0]), digest(outputs[1]))
+            data = np.fromfile(outputs[0], dtype="<i2").reshape(-1, 2)
+            self.assertFalse(np.any(data[:260_000]))
+            self.assertFalse(np.any(data[520_000:]))
+            plateau = data[286_000:494_000].astype(np.float64) / 32767.0
+            rms = float(np.sqrt(np.mean(np.sum(plateau * plateau, axis=1))))
+            self.assertAlmostEqual(rms, 0.25, delta=0.25 * 0.02)
+
+            metadata = json.loads(manifests[0].read_text())
+            self.assertEqual(metadata["source_type"], "matched-code")
+            self.assertEqual(metadata["parameters"]["target_prns"], [1, 7])
+            self.assertEqual(
+                metadata["parameters"]["data_symbol_policy"], "constant_positive"
+            )
+            self.assertEqual(len(metadata["components"]), 2)
+            self.assertEqual(metadata["measurements"]["clipped_components"], 0)
+
     def test_per_prn_spectral_plots_use_gnss_sdr_prompt_dumps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -257,6 +351,55 @@ class CwDatasetTest(unittest.TestCase):
                 self.assertEqual(typed_index["shared"]["jammer_type"], source_type)
                 self.assertTrue(all(item["pass"] for item in typed_index["fixtures"]))
                 shutil.rmtree(typed_dataset)
+
+            trajectory = directory / "target-trajectory.csv"
+            trajectory_lines = [
+                "# schema=gps-sdr-sim.target-trajectory.v1",
+                "# sample_rate_hz=2600000",
+                "# epoch_cadence_samples=260000",
+                "# gps_week=2400",
+                "# gps_tow=100000.000",
+                "# boundary=first_sample",
+                "sample_offset,prn,code_phase_chips,carrier_doppler_hz,code_rate_chips_per_s,clean_gain",
+            ]
+            trajectory_lines.extend(
+                f"{offset},1,123.25,1250,1023000.8115,80"
+                for offset in range(0, 7_800_000, 260_000)
+            )
+            trajectory.write_text("\n".join(trajectory_lines) + "\n")
+            matched_dataset = directory / "dataset-matched-code"
+            command(
+                "python",
+                WORKFLOW,
+                "create",
+                "--profile",
+                "fast",
+                "--jammer-type",
+                "matched-code",
+                "--target-prns",
+                "1",
+                "--trajectory-input",
+                trajectory,
+                "--clean-input",
+                clean,
+                "--output-dir",
+                matched_dataset,
+                "--receiver",
+                "none",
+                "--no-plots",
+                "--skip-build",
+            )
+            matched_index = json.loads(
+                (matched_dataset / "dataset-index.json").read_text()
+            )
+            self.assertEqual(matched_index["shared"]["jammer_type"], "matched-code")
+            matched_report = json.loads(
+                Path(matched_index["fixtures"][1]["waveform_report"]).read_text()
+            )
+            self.assertTrue(matched_report["checks"]["matched_code_alignment"]["pass"])
+            self.assertTrue(
+                matched_report["checks"]["selected_to_unselected_margin"]["pass"]
+            )
 
             repeated = directory / "dataset-repeated"
             command(

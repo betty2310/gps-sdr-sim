@@ -15,6 +15,7 @@
 #include <unistd.h>
 #endif
 #include "gpssim.h"
+#include "tools/gps_ca.h"
 
 int sinTable512[] = {
     2,    5,    8,    11,   14,   17,   20,   23,   26,   29,   32,   35,
@@ -1325,39 +1326,7 @@ double dotProd(const double *x1, const double *x2) {
  *  \param[out] ca Caller-allocated integer array of 1023 bytes
  */
 void codegen(int *ca, int prn) {
-  int delay[] = {5,   6,   7,   8,   17,  18,  139, 140, 141, 251, 252,
-                 254, 255, 256, 257, 258, 469, 470, 471, 472, 473, 474,
-                 509, 512, 513, 514, 515, 516, 859, 860, 861, 862};
-
-  int g1[CA_SEQ_LEN], g2[CA_SEQ_LEN];
-  int r1[N_DWRD_SBF], r2[N_DWRD_SBF];
-  int c1, c2;
-  int i, j;
-
-  if (prn < 1 || prn > 32)
-    return;
-
-  for (i = 0; i < N_DWRD_SBF; i++)
-    r1[i] = r2[i] = -1;
-
-  for (i = 0; i < CA_SEQ_LEN; i++) {
-    g1[i] = r1[9];
-    g2[i] = r2[9];
-    c1 = r1[2] * r1[9];
-    c2 = r2[1] * r2[2] * r2[5] * r2[7] * r2[8] * r2[9];
-
-    for (j = 9; j > 0; j--) {
-      r1[j] = r1[j - 1];
-      r2[j] = r2[j - 1];
-    }
-    r1[0] = c1;
-    r2[0] = c2;
-  }
-
-  for (i = 0, j = CA_SEQ_LEN - delay[prn - 1]; i < CA_SEQ_LEN; i++, j++)
-    ca[i] = (1 - g1[i] * g2[j % CA_SEQ_LEN]) / 2;
-
-  return;
+  (void)gps_ca_generate_binary(prn, ca);
 }
 
 /*! \brief Convert a UTC date into a GPS date
@@ -2795,9 +2764,10 @@ int checkSatVisibility(ephem_t eph, gpstime_t g, double *xyz, double elvMask,
 
 int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
                     gpstime_t grx, double *xyz, double elvMask,
-                    const attack_config_t *acfg, const synth_config_t *scfg) {
+                    const attack_config_t *acfg, const synth_config_t *scfg,
+                    const int *required_prns) {
   int nsat = 0;
-  int i, sv;
+  int i, sv, pass;
   int vis;
   double azel[2];
 
@@ -2806,7 +2776,12 @@ int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
   double r_ref, r_xyz;
   double phase_ini;
 
-  for (sv = 0; sv < MAX_SAT; sv++) {
+  for (pass = 0; pass < (required_prns != NULL ? 2 : 1); ++pass) {
+    for (sv = 0; sv < MAX_SAT; sv++) {
+      if (required_prns != NULL &&
+          ((pass == 0 && !required_prns[sv]) ||
+           (pass == 1 && required_prns[sv])))
+        continue;
     if (scfg->enabled && scfg->mode[sv] != SYNTH_NONE) {
       // Synthetic/forced: bypass elevation check
       if (eph[sv].vflg != 1) {
@@ -2885,6 +2860,7 @@ int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
       // Clear satellite allocation flag
       allocatedSat[sv] = -1;
     }
+    }
   }
 
   return (nsat);
@@ -2925,6 +2901,8 @@ void usage(void) {
       "20)\n"
       "  -P <prn_list>    Partial constellation mode: only render listed PRNs\n"
       "                   e.g. -P 5,14,21\n"
+      "  -q <prn_list>    Required PRNs for target trajectory export\n"
+      "  -z <path>        Export 100 ms target-channel trajectory CSV\n"
       "  -G <boost_db>    Power boost [dB] for partial-mode PRNs (default: "
       "0)\n"
       "  -S <synth_spec>  Synthetic satellite: PRN:force, PRN:overhead, "
@@ -2951,6 +2929,7 @@ int main(int argc, char *argv[]) {
   clock_t tstart, tend;
 
   FILE *fp;
+  FILE *trajectory_fp = NULL;
 
   int sv;
   int neph, ieph;
@@ -2985,6 +2964,7 @@ int main(int argc, char *argv[]) {
 
   char navfile[MAX_CHAR];
   char outfile[MAX_CHAR];
+  char trajectory_file[PATH_MAX];
 
   double samp_freq;
   int iq_buff_size;
@@ -3020,8 +3000,11 @@ int main(int argc, char *argv[]) {
 
   ionoutc_t ionoutc;
   attack_config_t attack_cfg;
+  attack_config_t trajectory_cfg;
   synth_config_t synth_cfg;
   int path_loss_enable = TRUE;
+  int trajectory_enabled = FALSE;
+  int generation_failed = FALSE;
 
   ////////////////////////////////////////////////////////////
   // Read options
@@ -3030,6 +3013,7 @@ int main(int argc, char *argv[]) {
   // Default options
   navfile[0] = 0;
   umfile[0] = 0;
+  trajectory_file[0] = 0;
   strcpy(outfile, "gpssim.bin");
   samp_freq = 2.6e6;
   data_format = SC16;
@@ -3040,6 +3024,7 @@ int main(int argc, char *argv[]) {
   ionoutc.enable = TRUE;
   ionoutc.leapen = FALSE;
   initAttackConfig(&attack_cfg);
+  initAttackConfig(&trajectory_cfg);
   initAttackNoiseState(attack_noise_state);
   initSynthConfig(&synth_cfg);
   initSynthEphemStore(&synth_eph);
@@ -3050,7 +3035,7 @@ int main(int argc, char *argv[]) {
   }
 
   while ((result = getopt(argc, argv,
-                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:G:S:r:ipvn")) !=
+                          "e:u:x:g:c:l:o:s:b:L:T:t:d:A:J:P:q:z:G:S:r:ipvn")) !=
          -1) {
     switch (result) {
     case 'e':
@@ -3187,6 +3172,17 @@ int main(int argc, char *argv[]) {
         exit(1);
       }
       break;
+    case 'q':
+      if (parsePartialPrns(&trajectory_cfg, optarg) == FALSE) {
+        fprintf(stderr, "ERROR: Invalid trajectory PRN list. Use -q PRN[,PRN...]\n");
+        exit(1);
+      }
+      trajectory_enabled = TRUE;
+      break;
+    case 'z':
+      strncpy(trajectory_file, optarg, sizeof(trajectory_file) - 1);
+      trajectory_file[sizeof(trajectory_file) - 1] = '\0';
+      break;
     case 'G':
       attack_cfg.gain_boost_db = atof(optarg);
       break;
@@ -3218,6 +3214,10 @@ int main(int argc, char *argv[]) {
 
   if (navfile[0] == 0) {
     fprintf(stderr, "ERROR: GPS ephemeris file is not specified.\n");
+    exit(1);
+  }
+  if ((trajectory_enabled == TRUE) != (trajectory_file[0] != 0)) {
+    fprintf(stderr, "ERROR: -q and -z must be supplied together.\n");
     exit(1);
   }
 
@@ -3588,7 +3588,39 @@ int main(int argc, char *argv[]) {
 
   // Allocate visible satellites
   allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
-                  &synth_cfg);
+                  &synth_cfg,
+                  trajectory_enabled ? trajectory_cfg.prn_select : NULL);
+
+  if (trajectory_enabled == TRUE) {
+    for (sv = 0; sv < MAX_SAT; ++sv) {
+      if (trajectory_cfg.prn_select[sv] && allocatedSat[sv] < 0) {
+        fprintf(stderr,
+                "ERROR: trajectory target PRN %d is not a usable clean channel.\n",
+                sv + 1);
+        fclose(fp);
+        remove(outfile);
+        exit(1);
+      }
+    }
+    trajectory_fp = fopen(trajectory_file, "w");
+    if (trajectory_fp == NULL) {
+      fprintf(stderr, "ERROR: Failed to open trajectory output '%s'.\n",
+              trajectory_file);
+      fclose(fp);
+      remove(outfile);
+      exit(1);
+    }
+    fprintf(trajectory_fp,
+            "# schema=gps-sdr-sim.target-trajectory.v1\n"
+            "# sample_rate_hz=%.0f\n"
+            "# epoch_cadence_samples=%d\n"
+            "# gps_week=%d\n"
+            "# gps_tow=%.3f\n"
+            "# boundary=first_sample\n"
+            "sample_offset,prn,code_phase_chips,carrier_doppler_hz,"
+            "code_rate_chips_per_s,clean_gain\n",
+            samp_freq, iq_buff_size, g0.week, g0.sec);
+  }
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)
@@ -3660,6 +3692,30 @@ int main(int argc, char *argv[]) {
         if (attack_cfg.partial_mode && attack_cfg.gain_boost_db != 0.0)
           gain[i] = (int)(gain[i] * pow(10.0, attack_cfg.gain_boost_db / 20.0));
       }
+    }
+
+    if (trajectory_fp != NULL) {
+      uint64_t sample_offset = (uint64_t)(iumd - 1) * (uint64_t)iq_buff_size;
+      for (sv = 0; sv < MAX_SAT; ++sv) {
+        int channel;
+        if (!trajectory_cfg.prn_select[sv])
+          continue;
+        channel = allocatedSat[sv];
+        if (channel < 0 || chan[channel].prn != sv + 1) {
+          fprintf(stderr,
+                  "ERROR: trajectory target PRN %d lost its clean channel at sample %llu.\n",
+                  sv + 1, (unsigned long long)sample_offset);
+          generation_failed = TRUE;
+          stop_requested = 1;
+          break;
+        }
+        fprintf(trajectory_fp, "%llu,%d,%.17g,%.17g,%.17g,%d\n",
+                (unsigned long long)sample_offset, sv + 1,
+                chan[channel].code_phase, chan[channel].f_carr,
+                chan[channel].f_code, gain[channel]);
+      }
+      if (generation_failed == TRUE)
+        break;
     }
 
     for (isamp = 0; isamp < iq_buff_size; isamp++) {
@@ -3857,10 +3913,12 @@ int main(int argc, char *argv[]) {
       // Update channel allocation
       if (!staticLocationMode)
         allocateChannel(chan, active_eph, ionoutc, grx, xyz[motion_index],
-                        elvmask, &attack_cfg, &synth_cfg);
+                        elvmask, &attack_cfg, &synth_cfg,
+                        trajectory_enabled ? trajectory_cfg.prn_select : NULL);
       else
         allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask,
-                        &attack_cfg, &synth_cfg);
+                        &attack_cfg, &synth_cfg,
+                        trajectory_enabled ? trajectory_cfg.prn_select : NULL);
 
       // Show details about simulated channels
       if (verb == TRUE) {
@@ -3891,6 +3949,14 @@ int main(int argc, char *argv[]) {
 
   // Close file
   fclose(fp);
+  if (trajectory_fp != NULL)
+    fclose(trajectory_fp);
+
+  if (generation_failed == TRUE) {
+    remove(outfile);
+    remove(trajectory_file);
+    return (1);
+  }
 
   // Process time
   fprintf(stderr, "Process time = %.1f [sec]\n",

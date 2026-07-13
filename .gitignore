@@ -30,10 +30,12 @@
 gps-sdr-sim
 gps-sdr-sim-lut
 jammergen
+matchedgen
 iqmix
 jammertx
 tests/test_parse_synth_revive
 tests/test_jammer_source
+tests/test_gps_ca
 tests/test_revive_scan
 tests/test_revive_transform
 
@@ -43,6 +45,7 @@ tests/test_revive_transform
 # Output
 *.bin
 cw-dataset-output/
+matched-code-dataset-output/
 analysis-output/inputs/
 analysis-output/pilot-cw/
 analysis-output/runs/
@@ -74,3 +77,5 @@ tx
 bladetx
 rtcm3_inspect
 revive_candidates
+
+.playwright-cli/*

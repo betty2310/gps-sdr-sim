@@ -435,6 +435,44 @@ output arguments used above:
   --pulse-duty-cycle 0.1 --pulse-ramp-s 0.00005
 ```
 
+Matched-code is an offline-only source driven by target-channel state exported
+by `gps-sdr-sim` in the same clean-generation run. Targets are explicit,
+ordered, and duplicate-free. The source repeats each target's GPS L1 C/A code
+with a constant positive data symbol, follows the exported code phase, carrier
+Doppler, and code rate, and uses an independently seeded carrier phase:
+
+```sh
+uv run --project processing python processing/cw_dataset.py create \
+  --profile verification \
+  --rinex /absolute/path/to/frozen-navigation.rnx \
+  --start-time 2026/07/13,03:20:00 \
+  --jammer-type matched-code \
+  --target-prns 13 \
+  --jammer-seed 20260712 \
+  --js-levels 0 \
+  --receiver all \
+  --output-dir matched-code-dataset-output/verification-prn-13-js-p0db
+```
+
+For a supplied clean fixture, also provide the trajectory exported with that
+exact clean generation run:
+
+```text
+--clean-input /path/to/clean-source.bin \
+--trajectory-input /path/to/target-trajectory.csv
+```
+
+Do not pair a trajectory with clean IQ from another run. The workflow hashes
+and links the trajectory in the source, fixture, and dataset-index manifests.
+Matched-code remains file based; it is not accepted by a hardware transmitter.
+
+The matched-code path currently supports the `fast` development profile and
+the GNSS-SDR-backed `verification` profile. It deliberately rejects
+`--profile canonical`: RTCM live/replay scenario freezing, separate cold-start
+receiver evaluation, and five independent matched-source carrier-phase seeds
+are not implemented yet. This prevents a bounded verification dataset from
+being mislabeled as a complete canonical research campaign.
+
 `--jammer-seed` controls the narrowband/wideband source samples. `--seed`
 controls mixer AWGN. Record both; changing one does not change the other.
 
@@ -589,6 +627,7 @@ js-p0db/analysis/spectrum.png
 js-p0db/analysis/spectrogram.png
 js-p0db/analysis/spectrogram-active-detail.png
 js-p0db/analysis/block-power.png
+js-p0db/analysis/correlation-heatmap.png
 ```
 
 For default CW, the spectrum should show a complex line at +500 kHz, not
@@ -597,6 +636,12 @@ occupy most of Nyquist, chirp should traverse the requested sweep repeatedly,
 and pulsed should show periodic time-domain power. Every mode must be absent
 outside 30-60 s, have smooth configured edges, and return to the pre-onset
 power level after 60 s.
+
+For matched-code, also inspect the correlation heatmap and the
+`matched_code_alignment`, `matched_carrier_doppler`, `matched_code_drift`, and
+`selected_to_unselected_margin` gates. A single target must exceed the
+strongest unselected-PRN response by at least 18 dB. A multi-target composite
+is checked against its deterministic reference correlation map.
 
 ### Step 7: Inspect receiver evidence
 

@@ -367,7 +367,8 @@ int checkSatVisibility(ephem_t eph, gpstime_t g, double *xyz, double elvMask,
                        double *azel);
 int allocateChannel(channel_t *chan, ephem_t *eph, ionoutc_t ionoutc,
                     gpstime_t grx, double *xyz, double elvMask,
-                    const attack_config_t *acfg, const synth_config_t *scfg);
+                    const attack_config_t *acfg, const synth_config_t *scfg,
+                    const int *required_prns);
 
 /* Usage */
 void usage(void);

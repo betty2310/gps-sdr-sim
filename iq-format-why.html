@@ -173,6 +173,27 @@
     button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid rgba(49, 93, 120, .35); outline-offset: 3px; }
     button.active, button.primary { color: white; background: var(--green); }
 
+    .equation-strip {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 24px;
+      font-family: var(--mono);
+      text-align: center;
+    }
+    .equation-term { padding: 13px 8px; border-radius: 12px; background: #efece3; }
+    .equation-term span { display: block; color: var(--muted); font-size: .68rem; text-transform: uppercase; }
+    .equation-op { color: var(--rust); font-size: 1.35rem; font-weight: 700; }
+    .rate-ledger { display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 14px; margin-top: 18px; }
+    .rate-cell { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+    .rate-cell span { display: block; color: var(--muted); font-family: var(--mono); font-size: .7rem; text-transform: uppercase; }
+    .rate-cell strong { display: block; margin: 5px 0; color: var(--green); font-family: var(--mono); font-size: clamp(1rem, 2.5vw, 1.35rem); }
+    .rate-cell em { color: var(--muted); font-size: .82rem; }
+    .ledger-arrow { align-self: center; color: var(--rust); font-size: 1.5rem; }
+    .sample-count { margin-top: 14px; padding: 14px 18px; border-radius: 12px; background: var(--blue-soft); color: #24495f; }
+    .sample-count strong { font-family: var(--mono); }
+
     .sample-budget { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 28px; }
     .meter { padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
     .meter-track { height: 13px; margin: 13px 0 8px; overflow: hidden; border-radius: 99px; background: #e7e1d5; }
@@ -215,6 +236,10 @@
       .truth-grid, .two-col, .three-col, .sample-budget { grid-template-columns: 1fr; }
       .flow { grid-template-columns: 1fr; }
       .arrow { transform: rotate(90deg); justify-self: center; }
+      .equation-strip { grid-template-columns: 1fr; }
+      .equation-op { line-height: .7; }
+      .rate-ledger { grid-template-columns: 1fr; }
+      .ledger-arrow { transform: rotate(90deg); justify-self: center; }
       .lab-head { display: block; }
       .badge { display: inline-block; margin-top: 10px; }
       .control { width: 100%; grid-template-columns: 1fr; }
@@ -350,6 +375,70 @@
       </div>
     </section>
 
+    <section aria-labelledby="downconvert-title">
+      <div class="reading">
+        <div class="eyebrow">Interactive downconversion lab</div>
+        <h2 id="downconvert-title">Subtract the fast spin; keep the difference</h2>
+        <p class="section-intro">Why fewer pairs are enough: the receiver creates a known local oscillator at 1,575.42&nbsp;MHz. Mixing measures the incoming signal relative to that oscillator. The shared billion-cycle-per-second spin cancels; only the small difference and the modulation remain.</p>
+      </div>
+
+      <div class="lab" aria-labelledby="downconvert-title">
+        <div class="lab-head">
+          <div>
+            <h3>Ride alongside the GPS carrier</h3>
+            <p>The first two arrows spin rapidly together. The third arrow is what the receiver sees from a coordinate system rotating with the local oscillator. Animation speeds are deliberately exaggerated so your eyes can follow them.</p>
+          </div>
+          <span class="badge">interactive</span>
+        </div>
+
+        <div class="controls">
+          <div class="control">
+            <label for="gpsOffset">Signal − LO</label>
+            <input id="gpsOffset" type="range" min="-500" max="500" value="120" step="10">
+            <output id="gpsOffsetOut" for="gpsOffset">+120 kHz</output>
+          </div>
+          <div class="control">
+            <label for="captureBw">Captured bandwidth</label>
+            <input id="captureBw" type="range" min="1" max="5" value="2" step="0.25">
+            <output id="captureBwOut" for="captureBw">2.00 MHz</output>
+          </div>
+          <button id="downPause" type="button">Pause</button>
+        </div>
+
+        <div class="equation-strip" aria-label="Received frequency minus local oscillator equals baseband frequency">
+          <div class="equation-term"><span>Received</span><strong id="receivedFreq">1,575.540 MHz</strong></div>
+          <div class="equation-op" aria-hidden="true">−</div>
+          <div class="equation-term"><span>Local oscillator</span><strong>1,575.420 MHz</strong></div>
+          <div class="equation-op" aria-hidden="true">=</div>
+          <div class="equation-term"><span>Stored at baseband</span><strong id="differenceFreq">+120 kHz</strong></div>
+        </div>
+
+        <canvas id="downconvertCanvas" width="1000" height="470" aria-label="Incoming GPS carrier, local oscillator, and slow I/Q difference"></canvas>
+        <div class="canvas-labels"><span>TOP: ROTATING ARROWS</span><span>BOTTOM: WAVEFORMS, NOT TO FREQUENCY SCALE</span></div>
+
+        <div class="rate-ledger">
+          <div class="rate-cell">
+            <span>Direct RF, simple DC-Nyquist view</span>
+            <strong id="rawRate">&gt; 3.151 billion real samples/s</strong>
+            <em>one stored number at every sample time</em>
+          </div>
+          <div class="ledger-arrow" aria-hidden="true">→</div>
+          <div class="rate-cell">
+            <span>After complex downconversion</span>
+            <strong id="iqRate">≥ 2.00 million I/Q pairs/s</strong>
+            <em>two stored numbers per sample time</em>
+          </div>
+        </div>
+        <div class="sample-count" aria-live="polite">
+          In one microsecond: roughly <strong id="rawNumbers">3,151 real numbers</strong> versus <strong id="iqNumbers">2 pairs = 4 real numbers</strong>. I/Q doubles each sample time, yet uses about <strong id="numberRatio">788× fewer stored numbers</strong> and <strong id="rateRatio">1,576× fewer sample times</strong> in this illustration.
+        </div>
+      </div>
+
+      <div class="reading">
+        <div class="callout"><strong>What was removed?</strong> Not the GPS information. The receiver removed a predictable carrier rotation that it can recreate from the stored center-frequency metadata. Amplitude, phase relative to the carrier, code modulation, Doppler, noise, and signals across the selected bandwidth remain in I and Q.</div>
+      </div>
+    </section>
+
     <section aria-labelledby="rate-title">
       <div class="reading">
         <div class="eyebrow">The engineering payoff</div>
@@ -472,7 +561,9 @@
 
       function fitCanvas(canvas) {
         const cssWidth = canvas.clientWidth;
-        const cssHeight = Number(canvas.getAttribute('height')) / Number(canvas.getAttribute('width')) * cssWidth;
+        const cssHeight = canvas.id === 'downconvertCanvas' && cssWidth < 620
+          ? 390
+          : Number(canvas.getAttribute('height')) / Number(canvas.getAttribute('width')) * cssWidth;
         canvas.style.height = `${cssHeight}px`;
         canvas.width = Math.round(cssWidth * dpr);
         canvas.height = Math.round(cssHeight * dpr);
@@ -608,6 +699,127 @@
         ctx.strokeStyle = '#9c4528'; ctx.lineWidth = 2.5; ctx.stroke();
         requestAnimationFrame(drawDirection);
       }
+
+      const gpsOffset = document.querySelector('#gpsOffset');
+      const captureBw = document.querySelector('#captureBw');
+      const gpsOffsetOut = document.querySelector('#gpsOffsetOut');
+      const captureBwOut = document.querySelector('#captureBwOut');
+      const receivedFreq = document.querySelector('#receivedFreq');
+      const differenceFreq = document.querySelector('#differenceFreq');
+      const rawRate = document.querySelector('#rawRate');
+      const iqRate = document.querySelector('#iqRate');
+      const rawNumbers = document.querySelector('#rawNumbers');
+      const iqNumbers = document.querySelector('#iqNumbers');
+      const numberRatio = document.querySelector('#numberRatio');
+      const rateRatio = document.querySelector('#rateRatio');
+      const downconvertCanvas = document.querySelector('#downconvertCanvas');
+      const downPause = document.querySelector('#downPause');
+      let downRunning = true, downStart = performance.now(), downFrozen = 0;
+
+      function signedKHz(value) {
+        const n = Number(value);
+        return `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n)} kHz`;
+      }
+
+      function updateDownReadout() {
+        const offsetKHz = Number(gpsOffset.value);
+        const bandwidthMHz = Number(captureBw.value);
+        const rfMHz = 1575.42 + offsetKHz / 1000;
+        const rawMillion = rfMHz * 2;
+        const pairsPerUs = bandwidthMHz;
+        const iqRealNumbers = pairsPerUs * 2;
+        gpsOffsetOut.value = signedKHz(offsetKHz);
+        captureBwOut.value = `${bandwidthMHz.toFixed(2)} MHz`;
+        receivedFreq.textContent = `${rfMHz.toLocaleString(undefined, {minimumFractionDigits: 3, maximumFractionDigits: 3})} MHz`;
+        differenceFreq.textContent = signedKHz(offsetKHz);
+        rawRate.textContent = `> ${(rawMillion / 1000).toFixed(3)} billion real samples/s`;
+        iqRate.textContent = `≥ ${bandwidthMHz.toFixed(2)} million I/Q pairs/s`;
+        rawNumbers.textContent = `${Math.round(rawMillion).toLocaleString()} real numbers`;
+        iqNumbers.textContent = `${pairsPerUs.toFixed(2).replace(/\.00$/, '')} pairs = ${iqRealNumbers.toFixed(2).replace(/\.00$/, '')} real numbers`;
+        numberRatio.textContent = `${Math.round(rawMillion / iqRealNumbers).toLocaleString()}× fewer stored numbers`;
+        rateRatio.textContent = `${Math.round(rawMillion / pairsPerUs).toLocaleString()}× fewer sample times`;
+      }
+
+      function phasor(ctx, cx, cy, r, angle, color, title, subtitle) {
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.strokeStyle = '#d9d2c4'; ctx.lineWidth = 1; ctx.stroke();
+        line(ctx, cx - r - 4, cy, cx + r + 4, cy, '#d9d2c4');
+        line(ctx, cx, cy + r + 4, cx, cy - r - 4, '#d9d2c4');
+        arrow(ctx, cx, cy, cx + r * .84 * Math.cos(angle), cy - r * .84 * Math.sin(angle), color, 3);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#20231f'; ctx.font = 'bold 13px Cascadia Code, monospace'; ctx.fillText(title, cx, cy - r - 23);
+        ctx.fillStyle = '#62675f'; ctx.font = '11px Cascadia Code, monospace'; ctx.fillText(subtitle, cx, cy + r + 22);
+        ctx.textAlign = 'start';
+      }
+
+      function drawDownconversion(now) {
+        const { ctx, w, h } = fitCanvas(downconvertCanvas);
+        ctx.clearRect(0, 0, w, h);
+        const elapsed = downRunning ? (now - downStart) / 1000 : downFrozen;
+        const offset = Number(gpsOffset.value) / 500;
+        const fastAngle = elapsed * 5.8;
+        const differenceAngle = elapsed * offset * 2.2;
+        const centers = w < 620 ? [w * .17, w * .5, w * .83] : [w * .16, w * .5, w * .84];
+        const r = Math.min(w < 620 ? 33 : 62, w * .09);
+        const cy = w < 620 ? 78 : 100;
+
+        phasor(ctx, centers[0], cy, r, fastAngle + differenceAngle, '#315d78', 'RECEIVED RF', 'fast + difference');
+        phasor(ctx, centers[1], cy, r, fastAngle, '#9c4528', 'LOCAL OSC.', 'known fast spin');
+        phasor(ctx, centers[2], cy, r, differenceAngle, '#245c4a', 'I/Q RESULT', 'difference only');
+        ctx.fillStyle = '#9c4528'; ctx.font = 'bold 20px Georgia, serif'; ctx.textAlign = 'center';
+        ctx.fillText('−', (centers[0] + centers[1]) / 2, cy + 6);
+        ctx.fillText('=', (centers[1] + centers[2]) / 2, cy + 6);
+        ctx.textAlign = 'start';
+
+        const left = 42, right = w - 18;
+        const rawY = w < 620 ? 205 : h * .58;
+        const iY = w < 620 ? 285 : h * .76;
+        const qY = w < 620 ? 350 : h * .9;
+        const waveHeight = w < 620 ? 24 : 27;
+        [rawY, iY, qY].forEach(y => line(ctx, left, y, right, y, '#ddd7cb'));
+        ctx.font = '11px Cascadia Code, monospace';
+        ctx.fillStyle = '#315d78'; ctx.fillText('RF', 12, rawY + 4);
+        ctx.fillStyle = '#245c4a'; ctx.fillText('I', 18, iY + 4);
+        ctx.fillStyle = '#9c4528'; ctx.fillText('Q', 18, qY + 4);
+
+        ctx.beginPath();
+        for (let x = left; x <= right; x++) {
+          const u = (x - left) / (right - left);
+          const y = rawY - waveHeight * Math.cos(u * Math.PI * 30 + fastAngle + differenceAngle);
+          if (x === left) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#315d78'; ctx.lineWidth = 2; ctx.stroke();
+
+        const slowCycles = Math.abs(offset) * 1.5;
+        ctx.beginPath();
+        for (let x = left; x <= right; x++) {
+          const u = (x - left) / (right - left);
+          const a = (offset < 0 ? -1 : 1) * u * Math.PI * 2 * slowCycles + differenceAngle;
+          const y = iY - waveHeight * Math.cos(a);
+          if (x === left) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#245c4a'; ctx.lineWidth = 2.5; ctx.stroke();
+        ctx.beginPath();
+        for (let x = left; x <= right; x++) {
+          const u = (x - left) / (right - left);
+          const a = (offset < 0 ? -1 : 1) * u * Math.PI * 2 * slowCycles + differenceAngle;
+          const y = qY - waveHeight * Math.sin(a);
+          if (x === left) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#9c4528'; ctx.lineWidth = 2.5; ctx.stroke();
+        requestAnimationFrame(drawDownconversion);
+      }
+
+      gpsOffset.addEventListener('input', updateDownReadout);
+      captureBw.addEventListener('input', updateDownReadout);
+      downPause.addEventListener('click', () => {
+        if (downRunning) downFrozen = (performance.now() - downStart) / 1000;
+        else downStart = performance.now() - downFrozen * 1000;
+        downRunning = !downRunning;
+        downPause.textContent = downRunning ? 'Pause' : 'Resume';
+        downPause.classList.toggle('active', !downRunning);
+      });
+      updateDownReadout();
+      requestAnimationFrame(drawDownconversion);
 
       const answers = {
         q1: { correct: 'b', good: 'Exactly. Magnitude keeps the arrow’s length but throws away its angle. Without phase, coherent demodulation, Doppler direction, and many modulation states disappear.', bad: 'Not quite. Magnitude represents power-related information well, but it removes the arrow’s angle—and therefore phase and rotation direction.' },

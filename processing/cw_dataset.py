@@ -19,12 +19,11 @@ from typing import Any, Iterable, cast
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 from scipy.io import loadmat
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RECEIVER_CONFIG = ROOT / "sdr-monitor" / "cw-dataset-receiver.conf"
@@ -32,7 +31,7 @@ INT16_FULL_SCALE = 32767.0
 CHUNK_COMPLEX = 1_048_576
 # SciPy accepts False to preserve DC, while its current type stub narrows this to str.
 NO_DETREND = cast(str, False)
-JAMMER_TYPES = ("cw", "narrowband", "wideband", "chirp", "pulsed")
+JAMMER_TYPES = ("cw", "narrowband", "wideband", "chirp", "pulsed", "matched-code")
 
 
 @dataclass(frozen=True)
@@ -64,7 +63,7 @@ class Profile:
 
 PROFILES = {
     "fast": Profile("fast", 2_600_000, 3.0, 1.0, 2.0, 0.01, (0.0,)),
-    "verification": Profile("verification", 2_600_000, 90.0, 40.0, 60.0, 0.01, (20.0,)),
+    "verification": Profile("verification", 2_600_000, 360, 0.0, 360.0, 0.01, (20.0,)),
     "canonical": Profile(
         "canonical",
         2_600_000,
@@ -111,7 +110,11 @@ def resolve_jammer_parameters(args: argparse.Namespace) -> JammerParameters:
     amplitude = (
         float(args.jammer_amplitude)
         if args.jammer_amplitude is not None
-        else (0.15 if source_type in {"narrowband", "wideband"} else 0.5)
+        else (
+            0.15
+            if source_type in {"narrowband", "wideband"}
+            else (0.25 if source_type == "matched-code" else 0.5)
+        )
     )
     return JammerParameters(
         source_type=source_type,
@@ -126,6 +129,31 @@ def resolve_jammer_parameters(args: argparse.Namespace) -> JammerParameters:
         pulse_duty_cycle=float(args.pulse_duty_cycle),
         pulse_ramp_s=float(args.pulse_ramp_s),
     )
+
+
+def requested_target_prns(args: argparse.Namespace) -> tuple[int, ...]:
+    if not args.target_prns:
+        raise WorkflowError("--target-prns is required for matched-code generation")
+    try:
+        values = tuple(int(value) for value in args.target_prns.split(","))
+    except ValueError as exc:
+        raise WorkflowError("--target-prns must be a comma-separated PRN list") from exc
+    if not values or any(prn < 1 or prn > 32 for prn in values):
+        raise WorkflowError("--target-prns values must be in 1..32")
+    if len(set(values)) != len(values):
+        raise WorkflowError("--target-prns must be duplicate-free")
+    return values
+
+
+def matched_trajectory_path(args: argparse.Namespace, directory: Path) -> Path:
+    if args.trajectory_input:
+        path = Path(args.trajectory_input).resolve()
+        if not path.is_file():
+            raise WorkflowError(f"trajectory input does not exist: {path}")
+        return path
+    local = directory / "target-trajectory.csv"
+    parent = directory.parent / "target-trajectory.csv"
+    return parent if not local.exists() and parent.is_file() else local
 
 
 def default_receiver_binary() -> str:
@@ -237,12 +265,18 @@ def generate_clean(
     if args.clean_input:
         source = Path(args.clean_input).resolve()
         copy_exact_samples(source, output, profile.samples)
-        return {
+        result = {
             "mode": "provided_fixture",
             "source_path": str(source),
             "source_sha256": sha256_file(source),
             "retained_first_sample_offset": 0,
         }
+        if args.jammer_type == "matched-code":
+            result["target_trajectory"] = str(
+                matched_trajectory_path(args, output.parent)
+            )
+            result["target_prns"] = list(requested_target_prns(args))
+        return result
 
     if not args.rinex or not args.start_time:
         raise WorkflowError(
@@ -270,6 +304,17 @@ def generate_clean(
         "-o",
         raw.name,
     ]
+    if args.jammer_type == "matched-code":
+        targets = requested_target_prns(args)
+        trajectory = matched_trajectory_path(args, output.parent)
+        if args.trajectory_input:
+            raise WorkflowError(
+                "--trajectory-input is only valid with --clean-input; "
+                "gps-sdr-sim exports the trajectory for generated clean IQ"
+            )
+        command.extend(
+            ["-q", ",".join(str(prn) for prn in targets), "-z", str(trajectory)]
+        )
     generation = run(command, cwd=raw.parent, capture=True)
     (output.parent / "gps-sdr-sim.log").write_text(
         generation.stdout or "", encoding="utf-8"
@@ -289,7 +334,7 @@ def generate_clean(
     visible_prns = [
         prn for prn, _ in sorted(visible_geometry, key=lambda item: -item[1])
     ]
-    return {
+    result: dict[str, Any] = {
         "mode": "gps-sdr-sim",
         "rinex_path": str(rinex),
         "rinex_sha256": sha256_file(rinex),
@@ -302,6 +347,21 @@ def generate_clean(
         "visible_prns": visible_prns,
         "command": command,
     }
+    if args.jammer_type == "matched-code":
+        trajectory = matched_trajectory_path(args, output.parent)
+        if not trajectory.is_file():
+            raise WorkflowError(
+                "gps-sdr-sim did not export the target trajectory at "
+                f"{trajectory}; command: {' '.join(command)}"
+            )
+        result.update(
+            {
+                "target_prns": list(requested_target_prns(args)),
+                "target_trajectory": str(trajectory),
+                "target_trajectory_sha256": sha256_file(trajectory),
+            }
+        )
+    return result
 
 
 def generate_jammer(
@@ -310,6 +370,40 @@ def generate_jammer(
     parameters = resolve_jammer_parameters(args)
     iq = directory / f"{parameters.source_type}-jammer.bin"
     manifest = directory / f"{parameters.source_type}-jammer.tool.json"
+    if parameters.source_type == "matched-code":
+        targets = requested_target_prns(args)
+        trajectory = matched_trajectory_path(args, directory)
+        run(
+            [
+                str(ROOT / "matchedgen"),
+                "--output",
+                str(iq),
+                "--manifest",
+                str(manifest),
+                "--trajectory",
+                str(trajectory),
+                "--target-prns",
+                ",".join(str(prn) for prn in targets),
+                "--sample-rate",
+                str(profile.sample_rate_hz),
+                "--duration",
+                str(profile.duration_s),
+                "--amplitude",
+                str(parameters.amplitude),
+                "--phase-seed",
+                str(parameters.seed),
+                "--onset",
+                str(profile.onset_s),
+                "--offset",
+                str(profile.offset_s),
+                "--ramp",
+                str(profile.ramp_s),
+            ]
+        )
+        metadata = read_json(manifest)
+        metadata["trajectory_sha256"] = sha256_file(trajectory)
+        write_json(manifest, metadata)
+        return iq, manifest
     run(
         [
             str(ROOT / "jammergen"),
@@ -856,6 +950,392 @@ def plot_waveforms(
     ]
 
 
+def gps_ca_reference(prn: int) -> np.ndarray:
+    """Independent acceptance reference; the renderer uses tools/gps_ca.c."""
+    delays = (
+        5,
+        6,
+        7,
+        8,
+        17,
+        18,
+        139,
+        140,
+        141,
+        251,
+        252,
+        254,
+        255,
+        256,
+        257,
+        258,
+        469,
+        470,
+        471,
+        472,
+        473,
+        474,
+        509,
+        512,
+        513,
+        514,
+        515,
+        516,
+        859,
+        860,
+        861,
+        862,
+    )
+    if prn < 1 or prn > 32:
+        raise WorkflowError(f"GPS C/A PRN must be in 1..32, got {prn}")
+    r1 = [-1] * 10
+    r2 = [-1] * 10
+    g1: list[int] = []
+    g2: list[int] = []
+    for _ in range(1023):
+        g1.append(r1[9])
+        g2.append(r2[9])
+        c1 = r1[2] * r1[9]
+        c2 = r2[1] * r2[2] * r2[5] * r2[7] * r2[8] * r2[9]
+        r1 = [c1, *r1[:9]]
+        r2 = [c2, *r2[:9]]
+    delay = delays[prn - 1]
+    return np.asarray(
+        [
+            2 * ((1 - g1[i] * g2[(1023 - delay + i) % 1023]) // 2) - 1
+            for i in range(1023)
+        ],
+        dtype=np.float64,
+    )
+
+
+def read_complex_window(path: Path, start: int, count: int) -> np.ndarray:
+    with path.open("rb") as stream:
+        stream.seek(start * 4)
+        raw = np.fromfile(stream, dtype="<i2", count=count * 2)
+    if raw.size != count * 2:
+        raise WorkflowError(f"truncated IQ window in {path} at sample {start}")
+    pair = raw.reshape(-1, 2).astype(np.float64)
+    return (pair[:, 0] + 1j * pair[:, 1]) / INT16_FULL_SCALE
+
+
+def read_target_trajectory(path: Path) -> dict[int, list[dict[str, float | int]]]:
+    records: dict[int, list[dict[str, float | int]]] = {}
+    schema = False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise WorkflowError(f"cannot read trajectory {path}: {exc}") from exc
+    for line in lines:
+        if line == "# schema=gps-sdr-sim.target-trajectory.v1":
+            schema = True
+        if not line or line.startswith("#") or line.startswith("sample_offset,"):
+            continue
+        fields = line.split(",")
+        if len(fields) != 6:
+            raise WorkflowError(f"malformed target trajectory row: {line}")
+        try:
+            sample_offset = int(fields[0])
+            prn = int(fields[1])
+            record: dict[str, float | int] = {
+                "sample_offset": sample_offset,
+                "code_phase_chips": float(fields[2]),
+                "carrier_doppler_hz": float(fields[3]),
+                "code_rate_chips_per_s": float(fields[4]),
+                "clean_gain": int(fields[5]),
+            }
+        except ValueError as exc:
+            raise WorkflowError(f"invalid target trajectory row: {line}") from exc
+        records.setdefault(prn, []).append(record)
+    if not schema:
+        raise WorkflowError(f"unsupported target trajectory schema: {path}")
+    return records
+
+
+def trajectory_state(
+    records: list[dict[str, float | int]], sample: int, sample_rate_hz: int
+) -> tuple[float, float, float]:
+    selected = records[0]
+    for record in records[1:]:
+        if int(record["sample_offset"]) > sample:
+            break
+        selected = record
+    delta = sample - int(selected["sample_offset"])
+    rate = float(selected["code_rate_chips_per_s"])
+    phase = (
+        float(selected["code_phase_chips"]) + delta * rate / sample_rate_hz
+    ) % 1023.0
+    return phase, float(selected["carrier_doppler_hz"]), rate
+
+
+def code_carrier_reference(
+    *,
+    prn: int,
+    code_phase_chips: float,
+    carrier_doppler_hz: float,
+    code_rate_chips_per_s: float,
+    count: int,
+    sample_rate_hz: int,
+) -> np.ndarray:
+    samples = np.arange(count, dtype=np.float64)
+    chip_indices = (
+        np.floor(
+            code_phase_chips + samples * code_rate_chips_per_s / sample_rate_hz
+        ).astype(np.int64)
+        % 1023
+    )
+    code = gps_ca_reference(prn)[chip_indices]
+    carrier = np.exp(2j * np.pi * carrier_doppler_hz * samples / sample_rate_hz)
+    return code * carrier
+
+
+def carrier_phase_at_sample(
+    records: list[dict[str, float | int]],
+    initial_phase_rad: float,
+    sample: int,
+    sample_rate_hz: int,
+) -> float:
+    cycles = initial_phase_rad / (2 * math.pi)
+    for index, record in enumerate(records):
+        begin = int(record["sample_offset"])
+        if begin >= sample:
+            break
+        end = (
+            int(records[index + 1]["sample_offset"])
+            if index + 1 < len(records)
+            else sample
+        )
+        stop = min(sample, end)
+        cycles += (
+            float(record["carrier_doppler_hz"]) * max(0, stop - begin) / sample_rate_hz
+        )
+        if stop == sample:
+            break
+    return 2 * math.pi * (cycles % 1.0)
+
+
+def analyze_matched_code(
+    jammer: Path,
+    manifest: dict[str, Any],
+    profile: Profile,
+    output_dir: Path,
+    make_plots: bool,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], list[str]]:
+    parameters = manifest["parameters"]
+    targets = tuple(int(value) for value in parameters["target_prns"])
+    trajectory_path = Path(str(parameters["trajectory_path"]))
+    trajectory = read_target_trajectory(trajectory_path)
+    missing = [prn for prn in targets if prn not in trajectory]
+    if missing:
+        raise WorkflowError(f"trajectory is missing target PRNs: {missing}")
+
+    count = exact_samples(0.02, profile.sample_rate_hz, "correlation interval")
+    start_sample = profile.onset_sample + profile.ramp_samples
+    end_sample = profile.offset_sample - profile.ramp_samples - count
+    epochs = {"start": start_sample, "end": end_sample}
+    alignment: dict[str, dict[str, Any]] = {}
+    for label, sample in epochs.items():
+        values = read_complex_window(jammer, sample, count)
+        per_target: dict[str, Any] = {}
+        for prn in targets:
+            phase, doppler, rate = trajectory_state(
+                trajectory[prn], sample, profile.sample_rate_hz
+            )
+            best_power = -1.0
+            best_code = 0.0
+            best_doppler = 0.0
+            for code_offset in np.arange(-1.0, 1.0001, 0.25):
+                for doppler_offset in (-50.0, -25.0, 0.0, 25.0, 50.0):
+                    reference = code_carrier_reference(
+                        prn=prn,
+                        code_phase_chips=phase + float(code_offset),
+                        carrier_doppler_hz=doppler + doppler_offset,
+                        code_rate_chips_per_s=rate,
+                        count=count,
+                        sample_rate_hz=profile.sample_rate_hz,
+                    )
+                    power = abs(np.vdot(reference, values)) ** 2
+                    if power > best_power:
+                        best_power = float(power)
+                        best_code = float(code_offset)
+                        best_doppler = doppler_offset
+            per_target[str(prn)] = {
+                "measured_code_offset_chips": best_code,
+                "measured_doppler_offset_hz": best_doppler,
+                "correlation_power": best_power,
+            }
+        alignment[label] = per_target
+
+    one_ms = exact_samples(0.001, profile.sample_rate_hz, "C/A period")
+    map_values = read_complex_window(jammer, start_sample, one_ms)
+    correlation_map = np.zeros((len(targets), 32), dtype=np.float64)
+    samples = np.arange(one_ms, dtype=np.float64)
+    for row, target in enumerate(targets):
+        _, doppler, _ = trajectory_state(
+            trajectory[target], start_sample, profile.sample_rate_hz
+        )
+        wiped = map_values * np.exp(
+            -2j * np.pi * doppler * samples / profile.sample_rate_hz
+        )
+        signal_fft = np.fft.fft(wiped)
+        for prn in range(1, 33):
+            local = gps_ca_reference(prn)[
+                np.floor(samples * 1_023_000.0 / profile.sample_rate_hz).astype(
+                    np.int64
+                )
+                % 1023
+            ]
+            correlation = np.fft.ifft(signal_fft * np.conj(np.fft.fft(local)))
+            correlation_map[row, prn - 1] = float(np.max(np.abs(correlation)))
+
+    component_by_prn = {
+        int(component["prn"]): component for component in manifest["components"]
+    }
+    expected_values = np.zeros(one_ms, dtype=np.complex128)
+    component_weight = float(parameters["component_weight"])
+    amplitude = float(parameters["amplitude_full_scale"])
+    for target in targets:
+        phase, doppler, rate = trajectory_state(
+            trajectory[target], start_sample, profile.sample_rate_hz
+        )
+        carrier_phase = carrier_phase_at_sample(
+            trajectory[target],
+            float(component_by_prn[target]["initial_carrier_phase_rad"]),
+            start_sample,
+            profile.sample_rate_hz,
+        )
+        expected_values += (
+            amplitude
+            * component_weight
+            * code_carrier_reference(
+                prn=target,
+                code_phase_chips=phase,
+                carrier_doppler_hz=doppler,
+                code_rate_chips_per_s=rate,
+                count=one_ms,
+                sample_rate_hz=profile.sample_rate_hz,
+            )
+            * np.exp(1j * carrier_phase)
+        )
+    expected_map = np.zeros_like(correlation_map)
+    for row, target in enumerate(targets):
+        _, doppler, _ = trajectory_state(
+            trajectory[target], start_sample, profile.sample_rate_hz
+        )
+        wiped = expected_values * np.exp(
+            -2j * np.pi * doppler * samples / profile.sample_rate_hz
+        )
+        signal_fft = np.fft.fft(wiped)
+        for prn in range(1, 33):
+            local = gps_ca_reference(prn)[
+                np.floor(samples * 1_023_000.0 / profile.sample_rate_hz).astype(
+                    np.int64
+                )
+                % 1023
+            ]
+            correlation = np.fft.ifft(signal_fft * np.conj(np.fft.fft(local)))
+            expected_map[row, prn - 1] = float(np.max(np.abs(correlation)))
+
+    actual_relative_db = 20 * np.log10(
+        np.maximum(correlation_map, 1e-20)
+        / np.maximum(np.max(correlation_map, axis=1, keepdims=True), 1e-20)
+    )
+    expected_relative_db = 20 * np.log10(
+        np.maximum(expected_map, 1e-20)
+        / np.maximum(np.max(expected_map, axis=1, keepdims=True), 1e-20)
+    )
+    map_mask = expected_relative_db >= -40.0
+    deterministic_map_error_db = float(
+        np.max(np.abs(actual_relative_db[map_mask] - expected_relative_db[map_mask]))
+    )
+
+    margins: dict[str, float] = {}
+    for row, target in enumerate(targets):
+        target_response = correlation_map[row, target - 1]
+        unselected = [
+            correlation_map[row, prn - 1] for prn in range(1, 33) if prn not in targets
+        ]
+        margins[str(target)] = 20 * math.log10(
+            max(target_response, 1e-20) / max(max(unselected), 1e-20)
+        )
+
+    code_errors = [
+        abs(float(alignment[label][str(prn)]["measured_code_offset_chips"]))
+        for label in epochs
+        for prn in targets
+    ]
+    doppler_errors = [
+        abs(float(alignment[label][str(prn)]["measured_doppler_offset_hz"]))
+        for label in epochs
+        for prn in targets
+    ]
+    drifts = {
+        str(prn): abs(
+            float(alignment["end"][str(prn)]["measured_code_offset_chips"])
+            - float(alignment["start"][str(prn)]["measured_code_offset_chips"])
+        )
+        for prn in targets
+    }
+    checks = {
+        "matched_code_alignment": {
+            "pass": max(code_errors, default=math.inf) <= 0.5,
+            "maximum_code_error_chips": max(code_errors, default=None),
+        },
+        "matched_carrier_doppler": {
+            "pass": max(doppler_errors, default=math.inf) <= 25.0,
+            "maximum_doppler_error_hz": max(doppler_errors, default=None),
+        },
+        "matched_code_drift": {
+            "pass": max(drifts.values(), default=math.inf) <= 0.5,
+            "per_target_drift_chips": drifts,
+        },
+        "selected_to_unselected_margin": {
+            "pass": (
+                min(margins.values(), default=-math.inf) >= 18.0
+                if len(targets) == 1
+                else deterministic_map_error_db <= 0.5
+            ),
+            "per_target_margin_db": margins,
+            "required_margin_db": 18.0 if len(targets) == 1 else None,
+            "multi_component_deterministic_map_error_db": (
+                deterministic_map_error_db if len(targets) > 1 else None
+            ),
+            "multi_component_map_tolerance_db": 0.5 if len(targets) > 1 else None,
+        },
+    }
+    plots: list[str] = []
+    if make_plots:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        heatmap_path = output_dir / "correlation-heatmap.png"
+        fig, ax = plt.subplots(
+            figsize=(12, max(3, len(targets) * 0.8)), constrained_layout=True
+        )
+        relative = actual_relative_db
+        image = ax.imshow(relative, aspect="auto", cmap="viridis", vmin=-40, vmax=0)
+        ax.set(
+            title="Matched-code correlation map at target Doppler cells",
+            xlabel="Candidate GPS PRN",
+            ylabel="Target Doppler cell",
+            xticks=np.arange(32),
+            yticks=np.arange(len(targets)),
+            xticklabels=[str(prn) for prn in range(1, 33)],
+            yticklabels=[f"G{prn:02d}" for prn in targets],
+        )
+        fig.colorbar(image, ax=ax, label="Correlation relative to row peak (dB)")
+        fig.savefig(heatmap_path, dpi=150)
+        plt.close(fig)
+        plots.append(str(heatmap_path))
+    measurements = {
+        "target_prns": list(targets),
+        "alignment": alignment,
+        "selected_to_unselected_margin_db": margins,
+        "deterministic_correlation_map_error_db": deterministic_map_error_db,
+        "trajectory_path": str(trajectory_path),
+        "trajectory_sha256": sha256_file(trajectory_path),
+    }
+    return checks, measurements, plots
+
+
 def analyze_fixture(
     *,
     jammer: Path,
@@ -917,6 +1397,7 @@ def analyze_fixture(
         "active_plateau_rms_full_scale": measured_rms,
         "requested_active_plateau_rms_full_scale": requested_rms,
     }
+    matched_plots: list[str] = []
     if source_type == "cw":
         tone = estimate_tone(jammer, profile)
         target_frequency = (
@@ -979,7 +1460,7 @@ def analyze_fixture(
             "max_frequency_error_hz": chirp["max_frequency_error_hz"],
             "tolerance_hz": tolerance,
         }
-    else:
+    elif source_type == "pulsed":
         pulse = analyze_pulse(jammer, profile, parameters)
         source_measurements.update(pulse)
         duty_tolerance = max(2.0 / int(parameters["pulse_period_samples"]), 1e-6)
@@ -993,6 +1474,12 @@ def analyze_fixture(
             **pulse,
             "duty_tolerance": duty_tolerance,
         }
+    else:
+        matched_checks, matched_measurements, matched_plots = analyze_matched_code(
+            jammer, jammer_tool, profile, output_dir, make_plots
+        )
+        checks.update(matched_checks)
+        source_measurements.update(matched_measurements)
     requested_js = mix_tool["parameters"]["requested_js_db"]
     measured_js = mix_tool["measurements"]["measured_js_db"]
     if requested_js is not None:
@@ -1007,6 +1494,8 @@ def analyze_fixture(
     plots = (
         plot_waveforms(jammer, clean, mixed, profile, output_dir) if make_plots else []
     )
+    if source_type == "matched-code" and make_plots:
+        plots.extend(matched_plots)
     report = {
         "schema": "gps-sdr-sim.jammer-analysis.v2",
         "source_type": source_type,
@@ -1819,6 +2308,7 @@ def augment_manifest(
     fixture: Path,
     clean: Path,
     jammer: Path,
+    jammer_metadata: dict[str, Any],
     profile: Profile,
     source: dict[str, Any],
     common: dict[str, Any],
@@ -1827,9 +2317,43 @@ def augment_manifest(
     seed: int,
 ) -> dict[str, Any]:
     manifest = read_json(tool_manifest)
+    code_aware: dict[str, Any] | None = None
+    files = {
+        "clean": {"path": str(clean), "sha256": sha256_file(clean)},
+        "jammer": {"path": str(jammer), "sha256": sha256_file(jammer)},
+        "fixture": {"path": str(fixture), "sha256": sha256_file(fixture)},
+    }
+    if jammer_metadata.get("source_type") == "matched-code":
+        trajectory = Path(str(jammer_metadata["parameters"]["trajectory_path"]))
+        files["target_trajectory"] = {
+            "path": str(trajectory),
+            "sha256": sha256_file(trajectory),
+        }
+        jammer_scale = float(manifest["measurements"]["jammer_scale"])
+        ratios: dict[str, float] = {}
+        for component in jammer_metadata["components"]:
+            jammer_counts = (
+                float(component["nominal_component_rms_full_scale"])
+                * INT16_FULL_SCALE
+                * jammer_scale
+            )
+            clean_counts = float(component["clean_gain"]) * 250.0 / 128.0
+            ratios[str(component["prn"])] = 20 * math.log10(
+                max(jammer_counts, 1e-20) / max(clean_counts, 1e-20)
+            )
+        code_aware = {
+            "target_prns": jammer_metadata["parameters"]["target_prns"],
+            "trajectory_sha256": sha256_file(trajectory),
+            "phase_seed": jammer_metadata["parameters"]["phase_seed"],
+            "derived_component_to_clean_prn_db": ratios,
+        }
     manifest.update(
         {
-            "schema": "gps-sdr-sim.jamming-fixture.v2",
+            "schema": (
+                "gps-sdr-sim.jamming-fixture.v3"
+                if code_aware is not None
+                else "gps-sdr-sim.jamming-fixture.v2"
+            ),
             "profile": asdict(profile),
             "source": source,
             "provenance": {
@@ -1840,13 +2364,11 @@ def augment_manifest(
                 "noise_seed": seed,
             },
             "common_scaling": common,
-            "files": {
-                "clean": {"path": str(clean), "sha256": sha256_file(clean)},
-                "jammer": {"path": str(jammer), "sha256": sha256_file(jammer)},
-                "fixture": {"path": str(fixture), "sha256": sha256_file(fixture)},
-            },
+            "files": files,
         }
     )
+    if code_aware is not None:
+        manifest["code_aware"] = code_aware
     write_json(output_manifest, manifest)
     return manifest
 
@@ -1863,6 +2385,12 @@ def check_disk(directory: Path, profile: Profile, fixture_count: int) -> None:
 
 def workflow(args: argparse.Namespace) -> int:
     profile = PROFILES[args.profile]
+    if args.jammer_type == "matched-code" and profile.name == "canonical":
+        raise WorkflowError(
+            "matched-code canonical campaigns are not implemented yet; use the "
+            "verification profile until carrier-phase seed sweeps, cold-start "
+            "receiver runs, and RTCM scenario freezing are available"
+        )
     if args.refine_around is not None:
         levels = tuple(args.refine_around + offset for offset in (-4, -2, 0, 2, 4))
     elif args.js_levels:
@@ -1875,7 +2403,7 @@ def workflow(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     check_disk(output_dir, profile, len(levels) + 1)
     if not args.skip_build:
-        run(["make", "gps-sdr-sim", "jammergen", "iqmix"])
+        run(["make", "gps-sdr-sim", "jammergen", "matchedgen", "iqmix"])
 
     clean = output_dir / "clean-source.bin"
     source = generate_clean(args, profile, clean)
@@ -2005,6 +2533,7 @@ def workflow(args: argparse.Namespace) -> int:
             fixture=fixture,
             clean=clean,
             jammer=jammer,
+            jammer_metadata=jammer_metadata,
             profile=profile,
             source=source,
             common=common,
@@ -2099,11 +2628,31 @@ def workflow(args: argparse.Namespace) -> int:
                 threshold = {"js_db": entry["js_db"], "signals": signals}
                 break
 
+    code_aware_index: dict[str, Any] | None = None
+    if jammer_metadata["source_type"] == "matched-code":
+        trajectory = Path(str(jammer_metadata["parameters"]["trajectory_path"]))
+        code_aware_index = {
+            "frozen_target_prns": jammer_metadata["parameters"]["target_prns"],
+            "data_symbol_policy": jammer_metadata["parameters"]["data_symbol_policy"],
+            "phase_seeds": [jammer_metadata["parameters"]["phase_seed"]],
+            "target_trajectory": {
+                "path": str(trajectory),
+                "sha256": sha256_file(trajectory),
+            },
+            "correlation_reports": [
+                entry["waveform_report"] for entry in index_entries
+            ],
+        }
     index = {
-        "schema": "gps-sdr-sim.jamming-dataset-index.v2",
+        "schema": (
+            "gps-sdr-sim.jamming-dataset-index.v3"
+            if code_aware_index is not None
+            else "gps-sdr-sim.jamming-dataset-index.v2"
+        ),
         "offline_only": True,
         "safety": "For offline GNSS-SDR processing only; this workflow does not emit open-air transmission commands.",
         "profile": asdict(profile),
+        "pass": all(entry["pass"] for entry in index_entries),
         "source": source,
         "shared": {
             "clean_sha256": sha256_file(clean),
@@ -2118,6 +2667,8 @@ def workflow(args: argparse.Namespace) -> int:
         "fixtures": index_entries,
         "first_measured_degradation_threshold": threshold,
     }
+    if code_aware_index is not None:
+        index["code_aware"] = code_aware_index
     write_json(output_dir / "dataset-index.json", index)
     return 0
 
@@ -2170,6 +2721,14 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--start-time", help="gps-sdr-sim time YYYY/MM/DD,hh:mm:ss")
     create.add_argument("--location", default="21.0047844,105.8460541,5")
     create.add_argument("--jammer-type", choices=JAMMER_TYPES, default="cw")
+    create.add_argument(
+        "--target-prns",
+        help="ordered, duplicate-free GPS PRNs required by matched-code",
+    )
+    create.add_argument(
+        "--trajectory-input",
+        help="simulator-exported target trajectory paired with --clean-input",
+    )
     create.add_argument(
         "--frequency-hz",
         type=float,

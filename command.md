@@ -1,13 +1,11 @@
 Distribute 5 sats around the sky
 
-
 ```bash
 $ gps-sdr-sim -e hour0910.26n -c -1626569.949,5730535.146,2271863.661 \
              -P 1,2,3,5,7 \
              -S 1:0.0/60.0,2:90.0/45.0,3:180.0/50.0,5:270.0/40.0,7:45.0/55.0 \
              -d 300 -v
 ```
-
 
 BladeRF hardware test (old pipe path):
 
@@ -97,8 +95,7 @@ recommended next --gps-time-ppm: +0.002894118
 bladetx -e hour0970.26n -l 21.0047844,105.8460541,5 -P 3,4,7,8 -S 3:20/60,4:90/45,7:180/30,8:45/55 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790 --trimble-start-offset-sec 2 --txvga1 -35
 ```
 
-
-# Web 8 Apr 2026 
+# Web 8 Apr 2026
 
 ```bash
 bladetx -e hour0980.26n -l 21.0047844,105.8460541,5 -P 4,5,8,9 -S 4:20/60,5:90/45,8:60/30,9:45/55 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790   --trimble-start-offset-sec 2 --txvga1 -35
@@ -142,7 +139,6 @@ revive_candidates \
     --trimble-tx-cal-ns 580000
 ```
 
-
 ```bash
 ./tx_samples_from_file \
            --file gpssim.bin \
@@ -153,4 +149,10 @@ revive_candidates \
            --ant TX/RX \
            --args "addr=192.168.10.2" \
            --repeat --channel 1
+```
+
+# Gen jammer chirp
+
+```bash
+uv run --project processing python processing/cw_dataset.py create --profile verification --rinex hour1940.26n --output-dir dataset/ --start-time 2026/07/13,03:20:00 --location 21.0047844,105.8460541,5 --jammer-type chirp --frequency-hz -500000 --end-frequency-hz 500000 --chirp-period-s 0.01 --js-levels 20 --receiver none --no-calibrate-noise
 ```
