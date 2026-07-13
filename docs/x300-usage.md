@@ -7,9 +7,9 @@ It generates IQ samples in-process and sends them directly via the UHD C++ API
 with timed TX metadata, eliminating the pipe-based latency of the old
 `gps-sdr-sim | gps-sdr-sim-uhd.py` path.
 
-It also supports a finite matched-code composite mode in which simulator-generated
-clean GPS and navigation-data-free, code/Doppler-aligned interference are mixed
-in the same process and sent through one X300 channel. That mode has additional
+It also supports a continuous matched-code jammer-only mode. The simulator's
+clean GPS state provides code/Doppler alignment internally, but clean GPS IQ is
+discarded and never reaches the X300 output. That mode has additional
 controlled-RF, frozen-scenario, artifact, and acceptance requirements. Follow
 the dedicated [matched-code X300 researcher guide](realtime-code-aligned-matched-code-x300.md)
 instead of adapting a clean-only command from this page.
@@ -44,13 +44,14 @@ Requires UHD library (`pkg-config --exists uhd`).
 
 ## Options
 
-### Finite Matched-Code Composite Mode
+### Continuous Matched-Code Jammer-Only Mode
 
 The mode is activated only by `--matched-code-target-prns`. It requires an
-explicit finite duration, target list, digital J/S, phase seed, onset/offset,
-manifest, and trajectory. A live run additionally requires explicit device,
-channel, antenna, gain, timing calibration, calibration identity, and
-`--confirm-controlled-rf` values.
+explicit target list, normalized jammer amplitude, phase seed, and manifest. It
+starts at sample zero and runs until `SIGINT` or `SIGTERM`; `-P`, `-d`, `-n`,
+digital J/S, onset, offset, and ramp controls are rejected. A live run
+additionally requires explicit device, channel, antenna, gain, timing
+calibration, calibration identity, and `--confirm-controlled-rf` values.
 
 Always validate the exact scenario first with `--dry-run`; dry run does not
 discover or open UHD. Build and command examples, manifest checks, expected

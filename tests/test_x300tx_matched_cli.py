@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import tempfile
 import unittest
@@ -10,7 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 X300TX = ROOT / "x300tx"
+MATCHEDGEN = ROOT / "matchedgen"
 NAVIGATION = ROOT / "tests" / "fixtures" / "brdc0030.25n"
+DRY_RUN_SECONDS = 0.1
+SAMPLE_RATE_HZ = 2_500_000
 
 
 def invoke(*arguments: object) -> subprocess.CompletedProcess[str]:
@@ -29,88 +33,186 @@ def base_arguments(manifest: Path) -> list[object]:
         NAVIGATION,
         "-l",
         "21.0047844,105.8460541,22",
-        "-P",
-        "1",
         "-S",
-        "1:overhead",
-        "-d",
-        0.04,
+        "1:overhead,3:90/45,8:180/45",
         "--matched-code-target-prns",
-        "1",
-        "--matched-code-js-db",
-        10,
+        "1,3",
+        "--matched-code-amplitude",
+        0.5,
         "--matched-code-phase-seed",
         42,
-        "--matched-code-onset",
-        0.01,
-        "--matched-code-offset",
-        0.03,
-        "--matched-code-ramp",
-        0.001,
         "--manifest",
         manifest,
         "--dry-run",
     ]
 
 
+def fnv1a64(data: bytes) -> str:
+    value = 0xCBF29CE484222325
+    for byte in data:
+        value ^= byte
+        value = (value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
 class X300MatchedCliTest(unittest.TestCase):
-    def test_dry_run_renders_exact_plan_without_uhd(self) -> None:
+    def test_dry_run_renders_continuous_jammer_only_validation_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            manifest = Path(temporary) / "run.json"
+            directory = Path(temporary)
+            manifest = directory / "run.json"
             completed = invoke(*base_arguments(manifest))
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("UHD was never opened", completed.stderr)
             metadata = json.loads(manifest.read_text())
+            samples = metadata["sample_contract"]
+
+            self.assertEqual(metadata["schema"], "gps-sdr-sim.x300tx-matched-code.v2")
             self.assertEqual(metadata["status"], "dry_run")
             self.assertEqual(metadata["timing"]["start_mode"], "frozen_rinex_epoch")
-            self.assertEqual(metadata["sample_contract"]["planned_samples"], 100_000)
             self.assertEqual(
-                metadata["sample_contract"]["rendered_clean_samples"], 100_000
+                metadata["rf_output"],
+                {
+                    "contains": "matched_code_interference_only",
+                    "clean_gps_transmitted": False,
+                },
+            )
+            self.assertEqual(metadata["scenario"]["requested_target_prns"], [1, 3])
+            self.assertEqual(metadata["scenario"]["selected_target_prns"], [1, 3])
+            self.assertTrue(metadata["scenario"]["startup_target_allocation_passed"])
+            self.assertTrue(samples["continuous"])
+            self.assertIsNone(samples["planned_samples"])
+            self.assertEqual(
+                samples["dry_run_validation_samples"],
+                int(DRY_RUN_SECONDS * SAMPLE_RATE_HZ),
             )
             self.assertEqual(
-                metadata["sample_contract"]["rendered_jammer_samples"], 100_000
+                samples["internal_alignment_samples"],
+                samples["dry_run_validation_samples"],
             )
             self.assertEqual(
-                metadata["sample_contract"]["quantized_composite_samples"],
-                100_000,
+                samples["rendered_jammer_samples"],
+                samples["dry_run_validation_samples"],
             )
-            self.assertEqual(metadata["sample_contract"]["sent_samples"], 0)
+            self.assertEqual(
+                samples["quantized_jammer_samples"],
+                samples["dry_run_validation_samples"],
+            )
+            self.assertEqual(samples["sent_jammer_samples"], 0)
+            self.assertNotIn("rendered_clean_samples", samples)
+            self.assertNotIn("quantized_composite_samples", samples)
+            self.assertEqual(metadata["waveform"]["output_amplitude_full_scale"], 0.5)
+            self.assertAlmostEqual(
+                metadata["waveform"]["equal_component_weight"],
+                1 / math.sqrt(2),
+            )
+            self.assertAlmostEqual(
+                metadata["waveform"]["predicted_peak_full_scale"],
+                0.5 * math.sqrt(2),
+            )
+            self.assertGreater(metadata["waveform"]["predicted_headroom_db"], 1)
+            self.assertNotIn("requested_js_db", metadata["waveform"])
+            self.assertNotIn("achieved_js_db", metadata["measurements"])
             self.assertEqual(metadata["measurements"]["clipped_components"], 0)
-            self.assertAlmostEqual(metadata["measurements"]["achieved_js_db"], 10.0)
+            self.assertGreater(metadata["measurements"]["jammer_rms_full_scale"], 0)
+            self.assertLessEqual(
+                metadata["measurements"]["jammer_peak_full_scale"],
+                metadata["waveform"]["predicted_peak_full_scale"] + 1e-9,
+            )
+
+            trajectory = directory / "run.trajectory.csv"
+            trajectory_prns = {
+                int(line.split(",")[1])
+                for line in trajectory.read_text().splitlines()
+                if line and not line.startswith("#") and not line.startswith("sample_")
+            }
+            self.assertEqual(trajectory_prns, {1, 3})
+
+            expected_iq = directory / "expected.bin"
+            expected = subprocess.run(
+                [
+                    str(argument)
+                    for argument in [
+                        MATCHEDGEN,
+                        "--output",
+                        expected_iq,
+                        "--trajectory",
+                        trajectory,
+                        "--target-prns",
+                        "1,3",
+                        "--sample-rate",
+                        SAMPLE_RATE_HZ,
+                        "--duration",
+                        DRY_RUN_SECONDS,
+                        "--onset",
+                        0,
+                        "--offset",
+                        DRY_RUN_SECONDS,
+                        "--ramp",
+                        0,
+                        "--amplitude",
+                        0.5,
+                        "--phase-seed",
+                        42,
+                    ]
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(expected.returncode, 0, expected.stderr)
+            self.assertEqual(
+                metadata["waveform"]["jammer_iq_fnv1a64"],
+                fnv1a64(expected_iq.read_bytes()),
+            )
 
     def test_invalid_command_contracts_fail_before_uhd(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             cases: list[tuple[list[object], str]] = []
 
-            missing_js = base_arguments(directory / "missing-js.json")
-            js_index = missing_js.index("--matched-code-js-db")
-            del missing_js[js_index : js_index + 2]
-            cases.append((missing_js, "requires -d"))
+            missing_amplitude = base_arguments(directory / "missing-amplitude.json")
+            amplitude_index = missing_amplitude.index("--matched-code-amplitude")
+            del missing_amplitude[amplitude_index : amplitude_index + 2]
+            cases.append((missing_amplitude, "amplitude"))
 
             duplicate = base_arguments(directory / "duplicate.json")
             duplicate[duplicate.index("--matched-code-target-prns") + 1] = "1,1"
             cases.append((duplicate, "duplicate"))
 
-            continuous = base_arguments(directory / "continuous.json")
-            continuous.extend(["-n"])
-            cases.append((continuous, "finite"))
+            finite = base_arguments(directory / "finite.json")
+            finite.extend(["-d", 1])
+            cases.append((finite, "does not accept -d"))
 
-            invalid_timing = base_arguments(directory / "timing.json")
-            invalid_timing[invalid_timing.index("--matched-code-offset") + 1] = 0.011
-            cases.append((invalid_timing, "plateau"))
+            stream_now = base_arguments(directory / "stream-now.json")
+            stream_now.extend(["-n"])
+            cases.append((stream_now, "does not accept -n"))
+
+            partial = base_arguments(directory / "partial.json")
+            partial.extend(["-P", 1])
+            cases.append((partial, "rejects -P"))
+
+            legacy_timing = base_arguments(directory / "timing.json")
+            legacy_timing.extend(["--matched-code-onset", 0])
+            cases.append((legacy_timing, "Unknown option --matched-code-onset"))
+
+            legacy_js = base_arguments(directory / "js.json")
+            legacy_js.extend(["--matched-code-js-db", 10])
+            cases.append((legacy_js, "Unknown option --matched-code-js-db"))
 
             legacy = base_arguments(directory / "legacy.json")
             legacy.extend(["-J", 5])
             cases.append((legacy, "mutually exclusive"))
 
-            partial = base_arguments(directory / "partial.json")
-            partial[partial.index("--matched-code-target-prns") + 1] = "2"
-            cases.append((partial, "partial constellation"))
-
             unsupported_rate = base_arguments(directory / "rate.json")
             unsupported_rate.extend(["--rate", 2_500_001])
             cases.append((unsupported_rate, "integer 100 ms"))
+
+            invalid_amplitude = base_arguments(directory / "amplitude.json")
+            invalid_amplitude[
+                invalid_amplitude.index("--matched-code-amplitude") + 1
+            ] = 0
+            cases.append((invalid_amplitude, "in (0, 1]"))
 
             invalid_gain = base_arguments(directory / "gain.json")
             invalid_gain.extend(["--gain", "not-a-number"])
@@ -136,7 +238,6 @@ class X300MatchedCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             unavailable = base_arguments(directory / "unavailable.json")
-            unavailable[unavailable.index("-P") + 1] = "2"
             unavailable[unavailable.index("--matched-code-target-prns") + 1] = "2"
             completed = invoke(*unavailable)
             self.assertNotEqual(completed.returncode, 0)

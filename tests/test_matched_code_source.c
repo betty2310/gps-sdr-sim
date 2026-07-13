@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "player/matched_code_alignment.h"
 #include "tools/matched_code_source.h"
 
 static matched_code_source_config_t base_config(void) {
@@ -128,9 +129,55 @@ static void test_validation_and_metrics(void) {
   assert(metrics.clipped_components == 0);
 }
 
+static void test_clean_navigation_bits_do_not_cross_alignment_boundary(void) {
+  matched_code_source_config_t config = base_config();
+  matched_code_source_t first_source;
+  matched_code_source_t second_source;
+  matched_code_target_state_t first_state;
+  matched_code_target_state_t second_state;
+  channel_t channel;
+  int16_t first_samples[16];
+  int16_t second_samples[16];
+  char error[256];
+
+  memset(&channel, 0, sizeof(channel));
+  memset(&first_state, 0, sizeof(first_state));
+  memset(&second_state, 0, sizeof(second_state));
+  channel.prn = 1;
+  channel.code_phase = 123.25;
+  channel.f_carr = 1.0;
+  channel.f_code = 1.0;
+  channel.dataBit = 1;
+  channel.dwrd[0] = 0xAAAAAAAAUL;
+  channel.sbf[0][0] = 0x55555555UL;
+
+  matched_code_capture_channel_state(&channel, 80, 0, &first_state);
+  channel.dataBit = -1;
+  channel.dwrd[0] = 0x55555555UL;
+  channel.sbf[0][0] = 0xAAAAAAAAUL;
+  channel.iword = 7;
+  channel.ibit = 13;
+  matched_code_capture_channel_state(&channel, 80, 0, &second_state);
+
+  assert(memcmp(&first_state, &second_state, sizeof(first_state)) == 0);
+  assert(matched_code_source_init(&first_source, &config, error,
+                                  sizeof(error)) == 0);
+  assert(matched_code_source_init(&second_source, &config, error,
+                                  sizeof(error)) == 0);
+  assert(matched_code_source_set_epoch(&first_source, &first_state, 1, error,
+                                       sizeof(error)) == 0);
+  assert(matched_code_source_set_epoch(&second_source, &second_state, 1, error,
+                                       sizeof(error)) == 0);
+  assert(matched_code_source_render_sc16(&first_source, first_samples, 8) == 8);
+  assert(matched_code_source_render_sc16(&second_source, second_samples, 8) ==
+         8);
+  assert(memcmp(first_samples, second_samples, sizeof(first_samples)) == 0);
+}
+
 int main(void) {
   test_known_samples_and_boundary_ownership();
   test_chunk_invariance_and_clean_prefix_phase_advancement();
   test_validation_and_metrics();
+  test_clean_navigation_bits_do_not_cross_alignment_boundary();
   return 0;
 }

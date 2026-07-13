@@ -51,6 +51,8 @@ extern "C" {
 #include "tools/sha256.h"
 }
 
+#include "player/matched_code_alignment.h"
+
 ////////////////////////////////////////////////////////////
 // Constants
 ////////////////////////////////////////////////////////////
@@ -65,17 +67,17 @@ extern "C" {
 #define GPS_TIME_PPM_DEFAULT 0.0
 #define GPS_TIME_PPM_MAX_ABS 1000.0
 #define MATCHED_RATE_TOLERANCE_HZ 0.5
-#define MATCHED_RAMP_DEFAULT_SEC 0.01
+#define MATCHED_DRY_RUN_VALIDATION_SEC 0.1
+#define MATCHED_MIN_HEADROOM_DB 1.0
+#define FNV1A64_OFFSET_BASIS UINT64_C(14695981039346656037)
+#define FNV1A64_PRIME UINT64_C(1099511628211)
 
 struct MatchedCodeOptions {
   bool enabled = false;
   bool dry_run = false;
   bool controlled_rf_confirmed = false;
-  bool js_set = false;
+  bool amplitude_set = false;
   bool phase_seed_set = false;
-  bool onset_set = false;
-  bool offset_set = false;
-  bool ramp_set = false;
   bool address_set = false;
   bool channel_set = false;
   bool antenna_set = false;
@@ -85,11 +87,8 @@ struct MatchedCodeOptions {
   std::string manifest_path;
   std::string trajectory_path;
   std::string calibration_id;
-  double js_db = 0.0;
+  double amplitude = 0.0;
   uint64_t phase_seed = 0;
-  double onset_seconds = 0.0;
-  double offset_seconds = 0.0;
-  double ramp_seconds = MATCHED_RAMP_DEFAULT_SEC;
 };
 
 struct MatchedCodeRunResult {
@@ -108,7 +107,7 @@ struct MatchedCodeRunResult {
   double uhd_start_time_seconds = 0.0;
   bool start_margin_met = false;
   bool target_allocation_passed = false;
-  uint64_t rendered_clean_samples = 0;
+  uint64_t internal_alignment_samples = 0;
   uint64_t rendered_jammer_samples = 0;
   uint64_t quantized_samples = 0;
   uint64_t sent_samples = 0;
@@ -116,10 +115,8 @@ struct MatchedCodeRunResult {
   uint64_t sequence_errors = 0;
   uint64_t time_errors = 0;
   bool interrupted = false;
-  matched_code_mix_metrics_t mix_metrics{};
   matched_code_source_metrics_t source_metrics{};
-  double minimum_epoch_js_db = std::numeric_limits<double>::infinity();
-  double maximum_epoch_js_db = -std::numeric_limits<double>::infinity();
+  uint64_t jammer_iq_fnv1a64 = FNV1A64_OFFSET_BASIS;
   std::string trajectory_sha256;
   int exit_status = 1;
 };
@@ -665,12 +662,8 @@ static bool captureMatchedTargetStates(
       *error = message.str();
       return false;
     }
-    states[index].sample_offset = sample_offset;
-    states[index].prn = prn;
-    states[index].code_phase_chips = chan[channel].code_phase;
-    states[index].carrier_doppler_hz = chan[channel].f_carr;
-    states[index].code_rate_chips_per_s = chan[channel].f_code;
-    states[index].clean_gain = gain[channel];
+    matched_code_capture_channel_state(&chan[channel], gain[channel],
+                                       sample_offset, &states[index]);
   }
   return true;
 }
@@ -824,6 +817,83 @@ static std::string jsonEscape(const std::string &value) {
   return escaped.str();
 }
 
+static uint64_t updateFnv1a64Sc16(uint64_t hash, const int16_t *samples,
+                                  size_t sample_count) {
+  for (size_t index = 0; index < sample_count * 2; ++index) {
+    uint16_t value = static_cast<uint16_t>(samples[index]);
+    hash ^= static_cast<uint8_t>(value & 0xffU);
+    hash *= FNV1A64_PRIME;
+    hash ^= static_cast<uint8_t>((value >> 8) & 0xffU);
+    hash *= FNV1A64_PRIME;
+  }
+  return hash;
+}
+
+static std::string fnv1a64Hex(uint64_t value) {
+  std::ostringstream output;
+  output << std::hex << std::setfill('0') << std::setw(16) << value;
+  return output.str();
+}
+
+static bool initializeMatchedJammerPlan(matched_code_plan_t *plan,
+                                        double sample_rate_hz,
+                                        const std::string &target_prns,
+                                        double amplitude, uint64_t phase_seed,
+                                        char *error, size_t error_size) {
+  long double validation_samples_exact;
+  long double validation_samples_rounded;
+
+  if (plan == nullptr || !std::isfinite(sample_rate_hz) ||
+      sample_rate_hz <= 0.0 || !std::isfinite(amplitude) || amplitude <= 0.0 ||
+      amplitude > 1.0) {
+    snprintf(error, error_size,
+             "sample rate and matched-code amplitude in (0, 1] are required");
+    return false;
+  }
+
+  memset(plan, 0, sizeof(*plan));
+  plan->sample_rate_hz = sample_rate_hz;
+  plan->phase_seed = phase_seed;
+  plan->jammer_scale = amplitude;
+  if (matched_code_parse_targets(target_prns.c_str(), plan->target_prns,
+                                 &plan->target_count, error,
+                                 error_size) != 0)
+    return false;
+
+  validation_samples_exact =
+      static_cast<long double>(sample_rate_hz) *
+      static_cast<long double>(MATCHED_DRY_RUN_VALIDATION_SEC);
+  validation_samples_rounded = roundl(validation_samples_exact);
+  if (validation_samples_rounded <= 0.0L ||
+      validation_samples_rounded > static_cast<long double>(UINT64_MAX) ||
+      fabsl(validation_samples_exact - validation_samples_rounded) > 1.0e-6L) {
+    snprintf(error, error_size,
+             "the 100 ms validation window is not an integral sample count");
+    return false;
+  }
+
+  plan->total_samples = static_cast<uint64_t>(validation_samples_rounded);
+  plan->onset_sample = 0;
+  plan->offset_sample = plan->total_samples;
+  plan->ramp_samples = 0;
+  plan->reference_start_sample = 0;
+  plan->reference_end_sample = plan->total_samples;
+  plan->jammer_component_bound =
+      amplitude * sqrt(static_cast<double>(plan->target_count));
+  plan->predicted_composite_bound = plan->jammer_component_bound;
+  plan->predicted_headroom_db =
+      20.0 * log10(1.0 / plan->predicted_composite_bound);
+  if (plan->predicted_headroom_db + 1.0e-12 < MATCHED_MIN_HEADROOM_DB) {
+    snprintf(error, error_size,
+             "matched-code amplitude leaves %.3f dB predicted headroom; at "
+             "least %.1f dB is required for %zu target(s)",
+             plan->predicted_headroom_db, MATCHED_MIN_HEADROOM_DB,
+             plan->target_count);
+    return false;
+  }
+  return true;
+}
+
 static bool writeMatchedManifestAtomic(
     const MatchedCodeOptions &options, const matched_code_plan_t &plan,
     const MatchedCodeRunResult &result, const char *navfile,
@@ -836,30 +906,18 @@ static bool writeMatchedManifestAtomic(
     double gps_time_ppm, bool trimble_mode) {
   std::string temporary_path = options.manifest_path + ".tmp";
   std::ofstream manifest(temporary_path, std::ios::out | std::ios::trunc);
-  double clean_rms = 0.0;
-  double jammer_rms = 0.0;
-  double composite_rms = 0.0;
-  double achieved_js = matched_code_mix_achieved_js_db(&result.mix_metrics);
   matched_code_source_config_t source_config{};
   matched_code_source_t phase_source;
   char source_error[128];
 
   if (!manifest)
     return false;
-  if (result.mix_metrics.plateau_samples > 0) {
-    clean_rms = sqrt((double)(result.mix_metrics.clean_power /
-                              result.mix_metrics.plateau_samples));
-    jammer_rms = sqrt((double)(result.mix_metrics.jammer_power /
-                               result.mix_metrics.plateau_samples));
-    composite_rms = sqrt((double)(result.mix_metrics.composite_power /
-                                  result.mix_metrics.plateau_samples));
-  }
   source_config.sample_rate_hz = plan.sample_rate_hz;
   source_config.total_samples = plan.total_samples;
   source_config.onset_sample = plan.onset_sample;
   source_config.offset_sample = plan.offset_sample;
   source_config.ramp_samples = plan.ramp_samples;
-  source_config.amplitude = 1.0;
+  source_config.amplitude = plan.jammer_scale;
   source_config.phase_seed = plan.phase_seed;
   source_config.target_count = plan.target_count;
   for (size_t index = 0; index < plan.target_count; ++index)
@@ -870,7 +928,7 @@ static bool writeMatchedManifestAtomic(
 
   manifest << std::setprecision(17);
   manifest << "{\n";
-  manifest << "  \"schema\": \"gps-sdr-sim.x300tx-matched-code.v1\",\n";
+  manifest << "  \"schema\": \"gps-sdr-sim.x300tx-matched-code.v2\",\n";
   manifest << "  \"tool\": \"x300tx\",\n";
   manifest << "  \"status\": \"" << jsonEscape(result.status) << "\",\n";
   manifest << "  \"failure_reason\": ";
@@ -884,6 +942,9 @@ static bool writeMatchedManifestAtomic(
               "\"transmitter-only; RF waveform fidelity, propagation, "
               "receiver-input power, RF code alignment, and receiver behavior "
               "were not measured\",\n";
+  manifest << "  \"rf_output\": {\"contains\": "
+              "\"matched_code_interference_only\", "
+              "\"clean_gps_transmitted\": false},\n";
   manifest << "  \"safety\": {\"controlled_rf_only\": true, "
               "\"controlled_rf_confirmed\": "
            << (options.controlled_rf_confirmed ? "true" : "false")
@@ -904,13 +965,15 @@ static bool writeMatchedManifestAtomic(
            << reference_xyz[1] << ", " << reference_xyz[2]
            << "], \"sample_zero_gps_week\": " << sample_zero.week
            << ", \"sample_zero_gps_tow\": " << sample_zero.sec
+           << ", \"internal_alignment_source\": "
+              "\"synthetic_clean_state_discarded_not_transmitted\""
            << ", \"requested_target_prns\": [";
   for (size_t index = 0; index < plan.target_count; ++index)
     manifest << (index == 0 ? "" : ", ") << plan.target_prns[index];
   manifest << "], \"selected_target_prns\": [";
   for (size_t index = 0; index < plan.target_count; ++index)
     manifest << (index == 0 ? "" : ", ") << plan.target_prns[index];
-  manifest << "], \"full_run_target_allocation_passed\": "
+  manifest << "], \"startup_target_allocation_passed\": "
            << (result.target_allocation_passed ? "true" : "false") << "},\n";
   manifest << "  \"trajectory\": {\"schema\": "
               "\"gps-sdr-sim.target-trajectory.v1\", \"path\": \""
@@ -932,33 +995,31 @@ static bool writeMatchedManifestAtomic(
                        : 0.0;
     manifest << (index == 0 ? "" : ", ") << phase;
   }
-  manifest << "], \"requested_js_db\": " << plan.requested_js_db
-           << ", \"reference_js_db\": " << plan.reference_js_db
-           << ", \"jammer_scale\": " << plan.jammer_scale
-           << ", \"common_gain\": " << plan.common_gain
-           << ", \"predicted_component_bound\": "
+  manifest << "], \"output_amplitude_full_scale\": " << options.amplitude
+           << ", \"predicted_peak_full_scale\": "
            << plan.predicted_composite_bound
-           << ", \"predicted_headroom_db\": "
-           << plan.predicted_headroom_db << "},\n";
+           << ", \"predicted_headroom_db\": " << plan.predicted_headroom_db
+           << ", \"jammer_iq_fnv1a64\": ";
+  if (result.quantized_samples == 0)
+    manifest << "null";
+  else
+    manifest << "\"" << fnv1a64Hex(result.jammer_iq_fnv1a64) << "\"";
+  manifest << "},\n";
   manifest << "  \"sample_contract\": {\"requested_rate_hz\": "
-           << requested_rate_hz << ", \"actual_rate_hz\": "
-           << result.actual_rate_hz
+           << requested_rate_hz
+           << ", \"actual_rate_hz\": " << result.actual_rate_hz
            << ", \"format\": \"sc16_le\", \"iq_order\": \"IQ\", "
-              "\"planned_samples\": "
-           << plan.total_samples << ", \"rendered_clean_samples\": "
-           << result.rendered_clean_samples
+              "\"continuous\": true, \"planned_samples\": null, "
+              "\"dry_run_validation_samples\": "
+           << plan.total_samples << ", \"internal_alignment_samples\": "
+           << result.internal_alignment_samples
            << ", \"rendered_jammer_samples\": "
            << result.rendered_jammer_samples
-           << ", \"quantized_composite_samples\": "
-           << result.quantized_samples << ", \"sent_samples\": "
-           << result.sent_samples << "},\n";
-  manifest << "  \"envelope\": {\"onset_sample\": " << plan.onset_sample
-           << ", \"offset_sample\": " << plan.offset_sample
-           << ", \"ramp_samples\": " << plan.ramp_samples
-           << ", \"reference_start_sample\": "
-           << plan.reference_start_sample
-           << ", \"reference_end_sample\": "
-           << plan.reference_end_sample << "},\n";
+           << ", \"quantized_jammer_samples\": " << result.quantized_samples
+           << ", \"sent_jammer_samples\": " << result.sent_samples << "},\n";
+  manifest << "  \"activation\": {\"start_sample\": 0, "
+              "\"stop_condition\": \"SIGINT_or_SIGTERM\""
+           << "},\n";
   manifest << "  \"timing\": {\"start_mode\": \""
            << jsonEscape(result.start_mode.empty()
                              ? (trimble_mode ? "trimble_time_tag"
@@ -972,56 +1033,40 @@ static bool writeMatchedManifestAtomic(
            << ", \"prebuffer_samples\": "
            << (uint64_t)prebuffer_count *
                   (uint64_t)llround(plan.sample_rate_hz * EPOCH_TARGET_SEC)
-           << ", \"uhd_timed_start_s\": "
-           << result.uhd_start_time_seconds
+           << ", \"uhd_timed_start_s\": " << result.uhd_start_time_seconds
            << ", \"start_margin_met\": "
            << (result.start_margin_met ? "true" : "false") << "},\n";
   manifest << "  \"hardware\": {\"device_type\": \""
            << jsonEscape(result.device_type) << "\", \"product\": \""
            << jsonEscape(result.device_product) << "\", \"serial\": \""
            << jsonEscape(result.device_serial) << "\", \"address\": \""
-           << jsonEscape(device_address) << "\", \"tx_channel_count\": "
-           << result.tx_channel_count << ", \"selected_channel\": "
-           << tx_channel << ", \"requested_antenna\": \""
-           << jsonEscape(tx_antenna) << "\", \"actual_antenna\": \""
-           << jsonEscape(result.actual_antenna)
+           << jsonEscape(device_address)
+           << "\", \"tx_channel_count\": " << result.tx_channel_count
+           << ", \"selected_channel\": " << tx_channel
+           << ", \"requested_antenna\": \"" << jsonEscape(tx_antenna)
+           << "\", \"actual_antenna\": \"" << jsonEscape(result.actual_antenna)
            << "\", \"requested_center_frequency_hz\": " << TX_FREQUENCY
-           << ", \"actual_center_frequency_hz\": "
-           << result.actual_frequency_hz << ", \"clock_source\": \""
-           << jsonEscape(clock_source) << "\", \"time_source\": \""
-           << jsonEscape(time_source) << "\", \"requested_gain_db\": "
-           << requested_gain_db << ", \"actual_gain_db\": "
-           << result.actual_gain_db << "},\n";
-  manifest << "  \"measurements\": {\"clean_rms_sc16\": " << clean_rms
-           << ", \"jammer_rms_sc16\": " << jammer_rms
-           << ", \"composite_rms_sc16\": " << composite_rms
-           << ", \"composite_peak_sc16\": "
-           << result.mix_metrics.composite_peak << ", \"achieved_js_db\": ";
-  if (std::isfinite(achieved_js))
-    manifest << achieved_js;
-  else
-    manifest << "null";
-  manifest << ", \"minimum_epoch_js_db\": ";
-  if (std::isfinite(result.minimum_epoch_js_db))
-    manifest << result.minimum_epoch_js_db;
-  else
-    manifest << "null";
-  manifest << ", \"maximum_epoch_js_db\": ";
-  if (std::isfinite(result.maximum_epoch_js_db))
-    manifest << result.maximum_epoch_js_db;
-  else
-    manifest << "null";
-  manifest << ", \"clipped_components\": "
-           << result.mix_metrics.clipped_components
+           << ", \"actual_center_frequency_hz\": " << result.actual_frequency_hz
+           << ", \"clock_source\": \"" << jsonEscape(clock_source)
+           << "\", \"time_source\": \"" << jsonEscape(time_source)
+           << "\", \"requested_gain_db\": " << requested_gain_db
+           << ", \"actual_gain_db\": " << result.actual_gain_db << "},\n";
+  manifest << "  \"measurements\": {\"jammer_rms_full_scale\": "
+           << result.source_metrics.active_plateau_rms
+           << ", \"jammer_peak_full_scale\": "
+           << result.source_metrics.peak_component
+           << ", \"clipped_components\": "
+           << result.source_metrics.clipped_components
            << ", \"underflows\": " << result.underflows
            << ", \"sequence_errors\": " << result.sequence_errors
            << ", \"time_errors\": " << result.time_errors
-           << ", \"interrupted\": "
-           << (result.interrupted ? "true" : "false") << "}\n";
+           << ", \"operator_stopped\": "
+           << (result.interrupted ? "true" : "false")
+           << "}\n";
   manifest << "}\n";
   manifest.close();
-  if (!manifest || std::rename(temporary_path.c_str(),
-                               options.manifest_path.c_str()) != 0) {
+  if (!manifest ||
+      std::rename(temporary_path.c_str(), options.manifest_path.c_str()) != 0) {
     std::remove(temporary_path.c_str());
     return false;
   }
@@ -1064,27 +1109,28 @@ static int nextMatchedFrameSampleCount(MatchedSimulationState *state,
 
 static bool prepareMatchedFrame(
     MatchedSimulationState *state, const matched_code_plan_t &plan,
-    gpstime_t sample_zero, ionoutc_t *ionoutc, double gps_time_ppm,
-    double delt, int path_loss_enable, int fixed_gain, double ant_pat[37],
+    uint64_t sample_limit,
+    gpstime_t sample_zero, ionoutc_t *ionoutc, double gps_time_ppm, double delt,
+    int path_loss_enable, int fixed_gain, double ant_pat[37],
     const synth_config_t *synth_config, double elevation_mask,
     matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS],
     int *sample_count, std::string *error) {
-  gpstime_t block_start = getGpsTimeAtSampleOffset(
-      sample_zero, (long long)state->sample_offset, plan.sample_rate_hz,
-      gps_time_ppm);
+  gpstime_t block_start =
+      getGpsTimeAtSampleOffset(sample_zero, (long long)state->sample_offset,
+                               plan.sample_rate_hz, gps_time_ppm);
   gpstime_t block_end;
 
-  *sample_count = nextMatchedFrameSampleCount(state, plan.total_samples);
-  if (!validateMatchedTargetUsability(
-          plan, state->active_ephemeris, synth_config, block_start,
-          elevation_mask, state->sample_offset, error))
+  *sample_count = nextMatchedFrameSampleCount(state, sample_limit);
+  if (!validateMatchedTargetUsability(plan, state->active_ephemeris,
+                                      synth_config, block_start, elevation_mask,
+                                      state->sample_offset, error))
     return false;
   block_end = getGpsTimeAtSampleOffset(
       sample_zero, (long long)(state->sample_offset + *sample_count),
       plan.sample_rate_hz, gps_time_ppm);
   state->receiver_time = block_end;
-  prepareEpoch(state->channels, state->gains, state->active_ephemeris,
-               ionoutc, block_end, subGpsTime(block_end, block_start), delt,
+  prepareEpoch(state->channels, state->gains, state->active_ephemeris, ionoutc,
+               block_end, subGpsTime(block_end, block_start), delt,
                path_loss_enable, fixed_gain, ant_pat, FALSE, nullptr);
   return captureMatchedTargetStates(plan, state->channels, state->gains,
                                     state->sample_offset, states, error);
@@ -1110,16 +1156,16 @@ static void refreshMatchedStateIfNeeded(
                   nullptr, attack_config, required_prns);
 }
 
-static matched_code_source_config_t matchedSourceConfig(
-    const matched_code_plan_t &plan) {
+static matched_code_source_config_t
+matchedSourceConfig(const matched_code_plan_t &plan, uint64_t sample_limit) {
   matched_code_source_config_t config{};
 
   config.sample_rate_hz = plan.sample_rate_hz;
-  config.total_samples = plan.total_samples;
-  config.onset_sample = plan.onset_sample;
-  config.offset_sample = plan.offset_sample;
-  config.ramp_samples = plan.ramp_samples;
-  config.amplitude = 1.0;
+  config.total_samples = sample_limit;
+  config.onset_sample = 0;
+  config.offset_sample = sample_limit;
+  config.ramp_samples = 0;
+  config.amplitude = plan.jammer_scale;
   config.phase_seed = plan.phase_seed;
   config.target_count = plan.target_count;
   for (size_t index = 0; index < plan.target_count; ++index)
@@ -1127,34 +1173,24 @@ static matched_code_source_config_t matchedSourceConfig(
   return config;
 }
 
-static void mergeMixMetrics(matched_code_mix_metrics_t *total,
-                            const matched_code_mix_metrics_t &epoch) {
-  total->samples += epoch.samples;
-  total->plateau_samples += epoch.plateau_samples;
-  total->clipped_components += epoch.clipped_components;
-  total->clean_power += epoch.clean_power;
-  total->jammer_power += epoch.jammer_power;
-  total->composite_power += epoch.composite_power;
-  total->composite_peak =
-      std::max(total->composite_peak, epoch.composite_peak);
-}
-
-static bool renderMatchedFrame(
-    MatchedSimulationState *state, matched_code_source_t *source,
-    const matched_code_plan_t &plan, gpstime_t sample_zero,
-    ionoutc_t *ionoutc, double gps_time_ppm, double delt,
-    int path_loss_enable, int fixed_gain, double ant_pat[37],
-    const synth_config_t *synth_config, double elevation_mask,
-    std::vector<double> *clean, std::vector<double> *jammer,
-    std::vector<int16_t> *composite, std::ofstream *trajectory,
-    MatchedCodeRunResult *result, int *sample_count, std::string *error) {
+static bool
+renderMatchedFrame(MatchedSimulationState *state, matched_code_source_t *source,
+                   const matched_code_plan_t &plan, uint64_t sample_limit,
+                   gpstime_t sample_zero, ionoutc_t *ionoutc,
+                   double gps_time_ppm, double delt, int path_loss_enable,
+                   int fixed_gain, double ant_pat[37],
+                   const synth_config_t *synth_config, double elevation_mask,
+                   std::vector<double> *alignment_discard,
+                   std::vector<int16_t> *jammer_output,
+                   std::ofstream *trajectory, MatchedCodeRunResult *result,
+                   int *sample_count, std::string *error) {
   matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS];
   char source_error[256];
 
-  if (!prepareMatchedFrame(state, plan, sample_zero, ionoutc, gps_time_ppm,
-                           delt, path_loss_enable, fixed_gain, ant_pat,
-                           synth_config, elevation_mask, states, sample_count,
-                           error))
+  if (!prepareMatchedFrame(state, plan, sample_limit, sample_zero, ionoutc,
+                           gps_time_ppm, delt, path_loss_enable, fixed_gain,
+                           ant_pat, synth_config, elevation_mask, states,
+                           sample_count, error))
     return false;
   if (trajectory != nullptr)
     writeTrajectoryStates(*trajectory, states, plan.target_count);
@@ -1163,36 +1199,23 @@ static bool renderMatchedFrame(
     *error = source_error;
     return false;
   }
-  clean->resize((size_t)*sample_count * 2);
-  jammer->resize((size_t)*sample_count * 2);
-  composite->resize((size_t)*sample_count * 2);
-  renderCleanEpochWide(clean->data(), *sample_count, state->channels,
+  alignment_discard->resize((size_t)*sample_count * 2);
+  jammer_output->resize((size_t)*sample_count * 2);
+  renderCleanEpochWide(alignment_discard->data(), *sample_count, state->channels,
                        state->gains, delt);
-  if (matched_code_source_render_f64(source, jammer->data(),
-                                     (size_t)*sample_count) !=
+  if (matched_code_source_render_sc16(source, jammer_output->data(),
+                                      (size_t)*sample_count) !=
       (size_t)*sample_count) {
     *error = "shared matched-code renderer stopped before the epoch ended";
     return false;
   }
-  matched_code_mix_metrics_t epoch_metrics;
-  matched_code_mix_metrics_init(&epoch_metrics);
-  if (matched_code_mix_sc16(&plan, state->sample_offset, clean->data(),
-                            jammer->data(), composite->data(),
-                            (size_t)*sample_count, &epoch_metrics) != 0) {
-    *error = "wide digital mixer rejected the epoch";
-    return false;
-  }
-  mergeMixMetrics(&result->mix_metrics, epoch_metrics);
-  double epoch_js = matched_code_mix_achieved_js_db(&epoch_metrics);
-  if (std::isfinite(epoch_js)) {
-    result->minimum_epoch_js_db =
-        std::min(result->minimum_epoch_js_db, epoch_js);
-    result->maximum_epoch_js_db =
-        std::max(result->maximum_epoch_js_db, epoch_js);
-  }
-  result->rendered_clean_samples += (uint64_t)*sample_count;
+  result->jammer_iq_fnv1a64 =
+      updateFnv1a64Sc16(result->jammer_iq_fnv1a64, jammer_output->data(),
+                        (size_t)*sample_count);
+  result->internal_alignment_samples += (uint64_t)*sample_count;
   result->rendered_jammer_samples += (uint64_t)*sample_count;
   result->quantized_samples += (uint64_t)*sample_count;
+  matched_code_source_get_metrics(source, &result->source_metrics);
   state->sample_offset += (uint64_t)*sample_count;
   return true;
 }
@@ -1214,7 +1237,7 @@ static bool runMatchedPreflight(
   MatchedSimulationState state;
   matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS];
   int saved_allocated[MAX_SAT];
-  double clean_component_bound = 0.0;
+  std::vector<double> alignment_discard;
   std::string trajectory_temporary = options.trajectory_path + ".tmp";
   std::ofstream trajectory(trajectory_temporary,
                            std::ios::out | std::ios::trunc);
@@ -1227,25 +1250,22 @@ static bool runMatchedPreflight(
   memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
   initializeMatchedSimulationState(
       &state, initial_channels, initial_gains, initial_active_ephemeris,
-      initial_synthetic_ephemeris, initial_ephemeris_index,
-      initial_epoch_plan, sample_zero);
+      initial_synthetic_ephemeris, initial_ephemeris_index, initial_epoch_plan,
+      sample_zero);
 
   while (state.sample_offset < plan->total_samples) {
     int sample_count;
-    if (!prepareMatchedFrame(&state, *plan, sample_zero, ionoutc,
-                             gps_time_ppm, delt, path_loss_enable, fixed_gain,
-                             ant_pat, synth_config, elevation_mask, states,
-                             &sample_count, error)) {
+    if (!prepareMatchedFrame(&state, *plan, plan->total_samples, sample_zero,
+                             ionoutc, gps_time_ppm, delt, path_loss_enable,
+                             fixed_gain, ant_pat, synth_config, elevation_mask,
+                             states, &sample_count, error)) {
       memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
       return false;
     }
     writeTrajectoryStates(trajectory, states, plan->target_count);
-    double epoch_bound = 0.0;
-    for (int channel = 0; channel < MAX_CHAN; ++channel) {
-      if (state.channels[channel].prn > 0)
-        epoch_bound += fabs((double)state.gains[channel]) * 250.0 / 128.0;
-    }
-    clean_component_bound = std::max(clean_component_bound, epoch_bound);
+    alignment_discard.resize((size_t)sample_count * 2);
+    renderCleanEpochWide(alignment_discard.data(), sample_count, state.channels,
+                         state.gains, delt);
     state.sample_offset += (uint64_t)sample_count;
     refreshMatchedStateIfNeeded(
         &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
@@ -1267,85 +1287,6 @@ static bool runMatchedPreflight(
   }
   result->trajectory_sha256 = trajectory_hash;
   result->target_allocation_passed = true;
-
-  initializeMatchedSimulationState(
-      &state, initial_channels, initial_gains, initial_active_ephemeris,
-      initial_synthetic_ephemeris, initial_ephemeris_index,
-      initial_epoch_plan, sample_zero);
-  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
-  matched_code_source_config_t source_config = matchedSourceConfig(*plan);
-  matched_code_source_t source;
-  char source_error[256];
-  if (matched_code_source_init(&source, &source_config, source_error,
-                               sizeof(source_error)) != 0) {
-    *error = source_error;
-    return false;
-  }
-  int max_epoch_samples = state.epoch_plan.max_samples;
-  std::vector<double> clean((size_t)max_epoch_samples * 2);
-  std::vector<double> jammer((size_t)max_epoch_samples * 2);
-  long double clean_reference_power = 0.0L;
-  long double jammer_reference_power = 0.0L;
-  uint64_t reference_samples = 0;
-
-  while (state.sample_offset < plan->reference_end_sample) {
-    int sample_count;
-    if (!prepareMatchedFrame(&state, *plan, sample_zero, ionoutc,
-                             gps_time_ppm, delt, path_loss_enable, fixed_gain,
-                             ant_pat, synth_config, elevation_mask, states,
-                             &sample_count, error)) {
-      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
-      return false;
-    }
-    if (matched_code_source_set_epoch(&source, states, plan->target_count,
-                                      source_error,
-                                      sizeof(source_error)) != 0) {
-      *error = source_error;
-      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
-      return false;
-    }
-    renderCleanEpochWide(clean.data(), sample_count, state.channels,
-                         state.gains, delt);
-    if (matched_code_source_render_f64(&source, jammer.data(), sample_count) !=
-        (size_t)sample_count) {
-      *error = "shared matched-code renderer stopped during power preflight";
-      memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
-      return false;
-    }
-    for (int index = 0; index < sample_count; ++index) {
-      uint64_t sample = state.sample_offset + (uint64_t)index;
-      if (sample < plan->reference_start_sample ||
-          sample >= plan->reference_end_sample)
-        continue;
-      clean_reference_power +=
-          (long double)clean[2 * index] * clean[2 * index] +
-          (long double)clean[2 * index + 1] * clean[2 * index + 1];
-      jammer_reference_power +=
-          (long double)jammer[2 * index] * jammer[2 * index] +
-          (long double)jammer[2 * index + 1] * jammer[2 * index + 1];
-      ++reference_samples;
-    }
-    state.sample_offset += (uint64_t)sample_count;
-    refreshMatchedStateIfNeeded(
-        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
-        elevation_mask, required_prns, plan->sample_rate_hz);
-  }
-  memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
-  if (reference_samples == 0) {
-    *error = "digital J/S reference interval is empty";
-    return false;
-  }
-  double clean_reference_rms =
-      sqrt((double)(clean_reference_power / reference_samples));
-  double jammer_reference_rms =
-      sqrt((double)(jammer_reference_power / reference_samples));
-  if (matched_code_plan_calibrate(
-          plan, clean_reference_rms, jammer_reference_rms,
-          clean_component_bound, sqrt((double)plan->target_count),
-          source_error, sizeof(source_error)) != 0) {
-    *error = source_error;
-    return false;
-  }
   return true;
 }
 
@@ -1403,42 +1344,43 @@ static bool runMatchedDryRender(
     std::string *error) {
   MatchedSimulationState state;
   int saved_allocated[MAX_SAT];
-  matched_code_source_config_t source_config = matchedSourceConfig(plan);
+  matched_code_source_config_t source_config =
+      matchedSourceConfig(plan, plan.total_samples);
   matched_code_source_t source;
   char source_error[256];
-  std::vector<double> clean;
-  std::vector<double> jammer;
-  std::vector<int16_t> composite;
+  std::vector<double> alignment_discard;
+  std::vector<int16_t> jammer_output;
 
   if (matched_code_source_init(&source, &source_config, source_error,
                                sizeof(source_error)) != 0) {
     *error = source_error;
     return false;
   }
-  matched_code_mix_metrics_init(&result->mix_metrics);
-  result->rendered_clean_samples = 0;
+  result->internal_alignment_samples = 0;
   result->rendered_jammer_samples = 0;
   result->quantized_samples = 0;
+  result->jammer_iq_fnv1a64 = FNV1A64_OFFSET_BASIS;
+  result->source_metrics = {};
   memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
   initializeMatchedSimulationState(
       &state, initial_channels, initial_gains, initial_active_ephemeris,
-      initial_synthetic_ephemeris, initial_ephemeris_index,
-      initial_epoch_plan, sample_zero);
+      initial_synthetic_ephemeris, initial_ephemeris_index, initial_epoch_plan,
+      sample_zero);
 
   while (state.sample_offset < plan.total_samples) {
     int sample_count;
     if (!renderMatchedFrame(
-            &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
-            path_loss_enable, fixed_gain, ant_pat, synth_config,
-            elevation_mask, &clean, &jammer, &composite, nullptr, result,
-            &sample_count, error)) {
+            &state, &source, plan, plan.total_samples, sample_zero, ionoutc,
+            gps_time_ppm, delt, path_loss_enable, fixed_gain, ant_pat,
+            synth_config, elevation_mask, &alignment_discard, &jammer_output,
+            nullptr, result, &sample_count, error)) {
       memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
       return false;
     }
-    refreshMatchedStateIfNeeded(
-        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
-        elevation_mask, required_prns, plan.sample_rate_hz);
-    if (result->mix_metrics.clipped_components > 0) {
+    refreshMatchedStateIfNeeded(&state, eph, synth_source, neph, ionoutc,
+                                synth_config, attack_config, elevation_mask,
+                                required_prns, plan.sample_rate_hz);
+    if (result->source_metrics.clipped_components > 0) {
       *error = "unexpected SC16 clipping during dry-run render";
       memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
       return false;
@@ -1447,7 +1389,7 @@ static bool runMatchedDryRender(
   memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
   matched_code_source_get_metrics(&source, &result->source_metrics);
   return matched_code_source_done(&source) &&
-         result->rendered_clean_samples == plan.total_samples &&
+         result->internal_alignment_samples == plan.total_samples &&
          result->rendered_jammer_samples == plan.total_samples &&
          result->quantized_samples == plan.total_samples;
 }
@@ -1476,15 +1418,17 @@ static bool runMatchedTransmitter(
     const attack_config_t *attack_config, double elevation_mask,
     const int *required_prns, double gps_time_ppm, double delt,
     int path_loss_enable, int fixed_gain, double ant_pat[37],
-    std::string *error) {
+  std::string *error) {
+  const uint64_t continuous_sample_limit =
+      std::numeric_limits<uint64_t>::max();
   MatchedSimulationState state;
   int saved_allocated[MAX_SAT];
-  matched_code_source_config_t source_config = matchedSourceConfig(plan);
+  matched_code_source_config_t source_config =
+      matchedSourceConfig(plan, continuous_sample_limit);
   matched_code_source_t source;
   char source_error[256];
-  std::vector<double> clean;
-  std::vector<double> jammer;
-  std::vector<int16_t> composite;
+  std::vector<double> alignment_discard;
+  std::vector<int16_t> jammer_output;
   std::deque<MatchedFrame> queue;
   std::string trajectory_temporary = options.trajectory_path + ".tmp";
   std::ofstream trajectory(trajectory_temporary,
@@ -1501,11 +1445,12 @@ static bool runMatchedTransmitter(
     *error = source_error;
     return false;
   }
-  matched_code_mix_metrics_init(&result->mix_metrics);
-  result->rendered_clean_samples = 0;
+  result->internal_alignment_samples = 0;
   result->rendered_jammer_samples = 0;
   result->quantized_samples = 0;
   result->sent_samples = 0;
+  result->jammer_iq_fnv1a64 = FNV1A64_OFFSET_BASIS;
+  result->source_metrics = {};
   memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
   initializeMatchedSimulationState(
       &state, initial_channels, initial_gains, initial_active_ephemeris,
@@ -1513,26 +1458,24 @@ static bool runMatchedTransmitter(
       initial_epoch_plan, sample_zero);
   installSignalHandlers();
 
-  for (int buffered = 0;
-       buffered < prebuffer_count && state.sample_offset < plan.total_samples &&
-       !stop_requested;
+  for (int buffered = 0; buffered < prebuffer_count && !stop_requested;
        ++buffered) {
     MatchedFrame frame;
     int sample_count;
     if (!renderMatchedFrame(
-            &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
-            path_loss_enable, fixed_gain, ant_pat, synth_config,
-            elevation_mask, &clean, &jammer, &composite, &trajectory, result,
-            &sample_count, error)) {
+            &state, &source, plan, continuous_sample_limit, sample_zero,
+            ionoutc, gps_time_ppm, delt, path_loss_enable, fixed_gain, ant_pat,
+            synth_config, elevation_mask, &alignment_discard, &jammer_output,
+            &trajectory, result, &sample_count, error)) {
       memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
       return false;
     }
     frame.sample_count = (size_t)sample_count;
-    frame.samples.assign(composite.begin(), composite.end());
+    frame.samples.assign(jammer_output.begin(), jammer_output.end());
     queue.push_back(std::move(frame));
-    refreshMatchedStateIfNeeded(
-        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
-        elevation_mask, required_prns, plan.sample_rate_hz);
+    refreshMatchedStateIfNeeded(&state, eph, synth_source, neph, ionoutc,
+                                synth_config, attack_config, elevation_mask,
+                                required_prns, plan.sample_rate_hz);
   }
   if (queue.empty()) {
     *error = stop_requested ? "interrupted during prebuffer"
@@ -1541,7 +1484,7 @@ static bool runMatchedTransmitter(
     memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
     return false;
   }
-  if (result->mix_metrics.clipped_components > 0) {
+  if (result->source_metrics.clipped_components > 0) {
     *error = "unexpected SC16 clipping during prebuffer";
     memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
     return false;
@@ -1594,81 +1537,80 @@ static bool runMatchedTransmitter(
   };
 
   try {
-  usrp->set_time_now(uhd::time_spec_t(0.0));
-  result->uhd_start_time_seconds = start_delay_seconds;
-  result->start_margin_met = start_delay_seconds >= TX_START_LEAD_MIN_SEC;
-  uhd::tx_metadata_t metadata;
-  metadata.start_of_burst = true;
-  metadata.end_of_burst = false;
-  metadata.has_time_spec = true;
-  metadata.time_spec = uhd::time_spec_t(start_delay_seconds);
-  fprintf(stderr,
-          "[TX] Matched-code composite timed start in %.3f ms with %zu "
-          "prebuffered frame(s)\n",
-          start_delay_seconds * 1000.0, queue.size());
+    usrp->set_time_now(uhd::time_spec_t(0.0));
+    result->uhd_start_time_seconds = start_delay_seconds;
+    result->start_margin_met = start_delay_seconds >= TX_START_LEAD_MIN_SEC;
+    uhd::tx_metadata_t metadata;
+    metadata.start_of_burst = true;
+    metadata.end_of_burst = false;
+    metadata.has_time_spec = true;
+    metadata.time_spec = uhd::time_spec_t(start_delay_seconds);
+    fprintf(stderr,
+            "[TX] Matched-code jammer-only timed start in %.3f ms with %zu "
+            "prebuffered frame(s)\n",
+            start_delay_seconds * 1000.0, queue.size());
 
-  while (!queue.empty() && !fatal && !stop_requested) {
-    MatchedFrame &frame = queue.front();
-    size_t sent_from_frame = 0;
-    double timeout = metadata.has_time_spec ? start_delay_seconds + 1.0 : 3.0;
+    while (!queue.empty() && !fatal && !stop_requested) {
+      MatchedFrame &frame = queue.front();
+      size_t sent_from_frame = 0;
+      double timeout = metadata.has_time_spec ? start_delay_seconds + 1.0 : 3.0;
 
-    while (sent_from_frame < frame.sample_count && !fatal &&
-           !stop_requested) {
-      size_t request =
-          std::min(max_send_samples, frame.sample_count - sent_from_frame);
-      burst_started = true;
-      size_t sent = stream->send(&frame.samples[sent_from_frame * 2], request,
-                                 metadata, timeout);
-      if (sent == 0) {
-        *error = "UHD send returned zero samples";
-        fatal = true;
-        break;
+      while (sent_from_frame < frame.sample_count && !fatal &&
+             !stop_requested) {
+        size_t request =
+            std::min(max_send_samples, frame.sample_count - sent_from_frame);
+        burst_started = true;
+        size_t sent = stream->send(&frame.samples[sent_from_frame * 2], request,
+                                   metadata, timeout);
+        if (sent == 0) {
+          *error = "UHD send returned zero samples";
+          fatal = true;
+          break;
+        }
+        sent_from_frame += sent;
+        result->sent_samples += (uint64_t)sent;
+        metadata.start_of_burst = false;
+        metadata.has_time_spec = false;
+        timeout = 3.0;
       }
-      sent_from_frame += sent;
-      result->sent_samples += (uint64_t)sent;
-      metadata.start_of_burst = false;
-      metadata.has_time_spec = false;
-      timeout = 3.0;
+      drainMatchedAsync(stream, 0.0, result, &fatal);
+      queue.pop_front();
+
+      if (!fatal && !stop_requested) {
+        MatchedFrame next_frame;
+        int sample_count;
+        if (!renderMatchedFrame(
+                &state, &source, plan, continuous_sample_limit, sample_zero,
+                ionoutc, gps_time_ppm, delt, path_loss_enable, fixed_gain,
+                ant_pat, synth_config, elevation_mask, &alignment_discard,
+                &jammer_output, &trajectory, result, &sample_count, error)) {
+          fatal = true;
+          break;
+        }
+        next_frame.sample_count = (size_t)sample_count;
+        next_frame.samples.assign(jammer_output.begin(), jammer_output.end());
+        queue.push_back(std::move(next_frame));
+        refreshMatchedStateIfNeeded(&state, eph, synth_source, neph, ionoutc,
+                                    synth_config, attack_config, elevation_mask,
+                                    required_prns, plan.sample_rate_hz);
+        if (result->source_metrics.clipped_components > 0) {
+          *error = "unexpected SC16 clipping during live render";
+          fatal = true;
+        }
+      }
     }
-    drainMatchedAsync(stream, 0.0, result, &fatal);
-    queue.pop_front();
 
-    if (!fatal && !stop_requested &&
-        state.sample_offset < plan.total_samples) {
-      MatchedFrame next_frame;
-      int sample_count;
-      if (!renderMatchedFrame(
-              &state, &source, plan, sample_zero, ionoutc, gps_time_ppm, delt,
-              path_loss_enable, fixed_gain, ant_pat, synth_config,
-              elevation_mask, &clean, &jammer, &composite, &trajectory,
-              result, &sample_count, error)) {
-        fatal = true;
-        break;
-      }
-      next_frame.sample_count = (size_t)sample_count;
-      next_frame.samples.assign(composite.begin(), composite.end());
-      queue.push_back(std::move(next_frame));
-      refreshMatchedStateIfNeeded(
-          &state, eph, synth_source, neph, ionoutc, synth_config,
-          attack_config, elevation_mask, required_prns, plan.sample_rate_hz);
-      if (result->mix_metrics.clipped_components > 0) {
-        *error = "unexpected SC16 clipping during live render";
-        fatal = true;
-      }
-    }
-  }
-
-  metadata.start_of_burst = false;
-  metadata.end_of_burst = true;
-  metadata.has_time_spec = false;
-  stream->send("", 0, metadata, 3.0);
-  burst_finished = true;
-  drainMatchedAsync(stream, 0.5, result, &fatal);
+    metadata.start_of_burst = false;
+    metadata.end_of_burst = true;
+    metadata.has_time_spec = false;
+    stream->send("", 0, metadata, 3.0);
+    burst_finished = true;
+    drainMatchedAsync(stream, 0.5, result, &fatal);
   } catch (const std::exception &transmit_error) {
     fatal = true;
     if (error->empty())
-      *error = std::string("UHD live transmission failed: ") +
-               transmit_error.what();
+      *error =
+          std::string("UHD live transmission failed: ") + transmit_error.what();
     fprintf(stderr, "[UHD] ERROR: %s\n", transmit_error.what());
     best_effort_end_of_burst();
   } catch (...) {
@@ -1698,12 +1640,6 @@ static bool runMatchedTransmitter(
     }
   }
 
-  bool exact_counts =
-      result->rendered_clean_samples == plan.total_samples &&
-      result->rendered_jammer_samples == plan.total_samples &&
-      result->quantized_samples == plan.total_samples &&
-      result->sent_samples == plan.total_samples &&
-      matched_code_source_done(&source);
   if (error->empty()) {
     if (result->time_errors > 0)
       *error = "UHD reported a timed-transmission error";
@@ -1711,17 +1647,17 @@ static bool runMatchedTransmitter(
       *error = "UHD reported a TX sequence error";
     else if (result->underflows > 0)
       *error = "UHD reported a TX underflow";
-    else if (result->mix_metrics.clipped_components > 0)
-      *error = "the composite clipped during live rendering";
-    else if (result->interrupted)
-      *error = "the finite matched-code run was interrupted";
-    else if (!exact_counts)
-      *error = "rendered, quantized, and sent sample counts are not exact";
+    else if (result->source_metrics.clipped_components > 0)
+      *error = "the matched-code jammer clipped during live rendering";
+    else if (!result->interrupted)
+      *error = "the continuous matched-code source ended before operator stop";
+    else if (result->sent_samples == 0)
+      *error = "operator stop occurred before any jammer samples were sent";
   }
-  return !fatal && !result->interrupted && exact_counts &&
+  return !fatal && result->interrupted && result->sent_samples > 0 &&
          result->underflows == 0 && result->sequence_errors == 0 &&
          result->time_errors == 0 &&
-         result->mix_metrics.clipped_components == 0;
+         result->source_metrics.clipped_components == 0;
 }
 
 ////////////////////////////////////////////////////////////
@@ -1778,18 +1714,17 @@ static void x300_usage(void) {
       "for RF B)\n"
       "  --antenna <name>            TX antenna (default TX/RX)\n"
       "\n"
-      "Finite matched-code composite mode:\n"
-      "  --matched-code-target-prns <list>  Enable mode with ordered PRNs\n"
-      "  --matched-code-js-db <dB>          Total digital matched-code J/S\n"
+      "Continuous matched-code jammer-only mode:\n"
+      "  --matched-code-target-prns <list>  Sole jammer PRN selector\n"
+      "  --matched-code-amplitude <value>   Jammer RMS/full-scale amplitude\n"
       "  --matched-code-phase-seed <N>      Independent carrier-phase seed\n"
-      "  --matched-code-onset <sec>         Jammer rise start\n"
-      "  --matched-code-offset <sec>        Jammer fall end\n"
-      "  --matched-code-ramp <sec>          Raised-cosine ramp (default 0.01)\n"
       "  --manifest <file>                  Required run manifest output\n"
       "  --trajectory <file>                Target-state artifact output\n"
       "  --calibration-id <text>            Controlled setup identity\n"
       "  --confirm-controlled-rf            Required for live matched-code TX\n"
-      "  --dry-run                          Validate without opening UHD\n"
+      "  --dry-run                          Validate 100 ms without opening UHD\n"
+      "  Mode starts at sample zero and runs until SIGINT/SIGTERM; -P, -d,\n"
+      "  -n, J/S, onset, offset, and ramp controls are not accepted.\n"
       "\n"
       "Trimble 1PPS time-tag options (mutually exclusive with -n and "
       "--gps-week/tow):\n"
@@ -1893,6 +1828,7 @@ int main(int argc, char *argv[]) {
   int timeoverwrite = FALSE;
   int has_revive_mode = FALSE;
   int attack_enabled = FALSE;
+  int partial_prns_set = FALSE;
   unsigned int attack_noise_state[MAX_SAT];
   double jam_js_linear = 10.0;
 
@@ -2172,16 +2108,18 @@ int main(int argc, char *argv[]) {
       matched_options.target_prns = val;
       continue;
     }
-    if (strcmp(opt, "matched-code-js-db") == 0) {
+    if (strcmp(opt, "matched-code-amplitude") == 0) {
       char *end = NULL;
       errno = 0;
-      matched_options.js_db = strtod(val, &end);
+      matched_options.amplitude = strtod(val, &end);
       if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
-          !std::isfinite(matched_options.js_db)) {
-        fprintf(stderr, "ERROR: --matched-code-js-db must be finite.\n");
+          !std::isfinite(matched_options.amplitude) ||
+          matched_options.amplitude <= 0.0 || matched_options.amplitude > 1.0) {
+        fprintf(stderr,
+                "ERROR: --matched-code-amplitude must be in (0, 1].\n");
         return 1;
       }
-      matched_options.js_set = true;
+      matched_options.amplitude_set = true;
       continue;
     }
     if (strcmp(opt, "matched-code-phase-seed") == 0) {
@@ -2197,30 +2135,6 @@ int main(int argc, char *argv[]) {
       }
       matched_options.phase_seed = (uint64_t)parsed;
       matched_options.phase_seed_set = true;
-      continue;
-    }
-    if (strcmp(opt, "matched-code-onset") == 0 ||
-        strcmp(opt, "matched-code-offset") == 0 ||
-        strcmp(opt, "matched-code-ramp") == 0) {
-      char *end = NULL;
-      double parsed;
-      errno = 0;
-      parsed = strtod(val, &end);
-      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
-          !std::isfinite(parsed) || parsed < 0.0) {
-        fprintf(stderr, "ERROR: --%s must be a non-negative number.\n", opt);
-        return 1;
-      }
-      if (strcmp(opt, "matched-code-onset") == 0) {
-        matched_options.onset_seconds = parsed;
-        matched_options.onset_set = true;
-      } else if (strcmp(opt, "matched-code-offset") == 0) {
-        matched_options.offset_seconds = parsed;
-        matched_options.offset_set = true;
-      } else {
-        matched_options.ramp_seconds = parsed;
-        matched_options.ramp_set = true;
-      }
       continue;
     }
     if (strcmp(opt, "manifest") == 0) {
@@ -2382,6 +2296,7 @@ int main(int argc, char *argv[]) {
       duration = atof(optarg);
       break;
     case 'P':
+      partial_prns_set = TRUE;
       if (parsePartialPrns(&attack_cfg, optarg) == FALSE) {
         fprintf(stderr, "ERROR: Invalid PRN list.\n");
         return 1;
@@ -2552,6 +2467,7 @@ int main(int argc, char *argv[]) {
 
   if (!matched_options.enabled &&
       (matched_options.dry_run || matched_options.controlled_rf_confirmed ||
+       matched_options.amplitude_set || matched_options.phase_seed_set ||
        !matched_options.manifest_path.empty() ||
        !matched_options.trajectory_path.empty() ||
        !matched_options.calibration_id.empty())) {
@@ -2564,18 +2480,25 @@ int main(int argc, char *argv[]) {
   if (matched_options.enabled) {
     char plan_error[256] = "";
 
-    if (!duration_specified || !matched_options.js_set ||
-        !matched_options.phase_seed_set || !matched_options.onset_set ||
-        !matched_options.offset_set || matched_options.manifest_path.empty()) {
+    if (!matched_options.amplitude_set || !matched_options.phase_seed_set ||
+        matched_options.manifest_path.empty()) {
       fprintf(stderr,
-              "ERROR: matched-code mode requires -d, target PRNs, digital "
-              "J/S, phase seed, onset, offset, and --manifest.\n");
+              "ERROR: matched-code mode requires target PRNs, output "
+              "amplitude, phase seed, and --manifest.\n");
       return 1;
     }
-    if (stream_forever || current_time_mode == TRUE) {
-      fprintf(stderr,
-              "ERROR: matched-code mode is finite and rejects stream-now/"
-              "continuous timing.\n");
+    if (duration_specified) {
+      fprintf(stderr, "ERROR: continuous matched-code mode does not accept -d.\n");
+      return 1;
+    }
+    if (current_time_mode == TRUE) {
+      fprintf(stderr, "ERROR: continuous matched-code mode does not accept -n; "
+                      "use the calibrated timed-start options.\n");
+      return 1;
+    }
+    if (partial_prns_set == TRUE) {
+      fprintf(stderr, "ERROR: matched-code jammer-only mode rejects -P; "
+                      "--matched-code-target-prns is the sole jammer selector.\n");
       return 1;
     }
     if (attack_enabled || matched_options.legacy_js_set ||
@@ -2598,24 +2521,16 @@ int main(int argc, char *argv[]) {
               "100 ms epoch sample count.\n");
       return 1;
     }
-    if (matched_code_plan_init(
-            &matched_plan, samp_freq, duration, matched_options.onset_seconds,
-            matched_options.offset_seconds, matched_options.ramp_seconds,
-            matched_options.target_prns.c_str(), matched_options.js_db,
-            matched_options.phase_seed, plan_error, sizeof(plan_error)) != 0) {
+    if (!initializeMatchedJammerPlan(
+            &matched_plan, samp_freq, matched_options.target_prns,
+            matched_options.amplitude, matched_options.phase_seed, plan_error,
+            sizeof(plan_error))) {
       fprintf(stderr, "ERROR: invalid matched-code plan: %s\n", plan_error);
       return 1;
     }
     for (size_t target = 0; target < matched_plan.target_count; ++target) {
       int prn = matched_plan.target_prns[target];
       matched_required_prns[prn - 1] = 1;
-      if (attack_cfg.partial_mode && !attack_cfg.prn_select[prn - 1]) {
-        fprintf(stderr,
-                "ERROR: partial constellation does not contain target PRN "
-                "%d.\n",
-                prn);
-        return 1;
-      }
     }
     if (matched_options.trajectory_path.empty()) {
       std::string base = matched_options.manifest_path;
@@ -3087,16 +3002,13 @@ int main(int argc, char *argv[]) {
     char plan_error[256] = "";
     if (fabs(samp_freq * EPOCH_TARGET_SEC -
              round(samp_freq * EPOCH_TARGET_SEC)) > 1.0e-6 ||
-        matched_code_plan_init(
-            &matched_plan, samp_freq, duration,
-            matched_options.onset_seconds, matched_options.offset_seconds,
-            matched_options.ramp_seconds,
-            matched_options.target_prns.c_str(), matched_options.js_db,
-            matched_options.phase_seed, plan_error, sizeof(plan_error)) != 0) {
+        !initializeMatchedJammerPlan(
+            &matched_plan, samp_freq, matched_options.target_prns,
+            matched_options.amplitude, matched_options.phase_seed, plan_error,
+            sizeof(plan_error))) {
       fprintf(stderr,
               "ERROR: actual-rate matched-code plan is unsupported: %s\n",
-              plan_error[0] != '\0' ? plan_error
-                                     : "non-integral 100 ms epoch");
+              plan_error[0] != '\0' ? plan_error : "non-integral 100 ms epoch");
       return finish_matched_early_failure(
           "preflight_error", "actual-rate matched-code plan is unsupported");
     }
@@ -3241,7 +3153,9 @@ int main(int argc, char *argv[]) {
 
   fprintf(stderr, "Start time = %4d/%02d/%02d,%02d:%02d:%09.6f (%d:%.9f)\n",
           t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec, g0.week, g0.sec);
-  if (stream_forever)
+  if (matched_options.enabled)
+    fprintf(stderr, "Duration = continuous until SIGINT/SIGTERM\n");
+  else if (stream_forever)
     fprintf(stderr, "Duration = streaming until interrupted\n");
   else
     fprintf(stderr, "Duration = %.1f [sec]\n", (double)numd / 10.0);
@@ -3251,8 +3165,9 @@ int main(int argc, char *argv[]) {
     scenario << std::setprecision(17) << matched_ephemeris_sha256 << '|'
              << xyz[0][0] << '|' << xyz[0][1] << '|' << xyz[0][2] << '|'
              << g0.week << '|' << g0.sec << '|' << matched_plan.sample_rate_hz
-             << '|' << matched_plan.total_samples << '|'
-             << matched_options.target_prns << '|';
+             << "|continuous|" << matched_options.target_prns << '|'
+             << matched_options.amplitude << '|' << matched_options.phase_seed
+             << '|';
     for (sv = 0; sv < MAX_SAT; ++sv) {
       scenario << (int)synth_cfg.mode[sv] << ':' << synth_cfg.source_prn[sv]
                << ':' << synth_cfg.azimuth[sv] << ':'
@@ -3436,13 +3351,11 @@ int main(int argc, char *argv[]) {
     }
 
     fprintf(stderr,
-            "\n[MATCHED] Preflight: targets=%s samples=%llu onset=%llu "
-            "offset=%llu ramp=%llu\n",
+            "\n[MATCHED] Jammer-only preflight: targets=%s validation-samples="
+            "%llu amplitude=%.9f predicted-headroom=%.3f dB\n",
             matched_options.target_prns.c_str(),
             (unsigned long long)matched_plan.total_samples,
-            (unsigned long long)matched_plan.onset_sample,
-            (unsigned long long)matched_plan.offset_sample,
-            (unsigned long long)matched_plan.ramp_samples);
+            matched_options.amplitude, matched_plan.predicted_headroom_db);
     if (!runMatchedPreflight(
             &matched_plan, &matched_result, matched_options, chan, gain,
             active_eph, &synth_eph, ieph, &epoch_plan, eph,
@@ -3463,25 +3376,21 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     fprintf(stderr,
-            "[MATCHED] Reference clean RMS %.6f SC16, source RMS %.9f, "
-            "fixed scale %.9f, common gain %.9f, predicted headroom %.3f "
-            "dB\n",
-            matched_plan.clean_reference_rms,
-            matched_plan.jammer_reference_rms, matched_plan.jammer_scale,
-            matched_plan.common_gain, matched_plan.predicted_headroom_db);
+            "[MATCHED] Clean simulator IQ is internal alignment state only and "
+            "will be discarded before the RF adapter.\n");
 
     if (matched_options.dry_run) {
       if (runMatchedDryRender(
-              matched_plan, &matched_result, chan, gain, active_eph,
-              &synth_eph, ieph, &epoch_plan, eph, matched_synth_source, neph,
-              g0, &ionoutc, &synth_cfg, &attack_cfg, elvmask,
-              matched_required_prns, gps_time_ppm, delt, path_loss_enable,
-              fixed_gain, ant_pat, &matched_error)) {
+              matched_plan, &matched_result, chan, gain, active_eph, &synth_eph,
+              ieph, &epoch_plan, eph, matched_synth_source, neph, g0, &ionoutc,
+              &synth_cfg, &attack_cfg, elvmask, matched_required_prns,
+              gps_time_ppm, delt, path_loss_enable, fixed_gain, ant_pat,
+              &matched_error)) {
         matched_result.status = "dry_run";
         matched_result.exit_status = 0;
       } else {
         matched_result.status =
-            matched_result.mix_metrics.clipped_components > 0
+            matched_result.source_metrics.clipped_components > 0
                 ? "clipping"
                 : "preflight_error";
         matched_result.failure_reason = matched_error;
@@ -3490,28 +3399,28 @@ int main(int argc, char *argv[]) {
       if (!writeMatchedManifestAtomic(
               matched_options, matched_plan, matched_result, navfile,
               matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
-              requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
-              tx_gain, clock_source, time_source, prebuffer_count,
-              trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+              requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+              clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+              gps_time_ppm, trimble_mode)) {
         fprintf(stderr, "ERROR: cannot finalize dry-run manifest.\n");
         return 1;
       }
-      fprintf(stderr,
-              "[DRY-RUN] status=%s rendered=%llu clipping=%llu; UHD was "
-              "never opened.\n",
-              matched_result.status.c_str(),
-              (unsigned long long)matched_result.quantized_samples,
-              (unsigned long long)
-                  matched_result.mix_metrics.clipped_components);
+      fprintf(
+          stderr,
+          "[DRY-RUN] status=%s rendered=%llu clipping=%llu; UHD was "
+          "never opened.\n",
+          matched_result.status.c_str(),
+          (unsigned long long)matched_result.quantized_samples,
+          (unsigned long long)matched_result.source_metrics.clipped_components);
       return matched_result.exit_status;
     }
 
     if (!writeMatchedManifestAtomic(
             matched_options, matched_plan, matched_result, navfile,
             matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
-            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
-            tx_gain, clock_source, time_source, prebuffer_count,
-            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+            clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+            gps_time_ppm, trimble_mode)) {
       fprintf(stderr,
               "ERROR: cannot update matched-code manifest before arming.\n");
       return 1;
@@ -3535,7 +3444,7 @@ int main(int argc, char *argv[]) {
       matched_error = "matched-code transmitter failed unexpectedly";
     }
     if (completed) {
-      matched_result.status = "complete";
+      matched_result.status = "stopped";
       matched_result.exit_status = 0;
     } else {
       matched_result.failure_reason = matched_error;
@@ -3546,7 +3455,7 @@ int main(int argc, char *argv[]) {
         matched_result.status = "sequence_error";
       else if (matched_result.underflows > 0)
         matched_result.status = "underflow";
-      else if (matched_result.mix_metrics.clipped_components > 0)
+      else if (matched_result.source_metrics.clipped_components > 0)
         matched_result.status = "clipping";
       else if (matched_result.interrupted)
         matched_result.status = "interrupted";
@@ -3565,15 +3474,14 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     fprintf(stderr,
-            "[TX] Matched-code status=%s sent=%llu/%llu underflows=%llu "
+            "[TX] Matched-code status=%s sent=%llu underflows=%llu "
             "sequence-errors=%llu time-errors=%llu clipping=%llu\n",
             matched_result.status.c_str(),
             (unsigned long long)matched_result.sent_samples,
-            (unsigned long long)matched_plan.total_samples,
             (unsigned long long)matched_result.underflows,
             (unsigned long long)matched_result.sequence_errors,
             (unsigned long long)matched_result.time_errors,
-            (unsigned long long)matched_result.mix_metrics.clipped_components);
+            (unsigned long long)matched_result.source_metrics.clipped_components);
     return matched_result.exit_status;
   }
 

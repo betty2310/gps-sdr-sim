@@ -61,7 +61,7 @@ gpssim-lib.o: gpssim.c gpssim.h .user-motion-size
 player/rtcm3_nav.o: player/rtcm3_nav.cpp player/rtcm3_nav.hpp gpssim.h
 	${CXX} ${CXXFLAGS} -isystem . -c player/rtcm3_nav.cpp -o $@
 
-x300tx: player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) gpssim.h
+x300tx: player/x300tx.cpp player/matched_code_alignment.h player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) gpssim.h
 	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
 
 jammertx: player/jammertx.cpp $(JAMMER_SOURCE_OBJ) tools/jammer_source.h
@@ -93,7 +93,7 @@ tests/test_jammer_source: tests/test_jammer_source.c $(JAMMER_SOURCE_OBJ) tools/
 tests/test_gps_ca: tests/test_gps_ca.c $(GPS_CA_OBJ) tools/gps_ca.h
 	${CC} ${CFLAGS} -isystem . tests/test_gps_ca.c $(GPS_CA_OBJ) ${LDFLAGS} -o $@
 
-tests/test_matched_code_source: tests/test_matched_code_source.c $(MATCHED_CODE_SOURCE_OBJ) $(GPS_CA_OBJ) tools/matched_code_source.h
+tests/test_matched_code_source: tests/test_matched_code_source.c $(MATCHED_CODE_SOURCE_OBJ) $(GPS_CA_OBJ) tools/matched_code_source.h player/matched_code_alignment.h
 	${CC} ${CFLAGS} -isystem . tests/test_matched_code_source.c $(MATCHED_CODE_SOURCE_OBJ) $(GPS_CA_OBJ) ${LDFLAGS} -o $@
 
 tests/test_matched_code_plan: tests/test_matched_code_plan.c $(MATCHED_CODE_PLAN_OBJ) tools/matched_code_plan.h
@@ -113,7 +113,7 @@ test: jammergen matchedgen iqmix tests/test_parse_synth_revive tests/test_revive
 	tests/test_sha256
 	cd processing && uv run python ../tests/test_cw_dataset.py
 
-test-x300tx-matched: x300tx
+test-x300tx-matched: x300tx matchedgen
 	python3 tests/test_x300tx_matched_cli.py
 
 tx: tx_samples_from_file.cpp
