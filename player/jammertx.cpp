@@ -1,15 +1,12 @@
 /*
- * jammertx.cpp - Jammer-only real-time transmitter for UHD devices.
+ * jammertx.cpp - Jammer-only real-time transmitter for bladeRF devices.
  *
  * This program intentionally has no GPS ephemeris, navigation-message, PRN,
  * receiver-location, or GPS-time inputs. It renders the same independent
  * source as tools/jammergen.c and streams only that source to the SDR.
  */
 
-#include <uhd/stream.hpp>
-#include <uhd/types/metadata.hpp>
-#include <uhd/types/tune_request.hpp>
-#include <uhd/usrp/multi_usrp.hpp>
+#include <libbladeRF.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -46,6 +43,11 @@ constexpr double kDefaultPulseRampSeconds = 0.00005;
 constexpr double kDefaultRampSeconds = 0.01;
 constexpr double kDefaultStartDelaySeconds = 0.25;
 constexpr double kMinimumStartDelaySeconds = 0.02;
+constexpr unsigned int kNumBuffers = 32;
+constexpr unsigned int kSamplesPerBuffer = 32 * 1024;
+constexpr unsigned int kNumTransfers = 16;
+constexpr unsigned int kStreamTimeoutMs = 3000;
+constexpr std::size_t kBladeRfSampleMultiple = 1024;
 // The shared renderer is sample-count bounded. Continuous live mode uses the
 // largest representable interval and exposes it as unbounded in the manifest.
 constexpr uint64_t kContinuousSampleLimit =
@@ -55,10 +57,7 @@ volatile std::sig_atomic_t stop_requested = 0;
 
 struct Options {
   jammer_source_type_t source_type = JAMMER_SOURCE_CW;
-  std::string address = "192.168.10.2";
-  std::string antenna = "TX/RX";
-  std::string clock_source = "internal";
-  std::string time_source = "internal";
+  std::string device;
   std::string manifest_path;
   std::string calibration_id;
   std::size_t channel = 0;
@@ -95,6 +94,7 @@ struct RunResult {
   uint64_t underflows = 0;
   uint64_t sequence_errors = 0;
   uint64_t time_errors = 0;
+  uint64_t transport_errors = 0;
   bool completed = false;
   bool interrupted = false;
   bool dry_run = false;
@@ -114,7 +114,7 @@ void usage(FILE *stream) {
       stream,
       "Usage: jammertx (--duration SEC | --continuous) [options]\n"
       "\n"
-      "Generate and transmit jammer-only complex IQ through a UHD device.\n"
+      "Generate and transmit jammer-only complex IQ through a bladeRF device.\n"
       "No RINEX, ephemeris, GPS time, location, PRN, or authentic-GPS input is "
       "used.\n"
       "\n"
@@ -139,13 +139,10 @@ void usage(FILE *stream) {
       "  --offset SEC              Finite-run jammer stop (default: duration)\n"
       "  --ramp SEC                Global edge ramp (default 0.01; start only in continuous mode)\n"
       "\n"
-      "UHD options:\n"
-      "  --addr IP                 Device address (default 192.168.10.2)\n"
-      "  --channel N               TX channel (default 0)\n"
-      "  --antenna NAME            TX antenna (default TX/RX)\n"
+      "bladeRF options:\n"
+      "  --device STRING           libbladeRF device identifier (default: first device)\n"
+      "  --channel N               TX channel (bladeRF 1.0 supports only 0)\n"
       "  --gain DB                 Explicit TX gain (required for live TX)\n"
-      "  --clock-source SOURCE     internal/external/gpsdo (default internal)\n"
-      "  --time-source SOURCE      internal/external/gpsdo (default internal)\n"
       "  --start-delay SEC         Timed-start lead (default 0.25, min 0.02)\n"
       "\n"
       "Evidence and safety options:\n"
@@ -154,7 +151,7 @@ void usage(FILE *stream) {
       "identifier\n"
       "  --confirm-controlled-rf   Required acknowledgement for live TX\n"
       "  --dry-run                 Validate and print the plan; do not open "
-      "UHD\n"
+      "bladeRF\n"
       "  --help                    Show this help\n"
       "\n"
       "Live transmission is for an authorized conducted path or verified "
@@ -238,15 +235,13 @@ bool parse_options(int argc, char **argv, Options *options) {
                      value);
         return false;
       }
-    } else if (argument == "--addr") {
-      options->address = value;
+    } else if (argument == "--device" || argument == "--addr") {
+      options->device = value;
     } else if (argument == "--channel") {
       if (!parse_size(value, &options->channel)) {
         std::fprintf(stderr, "jammertx: invalid channel '%s'\n", value);
         return false;
       }
-    } else if (argument == "--antenna") {
-      options->antenna = value;
     } else if (argument == "--rate") {
       if (!parse_double(value, &options->requested_rate_hz)) {
         std::fprintf(stderr, "jammertx: invalid rate '%s'\n", value);
@@ -335,10 +330,6 @@ bool parse_options(int argc, char **argv, Options *options) {
         return false;
       }
       options->gain_set = true;
-    } else if (argument == "--clock-source") {
-      options->clock_source = value;
-    } else if (argument == "--time-source") {
-      options->time_source = value;
     } else if (argument == "--start-delay") {
       if (!parse_double(value, &options->start_delay_seconds)) {
         std::fprintf(stderr, "jammertx: invalid start delay '%s'\n", value);
@@ -464,6 +455,28 @@ bool make_source_config(const Options &options, double sample_rate_hz,
 bool validate_options(const Options &options, std::string *error) {
   jammer_source_config_t config;
 
+  if (options.channel != 0) {
+    *error = "bladeRF 1.0 supports only TX channel 0";
+    return false;
+  }
+  if (options.requested_rate_hz < 1.0 ||
+      options.requested_rate_hz >
+          static_cast<double>(std::numeric_limits<unsigned int>::max())) {
+    *error = "--rate is outside the libbladeRF sample-rate range";
+    return false;
+  }
+  if (options.center_frequency_hz < 1.0 ||
+      options.center_frequency_hz >
+          static_cast<double>(
+              std::numeric_limits<bladerf_frequency>::max())) {
+    *error = "--center-frequency is outside the libbladeRF frequency range";
+    return false;
+  }
+  if (options.gain_db < static_cast<double>(std::numeric_limits<int>::min()) ||
+      options.gain_db > static_cast<double>(std::numeric_limits<int>::max())) {
+    *error = "--gain cannot be represented by libbladeRF";
+    return false;
+  }
   if (options.continuous) {
     if (options.duration_set) {
       *error = "--continuous and --duration are mutually exclusive";
@@ -561,6 +574,9 @@ const char *run_status(const RunResult &result) {
   if (result.dry_run) {
     return "dry_run";
   }
+  if (result.transport_errors > 0) {
+    return "device_error";
+  }
   if (result.time_errors > 0) {
     return "time_error";
   }
@@ -606,7 +622,7 @@ bool write_manifest(const Options &options,
   manifest << "  \"sample_contract\": {\"requested_rate_hz\": "
            << options.requested_rate_hz
            << ", \"actual_rate_hz\": " << result.actual_rate_hz
-           << ", \"format\": \"sc16_le\", \"iq_order\": \"IQ\", "
+           << ", \"format\": \"sc16_q11_le\", \"iq_order\": \"IQ\", "
               "\"continuous\": "
            << (options.continuous ? "true" : "false")
            << ", \"planned_samples\": ";
@@ -638,11 +654,14 @@ bool write_manifest(const Options &options,
            << ", \"pulse_on_samples\": " << config.pulse_on_samples
            << ", \"pulse_ramp_samples\": " << config.pulse_ramp_samples
            << "},\n";
-  manifest << "  \"rf\": {\"device_address\": \""
-           << json_escape(options.address)
-           << "\", \"channel\": " << options.channel << ", \"antenna\": \""
-           << json_escape(options.antenna)
-           << "\", \"requested_center_frequency_hz\": "
+  manifest << "  \"rf\": {\"device_identifier\": ";
+  if (options.device.empty()) {
+    manifest << "null";
+  } else {
+    manifest << "\"" << json_escape(options.device) << "\"";
+  }
+  manifest << ", \"channel\": " << options.channel
+           << ", \"requested_center_frequency_hz\": "
            << options.center_frequency_hz
            << ", \"actual_center_frequency_hz\": "
            << result.actual_center_frequency_hz
@@ -652,9 +671,7 @@ bool write_manifest(const Options &options,
            << result.actual_center_frequency_hz + config.end_frequency_hz
            << ", \"requested_gain_db\": " << options.gain_db
            << ", \"actual_gain_db\": " << result.actual_gain_db
-           << ", \"clock_source\": \"" << json_escape(options.clock_source)
-           << "\", \"time_source\": \"" << json_escape(options.time_source)
-           << "\"},\n";
+           << "},\n";
   manifest << "  \"timing\": {\"start_delay_s\": "
            << options.start_delay_seconds << "},\n";
   manifest << "  \"calibration\": {\"id\": ";
@@ -675,9 +692,11 @@ bool write_manifest(const Options &options,
            << result.source_metrics.clipped_components
            << ", \"source_on_samples\": "
            << result.source_metrics.source_on_samples
-           << ", \"underflows\": " << result.underflows
-           << ", \"sequence_errors\": " << result.sequence_errors
-           << ", \"time_errors\": " << result.time_errors
+           << ", \"transport_errors\": " << result.transport_errors
+           << ", \"underflows\": null"
+           << ", \"sequence_errors\": null"
+           << ", \"time_errors\": null"
+           << ", \"transport_observability\": \"synchronous_call_status_only\""
            << ", \"interrupted\": " << (result.interrupted ? "true" : "false")
            << "}\n";
   manifest << "}\n";
@@ -768,195 +787,258 @@ void print_plan(const Options &options, const jammer_source_config_t &config,
   }
 }
 
-void account_async_event(const uhd::async_metadata_t &metadata,
-                         RunResult *result, bool *fatal) {
-  if (metadata.event_code == uhd::async_metadata_t::EVENT_CODE_UNDERFLOW ||
-      metadata.event_code ==
-          uhd::async_metadata_t::EVENT_CODE_UNDERFLOW_IN_PACKET) {
-    ++result->underflows;
-    std::fprintf(stderr, "[UHD] WARNING: TX underflow #%llu\n",
-                 static_cast<unsigned long long>(result->underflows));
-  } else if (metadata.event_code ==
-                 uhd::async_metadata_t::EVENT_CODE_SEQ_ERROR ||
-             metadata.event_code ==
-                 uhd::async_metadata_t::EVENT_CODE_SEQ_ERROR_IN_BURST) {
-    ++result->sequence_errors;
-    *fatal = true;
-    std::fprintf(stderr, "[UHD] ERROR: TX sequence error #%llu\n",
-                 static_cast<unsigned long long>(result->sequence_errors));
-  } else if (metadata.event_code ==
-             uhd::async_metadata_t::EVENT_CODE_TIME_ERROR) {
-    ++result->time_errors;
-    *fatal = true;
-    std::fprintf(stderr, "[UHD] ERROR: timed TX start was missed\n");
-  }
-}
-
-void drain_async(const uhd::tx_streamer::sptr &stream, double first_timeout,
-                 RunResult *result, bool *fatal) {
-  uhd::async_metadata_t metadata;
-  double timeout = first_timeout;
-  while (stream->recv_async_msg(metadata, timeout)) {
-    account_async_event(metadata, result, fatal);
-    timeout = 0.0;
-  }
-}
-
 int run_transmitter(const Options &options,
                     jammer_source_config_t *source_config, RunResult *result) {
-  uhd::device_addr_t device_address;
-  uhd::usrp::multi_usrp::sptr usrp;
-  uhd::tx_streamer::sptr stream;
+  struct bladerf *device = nullptr;
   jammer_source_t source;
   char source_error[256];
   std::string config_error;
-  bool fatal = false;
+  bool module_enabled = false;
+  bool device_error = false;
+  int status;
 
-  device_address["addr"] = options.address;
-  std::fprintf(stderr, "[UHD] Opening device at %s\n", options.address.c_str());
-  usrp = uhd::usrp::multi_usrp::make(device_address);
-  usrp->set_clock_source(options.clock_source);
-  usrp->set_time_source(options.time_source);
-
-  if (options.channel >= usrp->get_tx_num_channels()) {
-    std::fprintf(stderr,
-                 "jammertx: channel %zu is invalid; device reports %zu TX "
-                 "channel(s)\n",
-                 options.channel, usrp->get_tx_num_channels());
+  const char *device_identifier =
+      options.device.empty() ? nullptr : options.device.c_str();
+  std::fprintf(stderr, "[bladeRF] Opening %s\n",
+               device_identifier == nullptr ? "first available device"
+                                            : device_identifier);
+  status = bladerf_open(&device, device_identifier);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot open bladeRF: %s\n",
+                 bladerf_strerror(status));
     return 1;
   }
 
-  usrp->set_tx_rate(options.requested_rate_hz, options.channel);
-  result->actual_rate_hz = usrp->get_tx_rate(options.channel);
+  auto close_device = [&]() {
+    if (module_enabled) {
+      bladerf_enable_module(device, BLADERF_MODULE_TX, false);
+      module_enabled = false;
+    }
+    if (device != nullptr) {
+      bladerf_close(device);
+      device = nullptr;
+    }
+  };
+
+  struct bladerf_devinfo device_info;
+  if (bladerf_get_devinfo(device, &device_info) == 0) {
+    std::fprintf(stderr, "[bladeRF] Backend: %s; serial: %s\n",
+                 bladerf_backend_str(device_info.backend), device_info.serial);
+  }
+
+  unsigned int requested_rate =
+      static_cast<unsigned int>(std::llround(options.requested_rate_hz));
+  unsigned int actual_rate = 0;
+  status = bladerf_set_sample_rate(device, BLADERF_MODULE_TX, requested_rate,
+                                   &actual_rate);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot set bladeRF TX rate: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  result->actual_rate_hz = static_cast<double>(actual_rate);
   if (!make_source_config(options, result->actual_rate_hz, source_config,
                           &config_error)) {
     std::fprintf(stderr, "jammertx: actual-rate waveform is invalid: %s\n",
                  config_error.c_str());
+    close_device();
     return 1;
   }
 
-  uhd::tune_request_t tune_request(options.center_frequency_hz);
-  usrp->set_tx_freq(tune_request, options.channel);
-  result->actual_center_frequency_hz = usrp->get_tx_freq(options.channel);
+  const bladerf_frequency requested_frequency =
+      static_cast<bladerf_frequency>(std::llround(options.center_frequency_hz));
+  status = bladerf_set_frequency(device, BLADERF_MODULE_TX,
+                                 requested_frequency);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot tune bladeRF TX: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  bladerf_frequency actual_frequency = 0;
+  status = bladerf_get_frequency(device, BLADERF_MODULE_TX, &actual_frequency);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot read bladeRF TX frequency: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  result->actual_center_frequency_hz =
+      static_cast<double>(actual_frequency);
 
-  uhd::gain_range_t gain_range = usrp->get_tx_gain_range(options.channel);
-  if (options.gain_db < gain_range.start() ||
-      options.gain_db > gain_range.stop()) {
+  unsigned int actual_bandwidth = 0;
+  status = bladerf_set_bandwidth(device, BLADERF_MODULE_TX, actual_rate,
+                                 &actual_bandwidth);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot set bladeRF TX bandwidth: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+
+  const bladerf_channel tx_channel = BLADERF_CHANNEL_TX(options.channel);
+  const int requested_gain = static_cast<int>(std::lround(options.gain_db));
+  status = bladerf_set_gain(device, tx_channel, requested_gain);
+  if (status != 0) {
     std::fprintf(stderr,
-                 "jammertx: requested gain %.3f dB is outside device range "
-                 "[%.3f, %.3f] dB\n",
-                 options.gain_db, gain_range.start(), gain_range.stop());
+                 "jammertx: cannot set bladeRF TX gain to %d dB: %s\n",
+                 requested_gain, bladerf_strerror(status));
+    close_device();
     return 1;
   }
-  usrp->set_tx_gain(options.gain_db, options.channel);
-  result->actual_gain_db = usrp->get_tx_gain(options.channel);
-  usrp->set_tx_antenna(options.antenna, options.channel);
+  int actual_gain = 0;
+  status = bladerf_get_gain(device, tx_channel, &actual_gain);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot read bladeRF TX gain: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  result->actual_gain_db = static_cast<double>(actual_gain);
+
+  status = bladerf_sync_config(device, BLADERF_TX_X1,
+                               BLADERF_FORMAT_SC16_Q11_META, kNumBuffers,
+                               kSamplesPerBuffer, kNumTransfers,
+                               kStreamTimeoutMs);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot configure bladeRF TX stream: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  status = bladerf_enable_module(device, BLADERF_MODULE_TX, true);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot enable bladeRF TX: %s\n",
+                 bladerf_strerror(status));
+    close_device();
+    return 1;
+  }
+  module_enabled = true;
 
   if (jammer_source_init(&source, source_config, source_error,
                          sizeof(source_error)) != 0) {
     std::fprintf(stderr, "jammertx: %s\n", source_error);
+    close_device();
     return 1;
   }
 
-  std::fprintf(stderr, "[UHD] Requested/actual rate: %.6f / %.6f Hz\n",
+  std::fprintf(stderr,
+               "[bladeRF] Requested/actual rate: %.6f / %.6f Hz\n",
                options.requested_rate_hz, result->actual_rate_hz);
-  std::fprintf(stderr, "[UHD] Requested/actual center: %.3f / %.3f Hz\n",
-               options.center_frequency_hz, result->actual_center_frequency_hz);
-  std::fprintf(stderr, "[UHD] Requested/actual gain: %.3f / %.3f dB\n",
+  std::fprintf(stderr,
+               "[bladeRF] Requested/actual center: %.3f / %.3f Hz\n",
+               options.center_frequency_hz,
+               result->actual_center_frequency_hz);
+  std::fprintf(stderr,
+               "[bladeRF] Requested/actual gain: %.3f / %.3f dB\n",
                options.gain_db, result->actual_gain_db);
-  std::fprintf(stderr, "[UHD] Channel/antenna: %zu / %s\n", options.channel,
-               usrp->get_tx_antenna(options.channel).c_str());
-  std::fprintf(stderr, "[UHD] Clock/time source: %s / %s\n",
-               options.clock_source.c_str(), options.time_source.c_str());
+  std::fprintf(stderr, "[bladeRF] TX bandwidth: %u Hz\n", actual_bandwidth);
   print_plan(options, *source_config, result->actual_center_frequency_hz);
 
-  uhd::stream_args_t stream_args("sc16", "sc16");
-  stream_args.channels = {options.channel};
-  stream = usrp->get_tx_stream(stream_args);
-
-  const std::size_t max_samples = stream->get_max_num_samps();
-  std::vector<int16_t> buffer(max_samples * 2);
-  size_t count = jammer_source_render_sc16(&source, buffer.data(), max_samples);
-  if (count == 0) {
-    std::fprintf(stderr, "jammertx: source produced no samples\n");
+  bladerf_timestamp device_now = 0;
+  status = bladerf_get_timestamp(device, BLADERF_TX, &device_now);
+  if (status != 0) {
+    std::fprintf(stderr, "jammertx: cannot read bladeRF TX timestamp: %s\n",
+                 bladerf_strerror(status));
+    close_device();
     return 1;
   }
+  long double delay_samples_exact =
+      static_cast<long double>(options.start_delay_seconds) * actual_rate;
+  if (delay_samples_exact < 0.0L ||
+      delay_samples_exact >
+          static_cast<long double>(
+              std::numeric_limits<bladerf_timestamp>::max() - device_now)) {
+    std::fprintf(stderr, "jammertx: timed-start delay overflows timestamp\n");
+    close_device();
+    return 1;
+  }
+  const bladerf_timestamp start_timestamp =
+      device_now + static_cast<bladerf_timestamp>(
+                       std::llround(delay_samples_exact));
 
+  std::vector<int16_t> buffer(kSamplesPerBuffer * 2);
   install_signal_handlers();
+  bool first_buffer = true;
+  std::fprintf(stderr,
+               "[TX] bladeRF timed start in %.3f seconds at timestamp %llu\n",
+               options.start_delay_seconds,
+               static_cast<unsigned long long>(start_timestamp));
 
-  uhd::tx_metadata_t metadata;
-  metadata.start_of_burst = true;
-  metadata.end_of_burst = false;
-  metadata.has_time_spec = true;
-  metadata.time_spec = uhd::time_spec_t(usrp->get_time_now().get_real_secs() +
-                                        options.start_delay_seconds);
-
-  std::fprintf(stderr, "[TX] Timed start in %.3f seconds\n",
-               options.start_delay_seconds);
-
-  while (count > 0 && !stop_requested && !fatal) {
-    size_t sent_from_buffer = 0;
-    double timeout =
-        metadata.has_time_spec ? options.start_delay_seconds + 1.0 : 3.0;
-
-    while (sent_from_buffer < count && !stop_requested && !fatal) {
-      size_t sent = stream->send(&buffer[sent_from_buffer * 2],
-                                 count - sent_from_buffer, metadata, timeout);
-      if (sent == 0) {
-        std::fprintf(stderr, "[UHD] ERROR: send returned zero samples\n");
-        fatal = true;
-        break;
-      }
-      sent_from_buffer += sent;
-      result->sent_samples += sent;
-      metadata.start_of_burst = false;
-      metadata.has_time_spec = false;
-      timeout = 3.0;
+  while (!stop_requested && !device_error) {
+    const std::size_t count =
+        jammer_source_render_sc16(&source, buffer.data(), kSamplesPerBuffer);
+    if (count == 0) {
+      break;
     }
 
-    drain_async(stream, 0.0, result, &fatal);
-    if (!stop_requested && !fatal) {
-      count = jammer_source_render_sc16(&source, buffer.data(), max_samples);
+    for (std::size_t index = 0; index < count * 2; ++index) {
+      buffer[index] = static_cast<int16_t>(buffer[index] / 16);
     }
+    const std::size_t padded_count =
+        ((count + kBladeRfSampleMultiple - 1) / kBladeRfSampleMultiple) *
+        kBladeRfSampleMultiple;
+    std::fill(buffer.begin() + count * 2,
+              buffer.begin() + padded_count * 2, 0);
+
+    struct bladerf_metadata metadata;
+    std::memset(&metadata, 0, sizeof(metadata));
+    if (first_buffer) {
+      metadata.flags = BLADERF_META_FLAG_TX_BURST_START;
+      metadata.timestamp = start_timestamp;
+    }
+    unsigned int timeout_ms = kStreamTimeoutMs;
+    if (first_buffer) {
+      timeout_ms += static_cast<unsigned int>(
+          std::ceil(options.start_delay_seconds * 1000.0));
+    }
+    status = bladerf_sync_tx(device, buffer.data(),
+                             static_cast<unsigned int>(padded_count),
+                             &metadata, timeout_ms);
+    if (status != 0) {
+      std::fprintf(stderr, "[bladeRF] TX failed: %s\n",
+                   bladerf_strerror(status));
+      ++result->transport_errors;
+      device_error = true;
+      break;
+    }
+    first_buffer = false;
+    result->sent_samples += count;
   }
 
-  metadata.start_of_burst = false;
-  metadata.end_of_burst = true;
-  metadata.has_time_spec = false;
-  stream->send("", 0, metadata, 3.0);
-  drain_async(stream, 0.1, result, &fatal);
+  if (!first_buffer) {
+    struct bladerf_metadata end_metadata;
+    std::memset(&end_metadata, 0, sizeof(end_metadata));
+    end_metadata.flags = BLADERF_META_FLAG_TX_BURST_END;
+    int16_t zero_sample[2] = {0, 0};
+    status = bladerf_sync_tx(device, zero_sample, 1, &end_metadata,
+                             kStreamTimeoutMs);
+    if (status != 0 && !device_error) {
+      std::fprintf(stderr, "[bladeRF] TX burst end failed: %s\n",
+                   bladerf_strerror(status));
+      ++result->transport_errors;
+      device_error = true;
+    }
+  }
 
   result->interrupted = stop_requested != 0;
   result->completed = jammer_source_done(&source) &&
                       result->sent_samples == source.config.total_samples &&
-                      !fatal && result->underflows == 0 &&
-                      result->sequence_errors == 0;
+                      !device_error;
   jammer_source_get_metrics(&source, &result->source_metrics);
 
   if (options.continuous) {
-    std::fprintf(stderr,
-                 "[TX] Sent %llu samples before operator stop; "
-                 "underflows=%llu sequence-errors=%llu time-errors=%llu\n",
-                 static_cast<unsigned long long>(result->sent_samples),
-                 static_cast<unsigned long long>(result->underflows),
-                 static_cast<unsigned long long>(result->sequence_errors),
-                 static_cast<unsigned long long>(result->time_errors));
+    std::fprintf(stderr, "[TX] Sent %llu samples before operator stop\n",
+                 static_cast<unsigned long long>(result->sent_samples));
   } else {
-    std::fprintf(stderr,
-                 "[TX] Sent %llu/%llu samples; underflows=%llu "
-                 "sequence-errors=%llu time-errors=%llu\n",
+    std::fprintf(stderr, "[TX] Sent %llu/%llu samples\n",
                  static_cast<unsigned long long>(result->sent_samples),
-                 static_cast<unsigned long long>(source.config.total_samples),
-                 static_cast<unsigned long long>(result->underflows),
-                 static_cast<unsigned long long>(result->sequence_errors),
-                 static_cast<unsigned long long>(result->time_errors));
+                 static_cast<unsigned long long>(source.config.total_samples));
   }
 
-  return result->completed ||
-                 (result->interrupted && result->underflows == 0 &&
-                  result->sequence_errors == 0 && result->time_errors == 0)
-             ? 0
-             : 1;
+  close_device();
+  return result->completed || (result->interrupted && !device_error) ? 0 : 1;
 }
 
 } // namespace
@@ -988,7 +1070,7 @@ int main(int argc, char **argv) {
     result.actual_center_frequency_hz = options.center_frequency_hz;
     result.actual_gain_db = options.gain_db;
     print_plan(options, source_config, options.center_frequency_hz);
-    std::fprintf(stderr, "[DRY-RUN] UHD was not opened and no samples were "
+    std::fprintf(stderr, "[DRY-RUN] bladeRF was not opened and no samples were "
                          "transmitted.\n");
   } else {
     RunResult starting_result;
@@ -1001,7 +1083,8 @@ int main(int argc, char **argv) {
     try {
       exit_code = run_transmitter(options, &source_config, &result);
     } catch (const std::exception &exception) {
-      std::fprintf(stderr, "jammertx: UHD failure: %s\n", exception.what());
+      std::fprintf(stderr, "jammertx: bladeRF failure: %s\n",
+                   exception.what());
       exit_code = 1;
     }
   }

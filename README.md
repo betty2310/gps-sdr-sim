@@ -148,12 +148,12 @@ runs with `processing/jamming_campaign_report.py`; raw RF spectra remain
 composite because GPS L1 C/A PRNs overlap in frequency.
 
 For an authorized conducted or verified shielded hardware experiment, `jammertx`
-generates the same selected source in memory and streams jammer-only SC16 through UHD. It
+generates the same selected source in memory and streams jammer-only SC16/Q11 through bladeRF. It
 does not use authentic-GPS IQ, RINEX, ephemeris, GPS time, receiver location, or PRNs.
-Build it explicitly with `make jammertx`; it is not part of `make all` because UHD is
-optional. See the [real-time X300 multi-waveform guide](docs/realtime-cw-jammer-x300.md) for the
-signal model, dry-run workflow, calibration boundary, manifests, receiver evidence,
-and controlled-RF safety requirements.
+Build it explicitly with `make jammertx`; it is not part of `make all` because libbladeRF is
+optional. The [real-time X300 multi-waveform guide](docs/realtime-cw-jammer-x300.md)
+documents the shared signal model, calibration boundary, receiver evidence, and
+controlled-RF safety requirements; use `jammertx --help` for bladeRF-specific options.
 
 For finite simulator-aligned matched-code experiments, `x300tx` now generates
 synthetic clean GPS and navigation-data-free, PRN-targeted matched-code

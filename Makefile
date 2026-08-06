@@ -65,7 +65,7 @@ x300tx: player/x300tx.cpp player/matched_code_alignment.h player/rtcm3_nav.o gps
 	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
 
 jammertx: player/jammertx.cpp $(JAMMER_SOURCE_OBJ) tools/jammer_source.h
-	${CXX} ${CXXFLAGS} -isystem . player/jammertx.cpp $(JAMMER_SOURCE_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
+	${CXX} -O3 -Wall -std=c++17 ${BLADE_CFLAGS} -isystem . player/jammertx.cpp $(JAMMER_SOURCE_OBJ) ${BLADE_LIBS} ${LDFLAGS} -Wl,-rpath,${BLADE_LIBDIR} -o $@
 
 BLADE_CFLAGS=$(shell pkg-config --cflags libbladeRF 2>/dev/null)
 BLADE_LIBS=$(shell pkg-config --libs libbladeRF 2>/dev/null || echo "-lbladeRF")

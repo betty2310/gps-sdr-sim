@@ -1,158 +1,282 @@
-Distribute 5 sats around the sky
+# Current bladeRF Commands: Revive Spoofing and Jammer-Only Tests
+
+Use these commands only in an authorized conducted RF path or a verified
+shielded enclosure. Start with the approved attenuation and lowest calibrated
+gain. Re-check the timing and RF calibration after changing cables, clocks,
+SDR hardware, or firmware.
+
+## 1. Build
 
 ```bash
-$ gps-sdr-sim -e hour0910.26n -c -1626569.949,5730535.146,2271863.661 \
-             -P 1,2,3,5,7 \
-             -S 1:0.0/60.0,2:90.0/45.0,3:180.0/50.0,5:270.0/40.0,7:45.0/55.0 \
-             -d 300 -v
+make bladetx jammertx revive_candidates
 ```
 
-BladeRF hardware test (old pipe path):
+## 2. Find revive candidates
+
+Trimble port `5005` with mount `NAVIS` provides the live RTCM observations
+used to reject PRNs that are currently visible. The RINEX file remains required
+because revive mode uses each target PRN's own past ephemeris as its template.
 
 ```bash
-gps-sdr-sim -e hour0930.26n -l 21.0047844,105.8460541,5 \
-               -P 3,5,4,8 -S 3:30/60,5:45.0/55.0,4:90/45,8:120/30 \
-               -n -o - | ./player/bladeplayer -f - -b 16 -g -35
-
+./revive_candidates \
+  -e hour1120.26n \
+  -l 21.0047844,105.8460541,22 \
+  --rtcm-host 192.168.5.245 \
+  --rtcm-port 5005 \
+  --rtcm-mount NAVIS \
+  --rtcm-user NAVIS:navis123 \
+  --rtcm-warmup-sec 6 \
+  --rtcm-timeout-ms 3000 \
+  --top 12
 ```
 
-BladeRF integrated path (bladetx, Trimble time-tag):
+Choose only PRNs reported as suitable by the revive scan and absent from the
+live-observed PRN set. Update `-P` and `-S` together in the transmit command.
+
+## 3. Transmit revive spoofing with Trimble timing
+
+This example revives PRNs `22,14,30`. Trimble port `5017` supplies the 1 PPS
+UTC time tag used to schedule the bladeRF transmission.
 
 ```bash
-  ./bladetx -e hour0910.26n -l 21.0047844,105.8460541,5 \
-    -P 3,4,7,8 -S 3:0/60,4:90/45,7:180/30,8:45/55 \
-    --trimble-time-tag-host 192.168.5.245 \
-    --trimble-time-tag-port 5017 \
-    --trimble-start-offset-sec 2 --txvga1 -35
+./bladetx \
+  -e hour1120.26n \
+  -l 21.0047844,105.8460541,22 \
+  -P 22,14,30 \
+  -S 22:revive,14:revive,30:revive \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --rate 2500000 \
+  --txvga1 -35 \
+  --txvga2 0 \
+  --trimble-time-tag-host 192.168.5.245 \
+  --trimble-time-tag-port 5017 \
+  --trimble-start-offset-sec 2 \
+  --trimble-tag-lead-ms 788 \
+  --trimble-tx-cal-ns 580047 \
+  --gps-time-ppm 0.002894118
 ```
 
-X300 hardware test later, using a FIFO:
+Do not add `-n`, `--gps-week`, or `--gps-tow`; those timing modes are mutually
+exclusive with Trimble time-tag mode. Press `Ctrl-C` once to stop.
+
+## 4. Jammer-only transmission
+
+`jammertx` supports `cw`, `narrowband`, `wideband`, `chirp`, and `pulsed`.
+It intentionally does not use Trimble time, RINEX, location, PRNs, or
+authentic-GPS IQ. Do not add Trimble options to these commands.
+
+Create the manifest directory once:
 
 ```bash
-  mkfifo /tmp/gpssim.iq
-  python3 gps-sdr-sim-uhd.py \
-    -t /tmp/gpssim.iq \
-    -s 2600000 \
-    -x 0 \
-    -a "type=x300,clock_source=external,time_source=external" &
-  ./gps-sdr-sim -e hour0910.26n -l 21.0047844,105.8460541,5 \
-    -P 1,2 -S 1:overhead,2:90.0/45.0 \
-    -n -r 0.0 -o /tmp/gpssim.iq
+mkdir -p runs/jammer
 ```
 
-# Calibrate time offset
+### CW
+
+Dry run:
 
 ```bash
-uv run tools/ubx_bladetx_cal.py processing/dataset/COM4___9600_260408_034137.ubx --inject 3,4,7,8 --trimble-tag-lead-ms 790 --trimble-start-offset-sec 2
+./jammertx \
+  --type cw \
+  --frequency 500000 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --manifest runs/jammer/cw-dry-run.json \
+  --dry-run
 ```
 
-# Recommended X300 timing alignment, PRN 3 and 30
-
-Use this for the current X300 revive path with Trimble time-tag scheduling.
-The timing values below come from `processing/dataset/05-06/ver1` with injected
-PRNs `3,30`.
+Live controlled-RF run:
 
 ```bash
-./x300tx -l 21.0047844,105.8460541,22 \
-    -e hour1560.26n \
-    -P 3,30 \
-    -S 3:revive,30:revive \
-    --addr 192.168.5.111 \
-    --antenna TX/RX \
-    --gain 10 \
-    --channel 1 \
-    --trimble-time-tag-host 192.168.5.245 \
-    --trimble-time-tag-port 5017 \
-    --trimble-start-offset-sec 2 \
-    --trimble-tag-lead-ms 788 \
-    --trimble-tx-cal-ns 580047 \
-    --gps-time-ppm 0.002894118
+./jammertx \
+  --type cw \
+  --frequency 500000 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --channel 0 \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --gain -35 \
+  --start-delay 0.25 \
+  --calibration-id REPLACE_WITH_CURRENT_CALIBRATION_RECORD \
+  --manifest runs/jammer/cw-live.json \
+  --confirm-controlled-rf
 ```
 
-After a new UBX capture, re-estimate the timing offset and drift:
+### Narrowband noise
+
+Dry run:
 
 ```bash
-uv run tools/ubx_bladetx_cal.py \
-    processing/dataset/05-06/ver1/COM3___9600_260605_025844.ubx \
-    processing/dataset/05-06/ver1/COM4___9600_260605_025726.ubx \
-    --inject 3,30 \
-    --current-trimble-tx-cal-ns 580000 \
-    --current-gps-time-ppm 0 \
-    --trimble-tag-lead-ms 788 \
-    --trimble-start-offset-sec 2
+./jammertx \
+  --type narrowband \
+  --frequency 500000 \
+  --bandwidth 100000 \
+  --amplitude 0.15 \
+  --seed 20260712 \
+  --continuous \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --manifest runs/jammer/narrowband-dry-run.json \
+  --dry-run
 ```
 
-Current dataset result:
-
-```text
-recommended next --trimble-tx-cal-ns: 580047
-recommended next --gps-time-ppm: +0.002894118
-```
-
-# Tue 7 2026 ngon
+Live controlled-RF run:
 
 ```bash
-bladetx -e hour0970.26n -l 21.0047844,105.8460541,5 -P 3,4,7,8 -S 3:20/60,4:90/45,7:180/30,8:45/55 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790 --trimble-start-offset-sec 2 --txvga1 -35
+./jammertx \
+  --type narrowband \
+  --frequency 500000 \
+  --bandwidth 100000 \
+  --amplitude 0.15 \
+  --seed 20260712 \
+  --continuous \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --channel 0 \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --gain -35 \
+  --start-delay 0.25 \
+  --calibration-id REPLACE_WITH_CURRENT_CALIBRATION_RECORD \
+  --manifest runs/jammer/narrowband-live.json \
+  --confirm-controlled-rf
 ```
 
-# Web 8 Apr 2026
+### Wideband noise
+
+Dry run:
 
 ```bash
-bladetx -e hour0980.26n -l 21.0047844,105.8460541,5 -P 4,5,8,9 -S 4:20/60,5:90/45,8:60/30,9:45/55 --trimble-time-tag-host 192.168.5.245   --trimble-time-tag-port 5017 --trimble-tag-lead-ms 790   --trimble-start-offset-sec 2 --txvga1 -35
+./jammertx \
+  --type wideband \
+  --amplitude 0.15 \
+  --seed 20260712 \
+  --continuous \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --manifest runs/jammer/wideband-dry-run.json \
+  --dry-run
 ```
 
-# Find best PRN to revive
+Live controlled-RF run:
 
 ```bash
-revive_candidates \
-           -e hour1120.26n \
-           -l 21.0047844,105.8460541,5 \
-           --rtcm-host 192.168.5.245 \
-           --rtcm-port 5005 \
-           --rtcm-mount NAVIS \
-           --rtcm-user NAVIS:navis123 \
-           --rtcm-warmup-sec 6
+./jammertx \
+  --type wideband \
+  --amplitude 0.15 \
+  --seed 20260712 \
+  --continuous \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --channel 0 \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --gain -35 \
+  --start-delay 0.25 \
+  --calibration-id REPLACE_WITH_CURRENT_CALIBRATION_RECORD \
+  --manifest runs/jammer/wideband-live.json \
+  --confirm-controlled-rf
 ```
 
-# BladeTx with revive
+### Chirp
+
+Dry run:
 
 ```bash
- bladetx -l 21.0047844,105.8460541,22 -e hour1120.26n -P 22,14,30 \
-           -S 22:revive,14:revive,30:revive \
-           --trimble-time-tag-host 192.168.5.245 \
-           --trimble-time-tag-port 5017 \
-           --trimble-start-offset-sec 2 --txvga1 -35 --trimble-tag-lead-ms 788 --trimble-tx-cal-ns 580000
+./jammertx \
+  --type chirp \
+  --frequency -500000 \
+  --end-frequency 500000 \
+  --chirp-period 0.1 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --manifest runs/jammer/chirp-dry-run.json \
+  --dry-run
 ```
+
+Live controlled-RF run:
 
 ```bash
-./x300tx -l 21.0047844,105.8460541,22 \
-    -e hour1120.26n \
-    -P 22,14,30 \
-    -S 22:revive,14:revive,30:revive \
-    --addr 192.168.10.2 \
-    --antenna TX/RX \
-    --gain 0 \
-    --trimble-time-tag-host 192.168.5.245 \
-    --trimble-time-tag-port 5017 \
-    --trimble-start-offset-sec 2 \
-    --trimble-tag-lead-ms 788 \
-    --trimble-tx-cal-ns 580000
+./jammertx \
+  --type chirp \
+  --frequency -500000 \
+  --end-frequency 500000 \
+  --chirp-period 0.1 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --channel 0 \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --gain -35 \
+  --start-delay 0.25 \
+  --calibration-id REPLACE_WITH_CURRENT_CALIBRATION_RECORD \
+  --manifest runs/jammer/chirp-live.json \
+  --confirm-controlled-rf
 ```
+
+### Pulsed CW
+
+Dry run:
 
 ```bash
-./tx_samples_from_file \
-           --file gpssim.bin \
-           --type short \
-           --rate 2500000 \
-           --freq 1575420000 \
-           --gain 20 \
-           --ant TX/RX \
-           --args "addr=192.168.10.2" \
-           --repeat --channel 1
+./jammertx \
+  --type pulsed \
+  --frequency 500000 \
+  --pulse-period 0.01 \
+  --pulse-duty 0.1 \
+  --pulse-ramp 0.00005 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --manifest runs/jammer/pulsed-dry-run.json \
+  --dry-run
 ```
 
-# Gen jammer chirp
+Live controlled-RF run:
 
 ```bash
-uv run --project processing python processing/cw_dataset.py create --profile verification --rinex hour1940.26n --output-dir dataset/ --start-time 2026/07/13,03:20:00 --location 21.0047844,105.8460541,5 --jammer-type chirp --frequency-hz -500000 --end-frequency-hz 500000 --chirp-period-s 0.01 --js-levels 20 --receiver none --no-calibrate-noise
+./jammertx \
+  --type pulsed \
+  --frequency 500000 \
+  --pulse-period 0.01 \
+  --pulse-duty 0.1 \
+  --pulse-ramp 0.00005 \
+  --amplitude 0.5 \
+  --phase 0 \
+  --continuous \
+  --device libusb:serial=270c4bef62ded4be1bd9c822a60306a5 \
+  --channel 0 \
+  --rate 2500000 \
+  --center-frequency 1575420000 \
+  --ramp 0.01 \
+  --gain -35 \
+  --start-delay 0.25 \
+  --calibration-id REPLACE_WITH_CURRENT_CALIBRATION_RECORD \
+  --manifest runs/jammer/pulsed-live.json \
+  --confirm-controlled-rf
 ```
+
+Always run the matching dry run before live transmission. Press `Ctrl-C` once
+to stop a continuous live run and allow its manifest to finalize. Use one
+jammer type and one unique manifest per receiver capture. Digital amplitude is
+not RF power or receiver-input J/S; measure J/S at the DUT reference plane.
