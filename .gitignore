@@ -38,6 +38,9 @@ tests/test_jammer_source
 tests/test_gps_ca
 tests/test_revive_scan
 tests/test_revive_transform
+tests/test_matched_code_plan
+tests/test_matched_code_source
+tests/test_sha256
 
 # Debug files
 *.dSYM/
