@@ -155,14 +155,16 @@ optional. The [real-time X300 multi-waveform guide](docs/realtime-cw-jammer-x300
 documents the shared signal model, calibration boundary, receiver evidence, and
 controlled-RF safety requirements; use `jammertx --help` for bladeRF-specific options.
 
-For finite simulator-aligned matched-code experiments, `x300tx` now generates
-synthetic clean GPS and navigation-data-free, PRN-targeted matched-code
-interference in the same process, mixes them sample-for-sample, and transmits
-one hardware-timed composite through one X300 channel. This is distinct from
-the jammer-only `jammertx` path and does not align to authentic live sky. See
-the [real-time matched-code X300 researcher guide](docs/realtime-code-aligned-matched-code-x300.md)
-for the dry-run-first workflow, parameter-complete live template, manifest
-acceptance script, troubleshooting, and verified X300 transmit result.
+For simulator-aligned matched-code experiments, `x300tx` and `bladetx` use the
+same navigation-data-free, PRN-targeted source and internal clean-GPS alignment
+state. The clean simulator IQ is discarded: both hardware adapters transmit a
+continuous jammer-only stream from sample zero until operator stop. The
+bladeRF adapter converts canonical SC16/Q15 samples to its SC16 Q11 device
+format at the final hardware boundary. See the [real-time matched-code X300
+researcher guide](docs/realtime-code-aligned-matched-code-x300.md) for the
+shared waveform and safety contract; build and test the bladeRF adapter with
+`make test-bladetx-matched` and use the [bladeRF matched-code guide](docs/realtime-code-aligned-matched-code-bladerf.md)
+for its Q11 boundary and live fail-closed command contract.
 
 The user motion can be specified in either dynamic or static mode:
 

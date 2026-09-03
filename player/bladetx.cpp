@@ -14,10 +14,19 @@
 
 #include <cmath>
 #include <csignal>
+#include <cstdint>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string>
 #include <unistd.h>
 #include <vector>
 
@@ -35,7 +44,12 @@
 
 extern "C" {
 #include "gpssim.h"
+#include "tools/matched_code_plan.h"
+#include "tools/matched_code_source.h"
+#include "tools/sha256.h"
 }
+
+#include "player/matched_code_alignment.h"
 
 ////////////////////////////////////////////////////////////
 // Constants
@@ -74,6 +88,59 @@ extern "C" {
 // oscillator error.  Correct sign is ppm ~ -oscillator_error_ppm.
 #define GPS_TIME_PPM_DEFAULT 0.0
 #define GPS_TIME_PPM_MAX_ABS 1000.0
+#define MATCHED_RATE_TOLERANCE_HZ 0.5
+#define MATCHED_DRY_RUN_VALIDATION_SEC 0.1
+#define MATCHED_MIN_HEADROOM_DB 1.0
+#define FNV1A64_OFFSET_BASIS UINT64_C(14695981039346656037)
+#define FNV1A64_PRIME UINT64_C(1099511628211)
+
+struct MatchedCodeOptions {
+  bool enabled = false;
+  bool dry_run = false;
+  bool controlled_rf_confirmed = false;
+  bool amplitude_set = false;
+  bool phase_seed_set = false;
+  bool device_set = false;
+  bool txvga1_set = false;
+  bool txvga2_set = false;
+  bool legacy_js_set = false;
+  bool legacy_gain_boost_set = false;
+  std::string target_prns;
+  std::string manifest_path;
+  std::string trajectory_path;
+  std::string calibration_id;
+  double amplitude = 0.0;
+  uint64_t phase_seed = 0;
+};
+
+struct MatchedCodeRunResult {
+  std::string status = "incomplete";
+  std::string failure_reason;
+  std::string device_type;
+  std::string device_product;
+  std::string device_serial;
+  std::string device_address;
+  std::string start_mode;
+  double actual_rate_hz = 0.0;
+  double actual_frequency_hz = 0.0;
+  int actual_txvga1_db = 0;
+  int actual_txvga2_db = 0;
+  double device_start_timestamp_samples = 0.0;
+  bool start_margin_met = false;
+  bool target_allocation_passed = false;
+  uint64_t internal_alignment_samples = 0;
+  uint64_t rendered_jammer_samples = 0;
+  uint64_t quantized_samples = 0;
+  uint64_t sent_samples = 0;
+  uint64_t underflows = 0;
+  uint64_t sequence_errors = 0;
+  uint64_t time_errors = 0;
+  bool interrupted = false;
+  matched_code_source_metrics_t source_metrics{};
+  uint64_t jammer_iq_fnv1a64 = FNV1A64_OFFSET_BASIS;
+  std::string trajectory_sha256;
+  int exit_status = 1;
+};
 
 ////////////////////////////////////////////////////////////
 // Signal handling
@@ -403,6 +470,79 @@ static int hasReviveMode(const synth_config_t *cfg) {
 // Generate one 0.1-second epoch of SC16 IQ samples
 ////////////////////////////////////////////////////////////
 
+static void prepareEpoch(channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
+                         ephem_t *active_eph, ionoutc_t *ionoutc, gpstime_t grx,
+                         double epoch_duration, double delt,
+                         int path_loss_enable, int fixed_gain,
+                         double ant_pat[37], int attack_enabled,
+                         const attack_config_t *attack_cfg) {
+  for (int i = 0; i < MAX_CHAN; ++i) {
+    if (chan[i].prn <= 0)
+      continue;
+
+    range_t rho;
+    int sv = chan[i].prn - 1;
+    computeRange(&rho, active_eph[sv], ionoutc, grx, xyz[0]);
+    chan[i].azel[0] = rho.azel[0];
+    chan[i].azel[1] = rho.azel[1];
+    computeCodePhase(&chan[i], rho, epoch_duration);
+#ifndef FLOAT_CARR_PHASE
+    chan[i].carr_phasestep =
+        (int)round(512.0 * 65536.0 * chan[i].f_carr * delt);
+#endif
+    double path_loss = 20200000.0 / rho.d;
+    int ibs = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
+    double ant_gain = ant_pat[ibs];
+    gain[i] = path_loss_enable == TRUE ? (int)(path_loss * ant_gain * 128.0)
+                                       : fixed_gain;
+    if (attack_enabled == TRUE)
+      applyGainAttack(attack_cfg, chan[i].prn, &gain[i]);
+    if (attack_cfg != nullptr && attack_cfg->partial_mode &&
+        attack_cfg->gain_boost_db != 0.0)
+      gain[i] =
+          (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
+  }
+}
+
+static int cleanCarrierTableIndex(const channel_t *channel) {
+#ifdef FLOAT_CARR_PHASE
+  return (int)floor(channel->carr_phase * 512.0);
+#else
+  return (channel->carr_phase >> 16) & 0x1ff;
+#endif
+}
+
+static void advanceCleanChannelSample(channel_t *channel, double delt) {
+  channel->code_phase += channel->f_code * delt;
+  if (channel->code_phase >= CA_SEQ_LEN) {
+    channel->code_phase -= CA_SEQ_LEN;
+    ++channel->icode;
+    if (channel->icode >= 20) {
+      channel->icode = 0;
+      ++channel->ibit;
+      if (channel->ibit >= 30) {
+        channel->ibit = 0;
+        ++channel->iword;
+      }
+      channel->dataBit =
+          (int)((channel->dwrd[channel->iword] >> (29 - channel->ibit)) &
+                0x1UL) *
+              2 -
+          1;
+    }
+  }
+  channel->codeCA = channel->ca[(int)channel->code_phase] * 2 - 1;
+#ifdef FLOAT_CARR_PHASE
+  channel->carr_phase += channel->f_carr * delt;
+  if (channel->carr_phase >= 1.0)
+    channel->carr_phase -= 1.0;
+  else if (channel->carr_phase < 0.0)
+    channel->carr_phase += 1.0;
+#else
+  channel->carr_phase += channel->carr_phasestep;
+#endif
+}
+
 static void
 generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
               int gain[MAX_CHAN], ephem_t *active_eph, ionoutc_t *ionoutc,
@@ -411,45 +551,12 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
               double ant_pat[37], int attack_enabled,
               const attack_config_t *attack_cfg,
               unsigned int attack_noise_state[MAX_SAT], double jam_js_linear) {
-  int i, sv, isamp;
+  int i, isamp;
   int ip, qp, iTable;
-  int ibs;
-  double path_loss, ant_gain;
 
-  (void)sv;
-
-  for (i = 0; i < MAX_CHAN; i++) {
-    if (chan[i].prn > 0) {
-      range_t rho;
-      sv = chan[i].prn - 1;
-
-      computeRange(&rho, active_eph[sv], ionoutc, grx, xyz[0]);
-
-      chan[i].azel[0] = rho.azel[0];
-      chan[i].azel[1] = rho.azel[1];
-
-      computeCodePhase(&chan[i], rho, epoch_duration);
-#ifndef FLOAT_CARR_PHASE
-      chan[i].carr_phasestep =
-          (int)round(512.0 * 65536.0 * chan[i].f_carr * delt);
-#endif
-      path_loss = 20200000.0 / rho.d;
-
-      ibs = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
-      ant_gain = ant_pat[ibs];
-
-      if (path_loss_enable == TRUE)
-        gain[i] = (int)(path_loss * ant_gain * 128.0);
-      else
-        gain[i] = fixed_gain;
-
-      if (attack_enabled == TRUE)
-        applyGainAttack(attack_cfg, chan[i].prn, &gain[i]);
-
-      if (attack_cfg->partial_mode && attack_cfg->gain_boost_db != 0.0)
-        gain[i] = (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
-    }
-  }
+  prepareEpoch(chan, gain, active_eph, ionoutc, grx, epoch_duration, delt,
+               path_loss_enable, fixed_gain, ant_pat, attack_enabled,
+               attack_cfg);
 
   for (isamp = 0; isamp < sample_count; isamp++) {
     int i_acc = 0;
@@ -461,11 +568,7 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
         if (attack_enabled == TRUE)
           attack_method = getAttackMethod(attack_cfg, chan[i].prn);
 
-#ifdef FLOAT_CARR_PHASE
-        iTable = (int)floor(chan[i].carr_phase * 512.0);
-#else
-        iTable = (chan[i].carr_phase >> 16) & 0x1ff;
-#endif
+        iTable = cleanCarrierTableIndex(&chan[i]);
         if (attack_method == ATTACK_METHOD_JAM_NOISE) {
           unsigned int *state = &attack_noise_state[chan[i].prn - 1];
           double noise_amp = (double)gain[i] * jam_js_linear;
@@ -484,40 +587,7 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
         i_acc += ip;
         q_acc += qp;
 
-        chan[i].code_phase += chan[i].f_code * delt;
-
-        if (chan[i].code_phase >= CA_SEQ_LEN) {
-          chan[i].code_phase -= CA_SEQ_LEN;
-          chan[i].icode++;
-
-          if (chan[i].icode >= 20) {
-            chan[i].icode = 0;
-            chan[i].ibit++;
-
-            if (chan[i].ibit >= 30) {
-              chan[i].ibit = 0;
-              chan[i].iword++;
-            }
-
-            chan[i].dataBit =
-                (int)((chan[i].dwrd[chan[i].iword] >> (29 - chan[i].ibit)) &
-                      0x1UL) *
-                    2 -
-                1;
-          }
-        }
-
-        chan[i].codeCA = chan[i].ca[(int)chan[i].code_phase] * 2 - 1;
-
-#ifdef FLOAT_CARR_PHASE
-        chan[i].carr_phase += chan[i].f_carr * delt;
-        if (chan[i].carr_phase >= 1.0)
-          chan[i].carr_phase -= 1.0;
-        else if (chan[i].carr_phase < 0.0)
-          chan[i].carr_phase += 1.0;
-#else
-        chan[i].carr_phase += chan[i].carr_phasestep;
-#endif
+        advanceCleanChannelSample(&chan[i], delt);
       }
     }
 
@@ -526,6 +596,25 @@ generateEpoch(short *iq_buff, int sample_count, channel_t chan[MAX_CHAN],
 
     iq_buff[isamp * 2] = clipInt16(i_acc);
     iq_buff[isamp * 2 + 1] = clipInt16(q_acc);
+  }
+}
+
+static void renderCleanEpochWide(double *iq_buff, int sample_count,
+                                 channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
+                                 double delt) {
+  for (int isamp = 0; isamp < sample_count; ++isamp) {
+    int i_acc = 0;
+    int q_acc = 0;
+    for (int i = 0; i < MAX_CHAN; ++i) {
+      if (chan[i].prn <= 0)
+        continue;
+      int i_table = cleanCarrierTableIndex(&chan[i]);
+      i_acc += chan[i].dataBit * chan[i].codeCA * cosTable512[i_table] * gain[i];
+      q_acc += chan[i].dataBit * chan[i].codeCA * sinTable512[i_table] * gain[i];
+      advanceCleanChannelSample(&chan[i], delt);
+    }
+    iq_buff[2 * isamp] = (double)i_acc / 128.0;
+    iq_buff[2 * isamp + 1] = (double)q_acc / 128.0;
   }
 }
 
@@ -538,7 +627,8 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
                             double elvmask, int trimble_rtcm_mode,
                             int *trimble_rtcm_alive,
                             rtcm3_nav_stream_t *trimble_rtcm_stream,
-                            const attack_config_t *attack_cfg) {
+                            const attack_config_t *attack_cfg,
+                            const int *required_prns) {
   int i;
   int eph_changed = FALSE;
 
@@ -592,9 +682,11 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
       generateNavMsg(grx, &chan[i], 0);
   }
 
-      allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask,
-                      attack_cfg, synth_cfg, nullptr);
+  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask, attack_cfg,
+                  synth_cfg, required_prns);
 }
+
+#include "player/bladetx_matched.hpp"
 
 ////////////////////////////////////////////////////////////
 // Usage
@@ -633,10 +725,23 @@ static void bladetx_usage(void) {
       "  --gps-time-ppm <ppm>        Scale generated GPS elapsed time "
       "(default 0)\n"
       "  --tx-time-scale-ppm <ppm>   Alias for --gps-time-ppm\n"
+      "  --rate <sps>                TX sample rate (default 2600000)\n"
       "  --txvga1 <dB>               TX VGA1 gain [-35..-4] (default %d)\n"
       "  --txvga2 <dB>               TX VGA2 gain [0..25] (default %d)\n"
       "  --device <devstr>           bladeRF device string (default: auto)\n"
       "  --prebuffer <N>             Pre-buffer epochs (default 5)\n"
+      "\n"
+      "Continuous matched-code jammer-only mode:\n"
+      "  --matched-code-target-prns <list>  Sole jammer PRN selector\n"
+      "  --matched-code-amplitude <value>   Jammer RMS/full-scale amplitude\n"
+      "  --matched-code-phase-seed <N>      Independent carrier-phase seed\n"
+      "  --manifest <file>                  Required run manifest output\n"
+      "  --trajectory <file>                Target-state artifact output\n"
+      "  --calibration-id <text>            Controlled setup identity\n"
+      "  --confirm-controlled-rf            Required for live matched-code TX\n"
+      "  --dry-run                          Validate 100 ms without opening bladeRF\n"
+      "  Mode starts at sample zero and runs until SIGINT/SIGTERM; -P, -d,\n"
+      "  -n, J/S, onset, offset, and ramp controls are not accepted.\n"
       "\n"
       "Trimble 1PPS time-tag options (mutually exclusive with -n and "
       "--gps-week/tow):\n"
@@ -721,6 +826,7 @@ int main(int argc, char *argv[]) {
   char navfile[MAX_CHAR];
 
   double samp_freq;
+  unsigned int requested_samplerate = TX_SAMPLERATE;
   int iq_buff_size;
 
   int result;
@@ -738,6 +844,7 @@ int main(int argc, char *argv[]) {
   int iduration;
   int verb = FALSE;
   int duration_specified = FALSE;
+  int partial_prns_set = FALSE;
   int current_time_mode = FALSE;
   int stream_mode = FALSE;
   int stream_forever = FALSE;
@@ -768,6 +875,15 @@ int main(int argc, char *argv[]) {
   int txvga2 = TX_VGA2_DEFAULT;
   char blade_devstr[256] = "";
   int prebuffer_count = PREBUFFER_DEFAULT;
+
+  // Matched-code jammer-only mode
+  MatchedCodeOptions matched_options;
+  MatchedCodeRunResult matched_result;
+  matched_code_plan_t matched_plan{};
+  int matched_required_prns[MAX_SAT] = {0};
+  std::string matched_ephemeris_sha256;
+  std::string matched_scenario_sha256;
+  std::string matched_error;
 
   // Trimble time-tag mode
   char trimble_host[256] = "";
@@ -844,6 +960,14 @@ int main(int argc, char *argv[]) {
       bladetx_usage();
       return 0;
     }
+    if (strcmp(opt, "dry-run") == 0) {
+      matched_options.dry_run = true;
+      continue;
+    }
+    if (strcmp(opt, "confirm-controlled-rf") == 0) {
+      matched_options.controlled_rf_confirmed = true;
+      continue;
+    }
 
     if (i + 1 >= argc) {
       fprintf(stderr, "ERROR: Missing value for option --%s.\n", opt);
@@ -888,12 +1012,25 @@ int main(int argc, char *argv[]) {
       gps_time_ppm = parsed;
       continue;
     }
+    if (strcmp(opt, "rate") == 0) {
+      char *end = NULL;
+      errno = 0;
+      unsigned long parsed = strtoul(val, &end, 10);
+      if (val[0] == '\0' || val[0] == '-' || errno == ERANGE || end == NULL ||
+          *end != '\0' || parsed == 0 || parsed > UINT_MAX) {
+        fprintf(stderr, "ERROR: --rate must be a positive integer sps.\n");
+        return 1;
+      }
+      requested_samplerate = (unsigned int)parsed;
+      continue;
+    }
     if (strcmp(opt, "txvga1") == 0) {
       txvga1 = atoi(val);
       if (txvga1 < -35 || txvga1 > -4) {
         fprintf(stderr, "ERROR: --txvga1 must be -35..-4 dB.\n");
         return 1;
       }
+      matched_options.txvga1_set = true;
       continue;
     }
     if (strcmp(opt, "txvga2") == 0) {
@@ -902,11 +1039,13 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR: --txvga2 must be 0..25 dB.\n");
         return 1;
       }
+      matched_options.txvga2_set = true;
       continue;
     }
     if (strcmp(opt, "device") == 0) {
       strncpy(blade_devstr, val, sizeof(blade_devstr) - 1);
       blade_devstr[sizeof(blade_devstr) - 1] = '\0';
+      matched_options.device_set = true;
       continue;
     }
     if (strcmp(opt, "prebuffer") == 0) {
@@ -915,6 +1054,52 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR: prebuffer must be 1-50.\n");
         return 1;
       }
+      continue;
+    }
+    if (strcmp(opt, "matched-code-target-prns") == 0) {
+      matched_options.enabled = true;
+      matched_options.target_prns = val;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-amplitude") == 0) {
+      char *end = NULL;
+      errno = 0;
+      matched_options.amplitude = strtod(val, &end);
+      if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
+          !std::isfinite(matched_options.amplitude) ||
+          matched_options.amplitude <= 0.0 || matched_options.amplitude > 1.0) {
+        fprintf(stderr,
+                "ERROR: --matched-code-amplitude must be in (0, 1].\n");
+        return 1;
+      }
+      matched_options.amplitude_set = true;
+      continue;
+    }
+    if (strcmp(opt, "matched-code-phase-seed") == 0) {
+      char *end = NULL;
+      errno = 0;
+      unsigned long long parsed = strtoull(val, &end, 10);
+      if (val[0] == '\0' || val[0] == '-' || errno == ERANGE || end == NULL ||
+          *end != '\0') {
+        fprintf(stderr,
+                "ERROR: --matched-code-phase-seed must be an unsigned "
+                "integer.\n");
+        return 1;
+      }
+      matched_options.phase_seed = (uint64_t)parsed;
+      matched_options.phase_seed_set = true;
+      continue;
+    }
+    if (strcmp(opt, "manifest") == 0) {
+      matched_options.manifest_path = val;
+      continue;
+    }
+    if (strcmp(opt, "trajectory") == 0) {
+      matched_options.trajectory_path = val;
+      continue;
+    }
+    if (strcmp(opt, "calibration-id") == 0) {
+      matched_options.calibration_id = val;
       continue;
     }
 
@@ -1064,6 +1249,7 @@ int main(int argc, char *argv[]) {
       duration = atof(optarg);
       break;
     case 'P':
+      partial_prns_set = TRUE;
       if (parsePartialPrns(&attack_cfg, optarg) == FALSE) {
         fprintf(stderr, "ERROR: Invalid PRN list.\n");
         return 1;
@@ -1083,10 +1269,12 @@ int main(int argc, char *argv[]) {
       attack_enabled = TRUE;
       break;
     case 'J':
+      matched_options.legacy_js_set = true;
       attack_cfg.jam_js_db = atof(optarg);
       jam_js_linear = pow(10.0, attack_cfg.jam_js_db / 20.0);
       break;
     case 'G':
+      matched_options.legacy_gain_boost_set = true;
       attack_cfg.gain_boost_db = atof(optarg);
       break;
     case 'r': {
@@ -1229,6 +1417,130 @@ int main(int argc, char *argv[]) {
 
   stream_forever = (stream_mode == TRUE && staticLocationMode == TRUE &&
                     duration_specified == FALSE);
+
+  if (!matched_options.enabled &&
+      (matched_options.dry_run || matched_options.controlled_rf_confirmed ||
+       matched_options.amplitude_set || matched_options.phase_seed_set ||
+       !matched_options.manifest_path.empty() ||
+       !matched_options.trajectory_path.empty() ||
+       !matched_options.calibration_id.empty())) {
+    fprintf(stderr,
+            "ERROR: matched-code-only options require "
+            "--matched-code-target-prns.\n");
+    return 1;
+  }
+
+  if (matched_options.enabled) {
+    char plan_error[256] = "";
+    if (!matched_options.amplitude_set || !matched_options.phase_seed_set ||
+        matched_options.manifest_path.empty()) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires target PRNs, output "
+              "amplitude, phase seed, and --manifest.\n");
+      return 1;
+    }
+    if (duration_specified) {
+      fprintf(stderr,
+              "ERROR: continuous matched-code mode does not accept -d.\n");
+      return 1;
+    }
+    if (current_time_mode == TRUE) {
+      fprintf(stderr,
+              "ERROR: continuous matched-code mode does not accept -n; use "
+              "Trimble time-tag timing for live TX.\n");
+      return 1;
+    }
+    if (partial_prns_set == TRUE) {
+      fprintf(stderr,
+              "ERROR: matched-code jammer-only mode rejects -P; "
+              "--matched-code-target-prns is the sole jammer selector.\n");
+      return 1;
+    }
+    if (attack_enabled || matched_options.legacy_js_set ||
+        matched_options.legacy_gain_boost_set) {
+      fprintf(stderr,
+              "ERROR: matched-code mode is mutually exclusive with -A, -J, "
+              "and -G legacy attack controls.\n");
+      return 1;
+    }
+    if (trimble_rtcm_mode == TRUE) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires frozen RINEX ephemeris; "
+              "live RTCM is not allowed after preflight.\n");
+      return 1;
+    }
+    if (fabs((double)requested_samplerate * EPOCH_TARGET_SEC -
+             round((double)requested_samplerate * EPOCH_TARGET_SEC)) >
+        1.0e-6) {
+      fprintf(stderr,
+              "ERROR: matched-code mode requires a rate with an integer "
+              "100 ms epoch sample count.\n");
+      return 1;
+    }
+    if (!initializeMatchedJammerPlan(
+            &matched_plan, (double)requested_samplerate,
+            matched_options.target_prns, matched_options.amplitude,
+            matched_options.phase_seed, plan_error, sizeof(plan_error))) {
+      fprintf(stderr, "ERROR: invalid matched-code plan: %s\n", plan_error);
+      return 1;
+    }
+    for (size_t target = 0; target < matched_plan.target_count; ++target)
+      matched_required_prns[matched_plan.target_prns[target] - 1] = 1;
+    if (matched_options.trajectory_path.empty()) {
+      std::string base = matched_options.manifest_path;
+      if (base.size() >= 5 && base.substr(base.size() - 5) == ".json")
+        base.resize(base.size() - 5);
+      matched_options.trajectory_path = base + ".trajectory.csv";
+    }
+    std::error_code manifest_error;
+    std::error_code trajectory_error;
+    std::filesystem::path manifest_absolute = std::filesystem::absolute(
+        matched_options.manifest_path, manifest_error);
+    std::filesystem::path trajectory_absolute = std::filesystem::absolute(
+        matched_options.trajectory_path, trajectory_error);
+    if (manifest_error || trajectory_error ||
+        manifest_absolute.lexically_normal() ==
+            trajectory_absolute.lexically_normal()) {
+      fprintf(stderr,
+              "ERROR: --manifest and --trajectory must use different valid "
+              "paths.\n");
+      return 1;
+    }
+    if (!matched_options.dry_run) {
+      if (!matched_options.device_set || !matched_options.txvga1_set ||
+          !matched_options.txvga2_set ||
+          matched_options.calibration_id.empty() ||
+          !matched_options.controlled_rf_confirmed) {
+        fprintf(stderr,
+                "ERROR: live matched-code TX requires explicit --device, "
+                "--txvga1, --txvga2, --calibration-id, and "
+                "--confirm-controlled-rf.\n");
+        return 1;
+      }
+      if (!trimble_mode) {
+        fprintf(stderr,
+                "ERROR: live matched-code TX on bladeRF 1.0 requires the "
+                "Trimble time-tag path; the free-running bladeRF counter is "
+                "not a GPS time source.\n");
+        return 1;
+      }
+    }
+    {
+      std::string probe_path = matched_options.manifest_path + ".probe";
+      std::ofstream probe(probe_path, std::ios::out | std::ios::trunc);
+      if (!probe) {
+        fprintf(stderr, "ERROR: manifest path is not writable: %s\n",
+                matched_options.manifest_path.c_str());
+        return 1;
+      }
+      probe.close();
+      if (!probe || std::remove(probe_path.c_str()) != 0) {
+        fprintf(stderr, "ERROR: manifest path cannot be finalized: %s\n",
+                matched_options.manifest_path.c_str());
+        return 1;
+      }
+    }
+  }
 
   if (!stream_forever && duration < 0.0) {
     fprintf(stderr, "ERROR: Invalid duration.\n");
@@ -1396,27 +1708,43 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if (matched_options.enabled) {
+    char digest[SHA256_HEX_SIZE];
+    if (sha256_file_hex(navfile, digest) != 0) {
+      fprintf(stderr, "ERROR: cannot checksum frozen navigation file '%s'.\n",
+              navfile);
+      return 1;
+    }
+    matched_ephemeris_sha256 = digest;
+  }
+
   ////////////////////////////////////////////////////////////
   // Configure bladeRF
   ////////////////////////////////////////////////////////////
 
   struct bladerf *dev = NULL;
   int status;
+  int blade_module_enabled = FALSE;
 
-  fprintf(stderr, "\n[BLADE] Opening bladeRF device ...\n");
+  if (!(matched_options.enabled && matched_options.dry_run)) {
+    fprintf(stderr, "\n[BLADE] Opening bladeRF device ...\n");
 
-  status = bladerf_open(&dev, blade_devstr[0] ? blade_devstr : NULL);
-  if (status != 0) {
-    fprintf(stderr, "ERROR: Failed to open bladeRF: %s\n",
-            bladerf_strerror(status));
-    return 1;
-  }
+    status = bladerf_open(&dev, blade_devstr[0] ? blade_devstr : NULL);
+    if (status != 0) {
+      fprintf(stderr, "ERROR: Failed to open bladeRF: %s\n",
+              bladerf_strerror(status));
+      return 1;
+    }
 
   {
     struct bladerf_devinfo info;
     if (bladerf_get_devinfo(dev, &info) == 0) {
       fprintf(stderr, "[BLADE] Device: %s  serial: %s\n",
               bladerf_backend_str(info.backend), info.serial);
+      matched_result.device_type = "bladerf1";
+      matched_result.device_product = "Nuand bladeRF";
+      matched_result.device_serial = info.serial;
+      matched_result.device_address = blade_devstr;
     }
   }
 
@@ -1435,8 +1763,9 @@ int main(int argc, char *argv[]) {
     // the requested value into the GPS-time model would leak a rate error
     // straight into pseudorange.  Block-scoped so the goto cleanup paths do
     // not cross its initialization.
-    unsigned int actual_samplerate = TX_SAMPLERATE;
-    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX, TX_SAMPLERATE,
+    unsigned int actual_samplerate = requested_samplerate;
+    status = bladerf_set_sample_rate(dev, BLADERF_MODULE_TX,
+                                     requested_samplerate,
                                      &actual_samplerate);
     if (status != 0) {
       fprintf(stderr, "ERROR: Failed to set TX sample rate: %s\n",
@@ -1445,7 +1774,17 @@ int main(int argc, char *argv[]) {
     }
     samp_freq = (double)actual_samplerate;
     fprintf(stderr, "[BLADE] TX sample rate: %u sps (requested %u sps)\n",
-            actual_samplerate, (unsigned int)TX_SAMPLERATE);
+            actual_samplerate, requested_samplerate);
+    if (matched_options.enabled &&
+        fabs(samp_freq - (double)requested_samplerate) >
+            MATCHED_RATE_TOLERANCE_HZ) {
+      fprintf(stderr,
+              "ERROR: actual TX rate %.9f differs from requested %u by more "
+              "than %.1f Hz.\n",
+              samp_freq, requested_samplerate, MATCHED_RATE_TOLERANCE_HZ);
+      status = BLADERF_ERR_RANGE;
+      goto cleanup_dev;
+    }
   }
 
   status = bladerf_set_bandwidth(dev, BLADERF_MODULE_TX, TX_BANDWIDTH, NULL);
@@ -1488,11 +1827,54 @@ int main(int argc, char *argv[]) {
             bladerf_strerror(status));
     goto cleanup_dev;
   }
+  blade_module_enabled = TRUE;
+
+  matched_result.actual_rate_hz = samp_freq;
+  {
+    bladerf_frequency actual_frequency = 0;
+    bladerf_get_frequency(dev, BLADERF_MODULE_TX, &actual_frequency);
+    matched_result.actual_frequency_hz = (double)actual_frequency;
+    bladerf_get_txvga1(dev, &matched_result.actual_txvga1_db);
+    bladerf_get_txvga2(dev, &matched_result.actual_txvga2_db);
+  }
+  } else {
+    status = 0;
+    samp_freq = (double)requested_samplerate;
+    fprintf(stderr,
+            "\n[DRY-RUN] bladeRF discovery/open/configuration is "
+            "intentionally skipped.\n");
+    matched_result.device_type = "not_opened";
+    matched_result.device_product = "not_opened";
+    matched_result.device_address = blade_devstr;
+    matched_result.actual_rate_hz = samp_freq;
+    matched_result.actual_frequency_hz = TX_FREQUENCY;
+    matched_result.actual_txvga1_db = txvga1;
+    matched_result.actual_txvga2_db = txvga2;
+    matched_result.start_mode = "frozen_rinex_epoch";
+  }
 
   // Epoch plan locked to the actual device rate captured above.
   delt = 1.0 / samp_freq;
   initEpochPlan(&epoch_plan, samp_freq);
   iq_buff_size = epoch_plan.max_samples;
+
+  if (matched_options.enabled) {
+    char plan_error[256] = "";
+    if (fabs(samp_freq * EPOCH_TARGET_SEC -
+             round(samp_freq * EPOCH_TARGET_SEC)) > 1.0e-6 ||
+        !initializeMatchedJammerPlan(
+            &matched_plan, samp_freq, matched_options.target_prns,
+            matched_options.amplitude, matched_options.phase_seed, plan_error,
+            sizeof(plan_error))) {
+      fprintf(stderr,
+              "ERROR: actual-rate matched-code plan is unsupported: %s\n",
+              plan_error[0] != '\0' ? plan_error
+                                     : "non-integral 100 ms epoch");
+      if (blade_module_enabled)
+        goto cleanup_module;
+      return 1;
+    }
+  }
 
   fprintf(stderr, "[TIMING] Generator sample rate: %.6f Hz\n", samp_freq);
   fprintf(stderr, "[TIMING] GPS time scale: %.9f (%+.6f ppm)\n",
@@ -1629,10 +2011,31 @@ int main(int argc, char *argv[]) {
 
   fprintf(stderr, "Start time = %4d/%02d/%02d,%02d:%02d:%06.3f (%d:%.3f)\n",
           t0.y, t0.m, t0.d, t0.hh, t0.mm, t0.sec, g0.week, g0.sec);
-  if (stream_forever)
+  if (matched_options.enabled)
+    fprintf(stderr, "Duration = continuous until SIGINT/SIGTERM\n");
+  else if (stream_forever)
     fprintf(stderr, "Duration = streaming until interrupted\n");
   else
     fprintf(stderr, "Duration = %.1f [sec]\n", (double)numd / 10.0);
+
+  if (matched_options.enabled) {
+    std::ostringstream scenario;
+    scenario << std::setprecision(17) << matched_ephemeris_sha256 << '|'
+             << xyz[0][0] << '|' << xyz[0][1] << '|' << xyz[0][2] << '|'
+             << g0.week << '|' << g0.sec << '|' << matched_plan.sample_rate_hz
+             << "|continuous|" << matched_options.target_prns << '|'
+             << matched_options.amplitude << '|' << matched_options.phase_seed
+             << '|';
+    for (sv = 0; sv < MAX_SAT; ++sv) {
+      scenario << (int)synth_cfg.mode[sv] << ':' << synth_cfg.source_prn[sv]
+               << ':' << synth_cfg.azimuth[sv] << ':' << synth_cfg.elevation[sv]
+               << ';';
+    }
+    std::string canonical = scenario.str();
+    char digest[SHA256_HEX_SIZE];
+    sha256_bytes_hex(canonical.data(), canonical.size(), digest);
+    matched_scenario_sha256 = digest;
+  }
 
   ////////////////////////////////////////////////////////////
   // Select ephemeris set
@@ -1756,7 +2159,8 @@ int main(int argc, char *argv[]) {
 
   grx = g0;
   allocateChannel(chan, active_eph, ionoutc, grx, xyz[0], elvmask, &attack_cfg,
-                  &synth_cfg, nullptr);
+                  &synth_cfg,
+                  matched_options.enabled ? matched_required_prns : nullptr);
 
   for (i = 0; i < MAX_CHAN; i++) {
     if (chan[i].prn > 0)
@@ -1785,6 +2189,153 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "\n");
     if (attack_cfg.gain_boost_db != 0.0)
       fprintf(stderr, "  Power boost: +%.1f dB\n", attack_cfg.gain_boost_db);
+  }
+
+  if (matched_options.enabled) {
+    const ephem_t(*matched_source)[MAX_SAT] =
+        has_revive_mode == TRUE ? revive_scan_eph : eph;
+    matched_result.status = "incomplete";
+    matched_result.exit_status = 1;
+    matched_result.start_mode =
+        matched_options.dry_run ? "frozen_rinex_epoch" : "trimble_time_tag";
+
+    auto write_matched_manifest = [&]() {
+      return writeMatchedManifestAtomic(
+          matched_options, matched_plan, matched_result, navfile,
+          matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
+          (double)requested_samplerate, blade_devstr, txvga1, txvga2,
+          prebuffer_count, trimble_tx_cal_ns, gps_time_ppm, trimble_mode);
+    };
+
+    if (!write_matched_manifest()) {
+      fprintf(stderr, "ERROR: cannot write incomplete matched-code manifest.\n");
+      free(iq_buff);
+      if (blade_module_enabled)
+        bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
+      if (dev != nullptr)
+        bladerf_close(dev);
+      return 1;
+    }
+
+    fprintf(stderr,
+            "\n[MATCHED] bladeRF jammer-only preflight: targets=%s "
+            "validation-samples=%llu amplitude=%.9f "
+            "predicted-headroom=%.3f dB\n",
+            matched_options.target_prns.c_str(),
+            (unsigned long long)matched_plan.total_samples,
+            matched_options.amplitude, matched_plan.predicted_headroom_db);
+    if (!runMatchedPreflight(
+            &matched_plan, &matched_result, matched_options, chan, gain,
+            active_eph, &synth_eph, ieph, &epoch_plan, eph, matched_source,
+            neph, g0, &ionoutc, &synth_cfg, &attack_cfg, elvmask,
+            matched_required_prns, gps_time_ppm, delt, path_loss_enable,
+            fixed_gain, ant_pat, &matched_error)) {
+      matched_result.status = "preflight_error";
+      matched_result.failure_reason = matched_error;
+      matched_result.exit_status = 1;
+      write_matched_manifest();
+      fprintf(stderr, "ERROR: matched-code preflight failed: %s\n",
+              matched_error.c_str());
+      free(iq_buff);
+      if (blade_module_enabled)
+        bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
+      if (dev != nullptr)
+        bladerf_close(dev);
+      return 1;
+    }
+    fprintf(stderr,
+            "[MATCHED] Clean simulator IQ is internal alignment state only "
+            "and will be discarded before the bladeRF adapter.\n");
+
+    if (matched_options.dry_run) {
+      if (runMatchedDryRender(
+              matched_plan, &matched_result, chan, gain, active_eph,
+              &synth_eph, ieph, &epoch_plan, eph, matched_source, neph, g0,
+              &ionoutc, &synth_cfg, &attack_cfg, elvmask,
+              matched_required_prns, gps_time_ppm, delt, path_loss_enable,
+              fixed_gain, ant_pat, &matched_error)) {
+        matched_result.status = "dry_run";
+        matched_result.exit_status = 0;
+      } else {
+        matched_result.status =
+            matched_result.source_metrics.clipped_components > 0
+                ? "clipping"
+                : "preflight_error";
+        matched_result.failure_reason = matched_error;
+        matched_result.exit_status = 1;
+      }
+      if (!write_matched_manifest()) {
+        fprintf(stderr, "ERROR: cannot finalize dry-run manifest.\n");
+        free(iq_buff);
+        return 1;
+      }
+      fprintf(stderr,
+              "[DRY-RUN] status=%s rendered=%llu clipping=%llu; bladeRF was "
+              "never opened.\n",
+              matched_result.status.c_str(),
+              (unsigned long long)matched_result.quantized_samples,
+              (unsigned long long)
+                  matched_result.source_metrics.clipped_components);
+      free(iq_buff);
+      return matched_result.exit_status;
+    }
+
+    if (!write_matched_manifest()) {
+      fprintf(stderr,
+              "ERROR: cannot update matched-code manifest before arming.\n");
+      free(iq_buff);
+      bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
+      bladerf_close(dev);
+      return 1;
+    }
+
+    bool completed = runMatchedTransmitter(
+        matched_plan, matched_options, &matched_result, dev,
+        (double)tx_advance_ns * 1.0e-9, trimble_tag_mono,
+        (double)trimble_tag_lead_ms * 1.0e-3,
+        (double)trimble_start_offset, prebuffer_count, chan, gain, active_eph,
+        &synth_eph, ieph, &epoch_plan, eph, matched_source, neph, g0, &ionoutc,
+        &synth_cfg, &attack_cfg, elvmask, matched_required_prns, gps_time_ppm,
+        delt, path_loss_enable, fixed_gain, ant_pat, &matched_error);
+    if (completed) {
+      matched_result.status = "stopped";
+      matched_result.exit_status = 0;
+    } else {
+      matched_result.failure_reason = matched_error;
+      matched_result.exit_status = 1;
+      if (matched_result.time_errors > 0)
+        matched_result.status = "time_error";
+      else if (matched_result.sequence_errors > 0)
+        matched_result.status = "sequence_error";
+      else if (matched_result.underflows > 0)
+        matched_result.status = "underflow";
+      else if (matched_result.source_metrics.clipped_components > 0)
+        matched_result.status = "clipping";
+      else if (matched_result.interrupted)
+        matched_result.status = "interrupted";
+      else if (matched_error.find("stale") != std::string::npos)
+        matched_result.status = "preflight_error";
+      else
+        matched_result.status = "device_error";
+    }
+    if (!write_matched_manifest()) {
+      fprintf(stderr, "ERROR: cannot finalize matched-code run manifest.\n");
+      matched_result.exit_status = 1;
+    }
+    fprintf(stderr,
+            "[TX] Matched-code status=%s sent=%llu underflows=%llu "
+            "sequence-errors=%llu time-errors=%llu clipping=%llu\n",
+            matched_result.status.c_str(),
+            (unsigned long long)matched_result.sent_samples,
+            (unsigned long long)matched_result.underflows,
+            (unsigned long long)matched_result.sequence_errors,
+            (unsigned long long)matched_result.time_errors,
+            (unsigned long long)
+                matched_result.source_metrics.clipped_components);
+    free(iq_buff);
+    bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
+    bladerf_close(dev);
+    return matched_result.exit_status;
   }
 
   ////////////////////////////////////////////////////////////
@@ -1857,7 +2408,7 @@ int main(int argc, char *argv[]) {
                         has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
                         &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc,
                         grx, elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
-                        &trimble_rtcm_stream, &attack_cfg);
+                        &trimble_rtcm_stream, &attack_cfg, nullptr);
 
       iumd = pb + 2;
     }
@@ -2096,7 +2647,7 @@ int main(int argc, char *argv[]) {
                         has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
                         &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc,
                         grx, elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
-                        &trimble_rtcm_stream, &attack_cfg);
+                        &trimble_rtcm_stream, &attack_cfg, nullptr);
 
         if (verb) {
           fprintf(stderr, "\n");
@@ -2143,11 +2694,14 @@ int main(int argc, char *argv[]) {
 
 cleanup_module:
   rtcm3_nav_close(&trimble_rtcm_stream);
-  bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
+  if (blade_module_enabled && dev != NULL)
+    bladerf_enable_module(dev, BLADERF_MODULE_TX, false);
 
 cleanup_dev:
-  fprintf(stderr, "[BLADE] Closing device...\n");
-  bladerf_close(dev);
+  if (dev != NULL) {
+    fprintf(stderr, "[BLADE] Closing device...\n");
+    bladerf_close(dev);
+  }
 
   return status != 0 ? 1 : 0;
 }

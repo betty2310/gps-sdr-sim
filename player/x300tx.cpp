@@ -10,19 +10,19 @@
  * Copyright (c) 2024-2026  — same licence as gps-sdr-sim
  */
 
-#include <uhd/stream.hpp>
 #include <uhd/device.hpp>
+#include <uhd/stream.hpp>
 #include <uhd/types/metadata.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -30,8 +30,8 @@
 #include <limits>
 #include <sstream>
 #include <string>
-#include <utility>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -57,9 +57,9 @@ extern "C" {
 // Constants
 ////////////////////////////////////////////////////////////
 
-#define TX_FREQUENCY 1575420000.0            // GPS L1 (Hz)
-#define TX_SAMPLERATE 2500000.0              // 2.5 Msps, exact from X300 200 MHz clock
-#define PREBUFFER_DEFAULT 5                  // 0.5 s pre-buffer
+#define TX_FREQUENCY 1575420000.0 // GPS L1 (Hz)
+#define TX_SAMPLERATE 2500000.0   // 2.5 Msps, exact from X300 200 MHz clock
+#define PREBUFFER_DEFAULT 5       // 0.5 s pre-buffer
 #define TX_START_LEAD_DEFAULT_NS 250000000LL // 250 ms startup lead
 #define TX_START_LEAD_MAX_SEC 60.0
 #define TX_START_LEAD_MIN_SEC 0.02
@@ -260,8 +260,8 @@ static int trimbleTcpConnect(const char *host, int port, int timeout_ms) {
  */
 static const char *findUtcMarker(const char *buf, int len) {
   for (int i = 0; i <= len - 4; i++) {
-    if (buf[i] == 'U' && buf[i+1] == 'T' &&
-        buf[i+2] == 'C' && buf[i+3] == ' ')
+    if (buf[i] == 'U' && buf[i + 1] == 'T' && buf[i + 2] == 'C' &&
+        buf[i + 3] == ' ')
       return &buf[i];
   }
   return NULL;
@@ -277,8 +277,7 @@ static const char *findUtcMarker(const char *buf, int len) {
  *
  * Returns 1 on success, 0 on failure/timeout.
  */
-static int trimbleReadTag(int fd, int timeout_ms,
-                          int *yy, int *mm, int *dd,
+static int trimbleReadTag(int fd, int timeout_ms, int *yy, int *mm, int *dd,
                           int *hh, int *min, int *sec) {
   char buf[4096];
   int pos = 0;
@@ -287,14 +286,17 @@ static int trimbleReadTag(int fd, int timeout_ms,
 
   while (getMonotonicSeconds() < deadline) {
     int remaining_ms = (int)((deadline - getMonotonicSeconds()) * 1000.0);
-    if (remaining_ms <= 0) break;
+    if (remaining_ms <= 0)
+      break;
 
     struct pollfd pfd = {fd, POLLIN, 0};
     int ret = poll(&pfd, 1, remaining_ms);
-    if (ret <= 0) break;
+    if (ret <= 0)
+      break;
 
     ssize_t n = read(fd, buf + pos, sizeof(buf) - (size_t)pos - 1);
-    if (n <= 0) break;
+    if (n <= 0)
+      break;
     pos += (int)n;
 
     // Scan for "UTC " in the accumulated buffer
@@ -307,19 +309,15 @@ static int trimbleReadTag(int fd, int timeout_ms,
         // Copy into a NUL-terminated temp for sscanf
         char tmp[64];
         int copy_len = remaining_bytes < (int)sizeof(tmp) - 1
-                       ? remaining_bytes : (int)sizeof(tmp) - 1;
+                           ? remaining_bytes
+                           : (int)sizeof(tmp) - 1;
         memcpy(tmp, utc, copy_len);
         tmp[copy_len] = '\0';
 
-        int nn = sscanf(tmp + 4, "%d.%d.%d %d:%d:%d",
-                        yy, mm, dd, hh, min, sec);
-        if (nn >= 6 &&
-            *yy >= 0 && *yy <= 99 &&
-            *mm >= 1 && *mm <= 12 &&
-            *dd >= 1 && *dd <= 31 &&
-            *hh >= 0 && *hh <= 23 &&
-            *min >= 0 && *min <= 59 &&
-            *sec >= 0 && *sec <= 59) {
+        int nn = sscanf(tmp + 4, "%d.%d.%d %d:%d:%d", yy, mm, dd, hh, min, sec);
+        if (nn >= 6 && *yy >= 0 && *yy <= 99 && *mm >= 1 && *mm <= 12 &&
+            *dd >= 1 && *dd <= 31 && *hh >= 0 && *hh <= 23 && *min >= 0 &&
+            *min <= 59 && *sec >= 0 && *sec <= 59) {
           return 1;
         }
       }
@@ -478,8 +476,8 @@ static int hasReviveMode(const synth_config_t *cfg) {
 ////////////////////////////////////////////////////////////
 
 static void prepareEpoch(channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
-                         ephem_t *active_eph, ionoutc_t *ionoutc,
-                         gpstime_t grx, double epoch_duration, double delt,
+                         ephem_t *active_eph, ionoutc_t *ionoutc, gpstime_t grx,
+                         double epoch_duration, double delt,
                          int path_loss_enable, int fixed_gain,
                          double ant_pat[37], int attack_enabled,
                          const attack_config_t *attack_cfg) {
@@ -504,15 +502,13 @@ static void prepareEpoch(channel_t chan[MAX_CHAN], int gain[MAX_CHAN],
       path_loss = 20200000.0 / rho.d;
       ibs = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
       ant_gain = ant_pat[ibs];
-      gain[i] = path_loss_enable == TRUE
-                    ? (int)(path_loss * ant_gain * 128.0)
-                    : fixed_gain;
+      gain[i] = path_loss_enable == TRUE ? (int)(path_loss * ant_gain * 128.0)
+                                         : fixed_gain;
       if (attack_enabled == TRUE)
         applyGainAttack(attack_cfg, chan[i].prn, &gain[i]);
       if (attack_cfg != nullptr && attack_cfg->partial_mode &&
           attack_cfg->gain_boost_db != 0.0)
-        gain[i] =
-            (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
+        gain[i] = (int)(gain[i] * pow(10.0, attack_cfg->gain_boost_db / 20.0));
     }
   }
 }
@@ -678,12 +674,11 @@ static bool validateMatchedTargetUsability(
     bool synthetic = synth_config != nullptr && synth_config->enabled &&
                      synth_config->mode[satellite] != SYNTH_NONE;
     double azimuth_elevation[2];
-    int usable = synthetic
-                     ? (active_ephemeris[satellite].vflg == 1 ? TRUE : FALSE)
-                     : checkSatVisibility(active_ephemeris[satellite],
-                                          boundary_time, xyz[0],
-                                          elevation_mask,
-                                          azimuth_elevation);
+    int usable =
+        synthetic
+            ? (active_ephemeris[satellite].vflg == 1 ? TRUE : FALSE)
+            : checkSatVisibility(active_ephemeris[satellite], boundary_time,
+                                 xyz[0], elevation_mask, azimuth_elevation);
 
     if (usable != TRUE) {
       std::ostringstream message;
@@ -703,8 +698,8 @@ static void writeTrajectoryHeader(std::ofstream &trajectory,
   trajectory << "# schema=gps-sdr-sim.target-trajectory.v1\n";
   trajectory << "# sample_rate_hz=" << plan.sample_rate_hz << "\n";
   trajectory << "# epoch_cadence_samples="
-             << static_cast<uint64_t>(std::llround(plan.sample_rate_hz *
-                                                   EPOCH_TARGET_SEC))
+             << static_cast<uint64_t>(
+                    std::llround(plan.sample_rate_hz * EPOCH_TARGET_SEC))
              << "\n";
   trajectory << "# gps_week=" << start_time.week << "\n";
   trajectory << "# gps_tow=" << start_time.sec << "\n";
@@ -713,9 +708,9 @@ static void writeTrajectoryHeader(std::ofstream &trajectory,
                 "code_rate_chips_per_s,clean_gain\n";
 }
 
-static void writeTrajectoryStates(
-    std::ofstream &trajectory, const matched_code_target_state_t *states,
-    size_t state_count) {
+static void writeTrajectoryStates(std::ofstream &trajectory,
+                                  const matched_code_target_state_t *states,
+                                  size_t state_count) {
   for (size_t index = 0; index < state_count; ++index) {
     const matched_code_target_state_t &state = states[index];
     trajectory << state.sample_offset << ',' << state.prn << ','
@@ -725,17 +720,15 @@ static void writeTrajectoryStates(
   }
 }
 
-static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
-                            const ephem_t synth_source[][MAX_SAT], int neph,
-                            int *ieph, ephem_t *active_eph,
-                            synth_ephem_store_t *synth_eph,
-                            const synth_config_t *synth_cfg,
-                            const ionoutc_t *ionoutc, gpstime_t grx,
-                            double elvmask, int trimble_rtcm_mode,
-                            int *trimble_rtcm_alive,
-                            rtcm3_nav_stream_t *trimble_rtcm_stream,
-                            const attack_config_t *attack_cfg,
-                            const int *required_prns) {
+static void
+refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
+                const ephem_t synth_source[][MAX_SAT], int neph, int *ieph,
+                ephem_t *active_eph, synth_ephem_store_t *synth_eph,
+                const synth_config_t *synth_cfg, const ionoutc_t *ionoutc,
+                gpstime_t grx, double elvmask, int trimble_rtcm_mode,
+                int *trimble_rtcm_alive,
+                rtcm3_nav_stream_t *trimble_rtcm_stream,
+                const attack_config_t *attack_cfg, const int *required_prns) {
   int i;
   int eph_changed = FALSE;
 
@@ -789,8 +782,8 @@ static void refreshNavState(channel_t chan[MAX_CHAN], ephem_t eph[][MAX_SAT],
       generateNavMsg(grx, &chan[i], 0);
   }
 
-  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask,
-                  attack_cfg, synth_cfg, required_prns);
+  allocateChannel(chan, active_eph, *ionoutc, grx, xyz[0], elvmask, attack_cfg,
+                  synth_cfg, required_prns);
 }
 
 static std::string jsonEscape(const std::string &value) {
@@ -798,13 +791,27 @@ static std::string jsonEscape(const std::string &value) {
 
   for (unsigned char character : value) {
     switch (character) {
-    case '"': escaped << "\\\""; break;
-    case '\\': escaped << "\\\\"; break;
-    case '\b': escaped << "\\b"; break;
-    case '\f': escaped << "\\f"; break;
-    case '\n': escaped << "\\n"; break;
-    case '\r': escaped << "\\r"; break;
-    case '\t': escaped << "\\t"; break;
+    case '"':
+      escaped << "\\\"";
+      break;
+    case '\\':
+      escaped << "\\\\";
+      break;
+    case '\b':
+      escaped << "\\b";
+      break;
+    case '\f':
+      escaped << "\\f";
+      break;
+    case '\n':
+      escaped << "\\n";
+      break;
+    case '\r':
+      escaped << "\\r";
+      break;
+    case '\t':
+      escaped << "\\t";
+      break;
     default:
       if (character < 0x20) {
         escaped << "\\u" << std::hex << std::setw(4) << std::setfill('0')
@@ -897,11 +904,10 @@ static bool initializeMatchedJammerPlan(matched_code_plan_t *plan,
 static bool writeMatchedManifestAtomic(
     const MatchedCodeOptions &options, const matched_code_plan_t &plan,
     const MatchedCodeRunResult &result, const char *navfile,
-    const std::string &ephemeris_sha256,
-    const std::string &scenario_sha256, gpstime_t sample_zero,
-    const double reference_xyz[3], double requested_rate_hz,
-    const char *device_address, size_t tx_channel, const char *tx_antenna,
-    double requested_gain_db, const char *clock_source,
+    const std::string &ephemeris_sha256, const std::string &scenario_sha256,
+    gpstime_t sample_zero, const double reference_xyz[3],
+    double requested_rate_hz, const char *device_address, size_t tx_channel,
+    const char *tx_antenna, double requested_gain_db, const char *clock_source,
     const char *time_source, int prebuffer_count, long long tx_delay_cal_ns,
     double gps_time_ppm, bool trimble_mode) {
   std::string temporary_path = options.manifest_path + ".tmp";
@@ -959,8 +965,7 @@ static bool writeMatchedManifestAtomic(
               "\"sha256\": \""
            << jsonEscape(scenario_sha256) << "\", \"ephemeris_path\": \""
            << jsonEscape(navfile != nullptr ? navfile : "")
-           << "\", \"ephemeris_sha256\": \""
-           << jsonEscape(ephemeris_sha256)
+           << "\", \"ephemeris_sha256\": \"" << jsonEscape(ephemeris_sha256)
            << "\", \"reference_ecef_m\": [" << reference_xyz[0] << ", "
            << reference_xyz[1] << ", " << reference_xyz[2]
            << "], \"sample_zero_gps_week\": " << sample_zero.week
@@ -989,10 +994,10 @@ static bool writeMatchedManifestAtomic(
            << ", \"target_count_normalization\": \"sqrt_n\", "
               "\"initial_carrier_phases_rad\": [";
   for (size_t index = 0; index < plan.target_count; ++index) {
-    double phase = phases_available
-                       ? matched_code_source_initial_phase_rad(&phase_source,
-                                                               index)
-                       : 0.0;
+    double phase =
+        phases_available
+            ? matched_code_source_initial_phase_rad(&phase_source, index)
+            : 0.0;
     manifest << (index == 0 ? "" : ", ") << phase;
   }
   manifest << "], \"output_amplitude_full_scale\": " << options.amplitude
@@ -1140,8 +1145,7 @@ static void refreshMatchedStateIfNeeded(
     MatchedSimulationState *state, ephem_t eph[][MAX_SAT],
     const ephem_t synth_source[][MAX_SAT], int neph, ionoutc_t *ionoutc,
     const synth_config_t *synth_config, const attack_config_t *attack_config,
-    double elevation_mask, const int *required_prns,
-    double sample_rate_hz) {
+    double elevation_mask, const int *required_prns, double sample_rate_hz) {
   uint64_t refresh_samples =
       (uint64_t)llround(SYNTH_EPHEM_REFRESH_SEC * sample_rate_hz);
 
@@ -1222,17 +1226,17 @@ renderMatchedFrame(MatchedSimulationState *state, matched_code_source_t *source,
 
 static bool runMatchedPreflight(
     matched_code_plan_t *plan, MatchedCodeRunResult *result,
-    const MatchedCodeOptions &options, const channel_t initial_channels[MAX_CHAN],
+    const MatchedCodeOptions &options,
+    const channel_t initial_channels[MAX_CHAN],
     const int initial_gains[MAX_CHAN],
     const ephem_t initial_active_ephemeris[MAX_SAT],
     const synth_ephem_store_t *initial_synthetic_ephemeris,
     int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
     ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
     gpstime_t sample_zero, ionoutc_t *ionoutc,
-    const synth_config_t *synth_config,
-    const attack_config_t *attack_config, double elevation_mask,
-    const int *required_prns, double gps_time_ppm, double delt,
-    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    const synth_config_t *synth_config, const attack_config_t *attack_config,
+    double elevation_mask, const int *required_prns, double gps_time_ppm,
+    double delt, int path_loss_enable, int fixed_gain, double ant_pat[37],
     std::string *error) {
   MatchedSimulationState state;
   matched_code_target_state_t states[MATCHED_CODE_MAX_TARGETS];
@@ -1267,15 +1271,14 @@ static bool runMatchedPreflight(
     renderCleanEpochWide(alignment_discard.data(), sample_count, state.channels,
                          state.gains, delt);
     state.sample_offset += (uint64_t)sample_count;
-    refreshMatchedStateIfNeeded(
-        &state, eph, synth_source, neph, ionoutc, synth_config, attack_config,
-        elevation_mask, required_prns, plan->sample_rate_hz);
+    refreshMatchedStateIfNeeded(&state, eph, synth_source, neph, ionoutc,
+                                synth_config, attack_config, elevation_mask,
+                                required_prns, plan->sample_rate_hz);
   }
   memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
   trajectory.close();
-  if (!trajectory ||
-      std::rename(trajectory_temporary.c_str(),
-                  options.trajectory_path.c_str()) != 0) {
+  if (!trajectory || std::rename(trajectory_temporary.c_str(),
+                                 options.trajectory_path.c_str()) != 0) {
     std::remove(trajectory_temporary.c_str());
     *error = "cannot finalize target trajectory artifact";
     return false;
@@ -1337,10 +1340,9 @@ static bool runMatchedDryRender(
     int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
     ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
     gpstime_t sample_zero, ionoutc_t *ionoutc,
-    const synth_config_t *synth_config,
-    const attack_config_t *attack_config, double elevation_mask,
-    const int *required_prns, double gps_time_ppm, double delt,
-    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    const synth_config_t *synth_config, const attack_config_t *attack_config,
+    double elevation_mask, const int *required_prns, double gps_time_ppm,
+    double delt, int path_loss_enable, int fixed_gain, double ant_pat[37],
     std::string *error) {
   MatchedSimulationState state;
   int saved_allocated[MAX_SAT];
@@ -1401,23 +1403,20 @@ struct MatchedFrame {
 
 static bool runMatchedTransmitter(
     const matched_code_plan_t &plan, const MatchedCodeOptions &options,
-    MatchedCodeRunResult *result,
-    const uhd::usrp::multi_usrp::sptr &usrp,
+    MatchedCodeRunResult *result, const uhd::usrp::multi_usrp::sptr &usrp,
     const uhd::tx_streamer::sptr &stream, size_t max_send_samples,
     double requested_start_delay_seconds, double trimble_tag_monotonic,
     double trimble_tag_lead_seconds, double trimble_start_offset_seconds,
-    int prebuffer_count,
-    const channel_t initial_channels[MAX_CHAN],
+    int prebuffer_count, const channel_t initial_channels[MAX_CHAN],
     const int initial_gains[MAX_CHAN],
     const ephem_t initial_active_ephemeris[MAX_SAT],
     const synth_ephem_store_t *initial_synthetic_ephemeris,
     int initial_ephemeris_index, const epoch_plan_t *initial_epoch_plan,
     ephem_t eph[][MAX_SAT], const ephem_t synth_source[][MAX_SAT], int neph,
     gpstime_t sample_zero, ionoutc_t *ionoutc,
-    const synth_config_t *synth_config,
-    const attack_config_t *attack_config, double elevation_mask,
-    const int *required_prns, double gps_time_ppm, double delt,
-    int path_loss_enable, int fixed_gain, double ant_pat[37],
+    const synth_config_t *synth_config, const attack_config_t *attack_config,
+    double elevation_mask, const int *required_prns, double gps_time_ppm,
+    double delt, int path_loss_enable, int fixed_gain, double ant_pat[37],
   std::string *error) {
   const uint64_t continuous_sample_limit =
       std::numeric_limits<uint64_t>::max();
@@ -1454,8 +1453,8 @@ static bool runMatchedTransmitter(
   memcpy(saved_allocated, allocatedSat, sizeof(saved_allocated));
   initializeMatchedSimulationState(
       &state, initial_channels, initial_gains, initial_active_ephemeris,
-      initial_synthetic_ephemeris, initial_ephemeris_index,
-      initial_epoch_plan, sample_zero);
+      initial_synthetic_ephemeris, initial_ephemeris_index, initial_epoch_plan,
+      sample_zero);
   installSignalHandlers();
 
   for (int buffered = 0; buffered < prebuffer_count && !stop_requested;
@@ -1624,9 +1623,8 @@ static bool runMatchedTransmitter(
   matched_code_source_get_metrics(&source, &result->source_metrics);
   memcpy(allocatedSat, saved_allocated, sizeof(saved_allocated));
   trajectory.close();
-  if (!trajectory ||
-      std::rename(trajectory_temporary.c_str(),
-                  options.trajectory_path.c_str()) != 0) {
+  if (!trajectory || std::rename(trajectory_temporary.c_str(),
+                                 options.trajectory_path.c_str()) != 0) {
     *error = "cannot finalize live target trajectory artifact";
     fatal = true;
   } else {
@@ -1964,8 +1962,7 @@ int main(int argc, char *argv[]) {
       long parsed = strtol(val, &end, 10);
       if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
           parsed < 0 || parsed > 65535) {
-        fprintf(stderr,
-                "ERROR: --gps-week must be an integer in 0..65535.\n");
+        fprintf(stderr, "ERROR: --gps-week must be an integer in 0..65535.\n");
         return 1;
       }
       explicit_gps_week = (int)parsed;
@@ -1991,8 +1988,7 @@ int main(int argc, char *argv[]) {
       errno = 0;
       long long parsed = strtoll(val, &end, 10);
       if (val[0] == '\0' || errno == ERANGE || end == NULL || *end != '\0' ||
-          parsed < 0 ||
-          parsed > (long long)(TX_START_LEAD_MAX_SEC * 1.0e9)) {
+          parsed < 0 || parsed > (long long)(TX_START_LEAD_MAX_SEC * 1.0e9)) {
         fprintf(stderr, "ERROR: --tx-advance-ns must be 0-%.0f seconds.\n",
                 TX_START_LEAD_MAX_SEC);
         return 1;
@@ -2088,8 +2084,8 @@ int main(int argc, char *argv[]) {
       char *end = NULL;
       errno = 0;
       unsigned long parsed = strtoul(val, &end, 10);
-      if (val[0] == '\0' || val[0] == '-' || errno == ERANGE ||
-          end == NULL || *end != '\0') {
+      if (val[0] == '\0' || val[0] == '-' || errno == ERANGE || end == NULL ||
+          *end != '\0') {
         fprintf(stderr, "ERROR: --channel must be a non-negative integer.\n");
         return 1;
       }
@@ -2129,8 +2125,9 @@ int main(int argc, char *argv[]) {
       parsed = strtoull(val, &end, 10);
       if (val[0] == '\0' || val[0] == '-' || errno == ERANGE || end == NULL ||
           *end != '\0') {
-        fprintf(stderr,
-                "ERROR: --matched-code-phase-seed must be an unsigned integer.\n");
+        fprintf(
+            stderr,
+            "ERROR: --matched-code-phase-seed must be an unsigned integer.\n");
         return 1;
       }
       matched_options.phase_seed = (uint64_t)parsed;
@@ -2471,9 +2468,8 @@ int main(int argc, char *argv[]) {
        !matched_options.manifest_path.empty() ||
        !matched_options.trajectory_path.empty() ||
        !matched_options.calibration_id.empty())) {
-    fprintf(stderr,
-            "ERROR: matched-code-only options require "
-            "--matched-code-target-prns.\n");
+    fprintf(stderr, "ERROR: matched-code-only options require "
+                    "--matched-code-target-prns.\n");
     return 1;
   }
 
@@ -2552,9 +2548,8 @@ int main(int argc, char *argv[]) {
       }
       if (manifest_absolute.lexically_normal() ==
           trajectory_absolute.lexically_normal()) {
-        fprintf(stderr,
-                "ERROR: --manifest and --trajectory must use different "
-                "paths.\n");
+        fprintf(stderr, "ERROR: --manifest and --trajectory must use different "
+                        "paths.\n");
         return 1;
       }
     }
@@ -2563,15 +2558,13 @@ int main(int argc, char *argv[]) {
           !matched_options.antenna_set || !tx_gain_set ||
           !std::isfinite(tx_gain) || matched_options.calibration_id.empty() ||
           !matched_options.controlled_rf_confirmed) {
-        fprintf(stderr,
-                "ERROR: live matched-code TX requires explicit --addr, "
-                "--channel, --antenna, --gain, --calibration-id, and "
-                "--confirm-controlled-rf.\n");
+        fprintf(stderr, "ERROR: live matched-code TX requires explicit --addr, "
+                        "--channel, --antenna, --gain, --calibration-id, and "
+                        "--confirm-controlled-rf.\n");
         return 1;
       }
-      if (!trimble_mode &&
-          (!(gps_week_set && gps_tow_set) ||
-           strcmp(time_source, "internal") == 0)) {
+      if (!trimble_mode && (!(gps_week_set && gps_tow_set) ||
+                            strcmp(time_source, "internal") == 0)) {
         fprintf(stderr,
                 "ERROR: accepted live matched-code TX requires the Trimble "
                 "time-tag path or explicit GPS week/TOW with an external/"
@@ -2647,8 +2640,8 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  auto finish_matched_early_failure =
-      [&](const char *status, const std::string &reason) -> int {
+  auto finish_matched_early_failure = [&](const char *status,
+                                          const std::string &reason) -> int {
     if (matched_options.enabled) {
       matched_result.status = status;
       matched_result.failure_reason = reason;
@@ -2819,8 +2812,7 @@ int main(int argc, char *argv[]) {
   if (matched_options.enabled) {
     char digest[SHA256_HEX_SIZE];
     if (sha256_file_hex(navfile, digest) != 0) {
-      fprintf(stderr,
-              "ERROR: cannot checksum frozen navigation file '%s'.\n",
+      fprintf(stderr, "ERROR: cannot checksum frozen navigation file '%s'.\n",
               navfile);
       return finish_matched_early_failure(
           "preflight_error", "cannot checksum frozen navigation file");
@@ -2847,146 +2839,148 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "\n[UHD] Configuring USRP X300 at %s ...\n", usrp_addr);
 
     try {
-    uhd::device_addr_t dev_addr;
-    dev_addr["addr"] = usrp_addr;
-    if (matched_options.enabled) {
-      uhd::device_addrs_t discovered = uhd::device::find(dev_addr);
-      if (discovered.size() != 1) {
-        fprintf(stderr,
-                "ERROR: matched-code preflight found %zu UHD devices at "
-                "explicit address %s; exactly one is required.\n",
-                discovered.size(), usrp_addr);
-        return finish_matched_early_failure(
-            "device_error", "device discovery did not return exactly one device");
+      uhd::device_addr_t dev_addr;
+      dev_addr["addr"] = usrp_addr;
+      if (matched_options.enabled) {
+        uhd::device_addrs_t discovered = uhd::device::find(dev_addr);
+        if (discovered.size() != 1) {
+          fprintf(stderr,
+                  "ERROR: matched-code preflight found %zu UHD devices at "
+                  "explicit address %s; exactly one is required.\n",
+                  discovered.size(), usrp_addr);
+          return finish_matched_early_failure(
+              "device_error",
+              "device discovery did not return exactly one device");
+        }
+        std::string discovered_type =
+            discovered[0].has_key("type") ? discovered[0]["type"] : "";
+        std::string discovered_product =
+            discovered[0].has_key("product") ? discovered[0]["product"] : "";
+        if (discovered_type != "x300" ||
+            (discovered_product != "X300" && discovered_product != "X310")) {
+          fprintf(stderr,
+                  "ERROR: matched-code mode requires an X300/X310, discovered "
+                  "type='%s' product='%s'.\n",
+                  discovered_type.c_str(), discovered_product.c_str());
+          return finish_matched_early_failure(
+              "device_error", "discovered device is not an X300/X310");
+        }
+        matched_result.device_type = discovered_type;
+        matched_result.device_product = discovered_product;
+        matched_result.device_serial =
+            discovered[0].has_key("serial") ? discovered[0]["serial"] : "";
+        matched_result.device_address =
+            discovered[0].has_key("addr") ? discovered[0]["addr"] : usrp_addr;
+        fprintf(stderr, "[UHD] Discovered %s serial %s at %s\n",
+                discovered_product.c_str(),
+                matched_result.device_serial.c_str(),
+                matched_result.device_address.c_str());
       }
-      std::string discovered_type =
-          discovered[0].has_key("type") ? discovered[0]["type"] : "";
-      std::string discovered_product =
-          discovered[0].has_key("product") ? discovered[0]["product"] : "";
-      if (discovered_type != "x300" ||
-          (discovered_product != "X300" && discovered_product != "X310")) {
-        fprintf(stderr,
-                "ERROR: matched-code mode requires an X300/X310, discovered "
-                "type='%s' product='%s'.\n",
-                discovered_type.c_str(), discovered_product.c_str());
-        return finish_matched_early_failure(
-            "device_error", "discovered device is not an X300/X310");
+
+      usrp = uhd::usrp::multi_usrp::make(dev_addr);
+
+      usrp->set_clock_source(clock_source);
+      usrp->set_time_source(time_source);
+
+      {
+        size_t tx_channels = usrp->get_tx_num_channels();
+        matched_result.tx_channel_count = tx_channels;
+        if (tx_channel >= tx_channels) {
+          fprintf(stderr,
+                  "ERROR: --channel %zu is invalid; device reports %zu TX "
+                  "channel(s).\n",
+                  tx_channel, tx_channels);
+          return finish_matched_early_failure(
+              "device_error", "selected TX channel does not exist");
+        }
       }
-      matched_result.device_type = discovered_type;
-      matched_result.device_product = discovered_product;
-      matched_result.device_serial =
-          discovered[0].has_key("serial") ? discovered[0]["serial"] : "";
-      matched_result.device_address =
-          discovered[0].has_key("addr") ? discovered[0]["addr"] : usrp_addr;
-      fprintf(stderr, "[UHD] Discovered %s serial %s at %s\n",
-              discovered_product.c_str(), matched_result.device_serial.c_str(),
-              matched_result.device_address.c_str());
-    }
 
-    usrp = uhd::usrp::multi_usrp::make(dev_addr);
+      fprintf(stderr, "[UHD] TX channel: %zu\n", tx_channel);
 
-    usrp->set_clock_source(clock_source);
-    usrp->set_time_source(time_source);
+      usrp->set_tx_rate(samp_freq, tx_channel);
+      fprintf(stderr, "[UHD] TX rate:    %.0f Hz (actual %.0f Hz)\n", samp_freq,
+              usrp->get_tx_rate(tx_channel));
 
-    {
-      size_t tx_channels = usrp->get_tx_num_channels();
-      matched_result.tx_channel_count = tx_channels;
-      if (tx_channel >= tx_channels) {
+      uhd::tune_request_t tune_req(TX_FREQUENCY);
+      usrp->set_tx_freq(tune_req, tx_channel);
+      fprintf(stderr, "[UHD] TX freq:    %.0f Hz (actual %.0f Hz)\n",
+              TX_FREQUENCY, usrp->get_tx_freq(tx_channel));
+
+      if (compat_txvga1_set || compat_txvga2_set) {
         fprintf(stderr,
-                "ERROR: --channel %zu is invalid; device reports %zu TX "
-                "channel(s).\n",
-                tx_channel, tx_channels);
-        return finish_matched_early_failure(
-            "device_error", "selected TX channel does not exist");
+                "[UHD] BladeRF gain option(s) accepted for CLI compatibility:");
+        if (compat_txvga1_set)
+          fprintf(stderr, " txvga1=%d", compat_txvga1);
+        if (compat_txvga2_set)
+          fprintf(stderr, " txvga2=%d", compat_txvga2);
+        fprintf(stderr, ". X300 RF gain is controlled by --gain");
+        if (tx_gain_set == FALSE)
+          fprintf(stderr, " (using default %.1f dB)", tx_gain);
+        fprintf(stderr, ".\n");
       }
-    }
 
-    fprintf(stderr, "[UHD] TX channel: %zu\n", tx_channel);
+      {
+        uhd::gain_range_t gain_range = usrp->get_tx_gain_range(tx_channel);
+        double min_gain = gain_range.start();
+        double max_gain = gain_range.stop();
 
-    usrp->set_tx_rate(samp_freq, tx_channel);
-    fprintf(stderr, "[UHD] TX rate:    %.0f Hz (actual %.0f Hz)\n", samp_freq,
-            usrp->get_tx_rate(tx_channel));
+        if (matched_options.enabled &&
+            (tx_gain < min_gain || tx_gain > max_gain)) {
+          fprintf(stderr,
+                  "ERROR: matched-code TX gain %.1f dB is outside device range "
+                  "[%.1f, %.1f] dB.\n",
+                  tx_gain, min_gain, max_gain);
+          return finish_matched_early_failure(
+              "device_error", "requested TX gain is outside the device range");
+        }
+        if (tx_gain < min_gain) {
+          fprintf(stderr,
+                  "[UHD] WARNING: requested TX gain %.1f dB is below device "
+                  "minimum %.1f dB; clamping.\n",
+                  tx_gain, min_gain);
+          tx_gain = min_gain;
+        } else if (tx_gain > max_gain) {
+          fprintf(stderr,
+                  "[UHD] WARNING: requested TX gain %.1f dB is above device "
+                  "maximum %.1f dB; clamping.\n",
+                  tx_gain, max_gain);
+          tx_gain = max_gain;
+        }
+      }
 
-    uhd::tune_request_t tune_req(TX_FREQUENCY);
-    usrp->set_tx_freq(tune_req, tx_channel);
-    fprintf(stderr, "[UHD] TX freq:    %.0f Hz (actual %.0f Hz)\n",
-            TX_FREQUENCY, usrp->get_tx_freq(tx_channel));
+      usrp->set_tx_gain(tx_gain, tx_channel);
+      fprintf(stderr, "[UHD] TX gain:    %.1f dB (actual %.1f dB)\n", tx_gain,
+              usrp->get_tx_gain(tx_channel));
 
-    if (compat_txvga1_set || compat_txvga2_set) {
-    fprintf(stderr,
-            "[UHD] BladeRF gain option(s) accepted for CLI compatibility:");
-    if (compat_txvga1_set)
-      fprintf(stderr, " txvga1=%d", compat_txvga1);
-    if (compat_txvga2_set)
-      fprintf(stderr, " txvga2=%d", compat_txvga2);
-    fprintf(stderr, ". X300 RF gain is controlled by --gain");
-    if (tx_gain_set == FALSE)
-      fprintf(stderr, " (using default %.1f dB)", tx_gain);
-    fprintf(stderr, ".\n");
-    }
+      usrp->set_tx_antenna(tx_antenna, tx_channel);
+      fprintf(stderr, "[UHD] TX antenna: %s\n",
+              usrp->get_tx_antenna(tx_channel).c_str());
+      fprintf(stderr, "[UHD] Clock src:  %s\n", clock_source);
+      fprintf(stderr, "[UHD] Time src:   %s\n", time_source);
 
-    {
-      uhd::gain_range_t gain_range = usrp->get_tx_gain_range(tx_channel);
-      double min_gain = gain_range.start();
-      double max_gain = gain_range.stop();
+      // Create TX streamer — SC16 on both CPU and wire side
+      uhd::stream_args_t stream_args("sc16", "sc16");
+      stream_args.channels = {tx_channel};
+      tx_stream = usrp->get_tx_stream(stream_args);
 
+      max_samps = tx_stream->get_max_num_samps();
+      fprintf(stderr, "[UHD] Max samples per send: %zu\n", max_samps);
+      samp_freq = usrp->get_tx_rate(tx_channel);
       if (matched_options.enabled &&
-          (tx_gain < min_gain || tx_gain > max_gain)) {
+          fabs(samp_freq - matched_plan.sample_rate_hz) >
+              MATCHED_RATE_TOLERANCE_HZ) {
         fprintf(stderr,
-                "ERROR: matched-code TX gain %.1f dB is outside device range "
-                "[%.1f, %.1f] dB.\n",
-                tx_gain, min_gain, max_gain);
+                "ERROR: actual TX rate %.9f differs from requested %.9f by "
+                "more than %.1f Hz.\n",
+                samp_freq, matched_plan.sample_rate_hz,
+                MATCHED_RATE_TOLERANCE_HZ);
         return finish_matched_early_failure(
-            "device_error", "requested TX gain is outside the device range");
+            "device_error", "actual TX rate differs from the requested rate");
       }
-      if (tx_gain < min_gain) {
-      fprintf(stderr,
-              "[UHD] WARNING: requested TX gain %.1f dB is below device "
-              "minimum %.1f dB; clamping.\n",
-              tx_gain, min_gain);
-      tx_gain = min_gain;
-      } else if (tx_gain > max_gain) {
-      fprintf(stderr,
-              "[UHD] WARNING: requested TX gain %.1f dB is above device "
-              "maximum %.1f dB; clamping.\n",
-              tx_gain, max_gain);
-      tx_gain = max_gain;
-      }
-    }
-
-    usrp->set_tx_gain(tx_gain, tx_channel);
-    fprintf(stderr, "[UHD] TX gain:    %.1f dB (actual %.1f dB)\n", tx_gain,
-            usrp->get_tx_gain(tx_channel));
-
-    usrp->set_tx_antenna(tx_antenna, tx_channel);
-    fprintf(stderr, "[UHD] TX antenna: %s\n",
-            usrp->get_tx_antenna(tx_channel).c_str());
-    fprintf(stderr, "[UHD] Clock src:  %s\n", clock_source);
-    fprintf(stderr, "[UHD] Time src:   %s\n", time_source);
-
-    // Create TX streamer — SC16 on both CPU and wire side
-    uhd::stream_args_t stream_args("sc16", "sc16");
-    stream_args.channels = {tx_channel};
-    tx_stream = usrp->get_tx_stream(stream_args);
-
-    max_samps = tx_stream->get_max_num_samps();
-    fprintf(stderr, "[UHD] Max samples per send: %zu\n", max_samps);
-    samp_freq = usrp->get_tx_rate(tx_channel);
-    if (matched_options.enabled &&
-        fabs(samp_freq - matched_plan.sample_rate_hz) >
-            MATCHED_RATE_TOLERANCE_HZ) {
-      fprintf(stderr,
-              "ERROR: actual TX rate %.9f differs from requested %.9f by "
-              "more than %.1f Hz.\n",
-              samp_freq, matched_plan.sample_rate_hz,
-              MATCHED_RATE_TOLERANCE_HZ);
-      return finish_matched_early_failure(
-          "device_error", "actual TX rate differs from the requested rate");
-    }
-    matched_result.actual_rate_hz = samp_freq;
-    matched_result.actual_frequency_hz = usrp->get_tx_freq(tx_channel);
-    matched_result.actual_gain_db = usrp->get_tx_gain(tx_channel);
-    matched_result.actual_antenna = usrp->get_tx_antenna(tx_channel);
+      matched_result.actual_rate_hz = samp_freq;
+      matched_result.actual_frequency_hz = usrp->get_tx_freq(tx_channel);
+      matched_result.actual_gain_db = usrp->get_tx_gain(tx_channel);
+      matched_result.actual_antenna = usrp->get_tx_antenna(tx_channel);
     } catch (const std::exception &e) {
       fprintf(stderr, "ERROR: Failed to configure USRP: %s\n", e.what());
       if (matched_options.enabled)
@@ -3050,9 +3044,8 @@ int main(int argc, char *argv[]) {
 
     int tag_yy, tag_mm, tag_dd, tag_hh, tag_min, tag_sec;
 
-    int got_tag = trimbleReadTag(tfd, trimble_timeout_ms,
-                                 &tag_yy, &tag_mm, &tag_dd,
-                                 &tag_hh, &tag_min, &tag_sec);
+    int got_tag = trimbleReadTag(tfd, trimble_timeout_ms, &tag_yy, &tag_mm,
+                                 &tag_dd, &tag_hh, &tag_min, &tag_sec);
     if (got_tag)
       trimble_tag_mono = getMonotonicSeconds();
 
@@ -3170,8 +3163,8 @@ int main(int argc, char *argv[]) {
              << '|';
     for (sv = 0; sv < MAX_SAT; ++sv) {
       scenario << (int)synth_cfg.mode[sv] << ':' << synth_cfg.source_prn[sv]
-               << ':' << synth_cfg.azimuth[sv] << ':'
-               << synth_cfg.elevation[sv] << ';';
+               << ':' << synth_cfg.azimuth[sv] << ':' << synth_cfg.elevation[sv]
+               << ';';
     }
     std::string canonical = scenario.str();
     char digest[SHA256_HEX_SIZE];
@@ -3219,10 +3212,9 @@ int main(int argc, char *argv[]) {
         double elev_deg;
         int found_ephem = FALSE;
 
-        if (scanEphemerisForRevive(synth_source, neph, sv + 1, synth_ref,
-                                   xyz[0], &revive_template, &template_toe,
-                                   &delta_sec, &elev_deg,
-                                   &found_ephem) == FALSE) {
+        if (scanEphemerisForRevive(
+                synth_source, neph, sv + 1, synth_ref, xyz[0], &revive_template,
+                &template_toe, &delta_sec, &elev_deg, &found_ephem) == FALSE) {
           if (found_ephem == TRUE) {
             fprintf(stderr,
                     "ERROR: Revive PRN %d: not above %.1f deg at any point "
@@ -3238,7 +3230,7 @@ int main(int argc, char *argv[]) {
               "preflight_error", "revive target scenario is not usable");
         }
       } else if (synth_cfg.mode[sv] == SYNTH_OVERHEAD ||
-          synth_cfg.mode[sv] == SYNTH_AZEL) {
+                 synth_cfg.mode[sv] == SYNTH_AZEL) {
         double az, el;
 
         if (synth_cfg.mode[sv] == SYNTH_OVERHEAD) {
@@ -3343,10 +3335,11 @@ int main(int argc, char *argv[]) {
     if (!writeMatchedManifestAtomic(
             matched_options, matched_plan, matched_result, navfile,
             matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
-            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
-            tx_gain, clock_source, time_source, prebuffer_count,
-            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
-      fprintf(stderr, "ERROR: cannot write incomplete matched-code manifest.\n");
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+            clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+            gps_time_ppm, trimble_mode)) {
+      fprintf(stderr,
+              "ERROR: cannot write incomplete matched-code manifest.\n");
       return 1;
     }
 
@@ -3368,9 +3361,9 @@ int main(int argc, char *argv[]) {
       writeMatchedManifestAtomic(
           matched_options, matched_plan, matched_result, navfile,
           matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
-          requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
-          tx_gain, clock_source, time_source, prebuffer_count,
-          trimble_tx_cal_ns, gps_time_ppm, trimble_mode);
+          requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+          clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+          gps_time_ppm, trimble_mode);
       fprintf(stderr, "ERROR: matched-code preflight failed: %s\n",
               matched_error.c_str());
       return 1;
@@ -3431,12 +3424,11 @@ int main(int argc, char *argv[]) {
       completed = runMatchedTransmitter(
           matched_plan, matched_options, &matched_result, usrp, tx_stream,
           max_samps, (double)tx_advance_ns * 1.0e-9, trimble_tag_mono,
-          (double)trimble_tag_lead_ms * 1.0e-3,
-          (double)trimble_start_offset, prebuffer_count, chan, gain, active_eph,
-          &synth_eph, ieph, &epoch_plan, eph, matched_synth_source, neph, g0,
-          &ionoutc, &synth_cfg, &attack_cfg, elvmask, matched_required_prns,
-          gps_time_ppm, delt, path_loss_enable, fixed_gain, ant_pat,
-          &matched_error);
+          (double)trimble_tag_lead_ms * 1.0e-3, (double)trimble_start_offset,
+          prebuffer_count, chan, gain, active_eph, &synth_eph, ieph,
+          &epoch_plan, eph, matched_synth_source, neph, g0, &ionoutc,
+          &synth_cfg, &attack_cfg, elvmask, matched_required_prns, gps_time_ppm,
+          delt, path_loss_enable, fixed_gain, ant_pat, &matched_error);
     } catch (const std::exception &transmit_error) {
       matched_error = std::string("matched-code transmitter failed: ") +
                       transmit_error.what();
@@ -3467,9 +3459,9 @@ int main(int argc, char *argv[]) {
     if (!writeMatchedManifestAtomic(
             matched_options, matched_plan, matched_result, navfile,
             matched_ephemeris_sha256, matched_scenario_sha256, g0, xyz[0],
-            requested_samp_freq, usrp_addr, tx_channel, tx_antenna,
-            tx_gain, clock_source, time_source, prebuffer_count,
-            trimble_tx_cal_ns, gps_time_ppm, trimble_mode)) {
+            requested_samp_freq, usrp_addr, tx_channel, tx_antenna, tx_gain,
+            clock_source, time_source, prebuffer_count, trimble_tx_cal_ns,
+            gps_time_ppm, trimble_mode)) {
       fprintf(stderr, "ERROR: cannot finalize matched-code run manifest.\n");
       return 1;
     }
@@ -3512,13 +3504,11 @@ int main(int argc, char *argv[]) {
   // Generate pre-buffer epochs
   for (int pb = 0; pb < prebuffer_count && !stop_requested; pb++) {
     int sample_count = nextEpochSampleCount(&epoch_plan);
-    gpstime_t block_start_gps_time =
-        getGpsTimeAtSampleOffset(first_sample_gps_time, generated_samples,
-                                 samp_freq, gps_time_ppm);
-    gpstime_t block_end_gps_time =
-        getGpsTimeAtSampleOffset(first_sample_gps_time,
-                                 generated_samples + sample_count, samp_freq,
-                                 gps_time_ppm);
+    gpstime_t block_start_gps_time = getGpsTimeAtSampleOffset(
+        first_sample_gps_time, generated_samples, samp_freq, gps_time_ppm);
+    gpstime_t block_end_gps_time = getGpsTimeAtSampleOffset(
+        first_sample_gps_time, generated_samples + sample_count, samp_freq,
+        gps_time_ppm);
 
     current_epoch_duration =
         subGpsTime(block_end_gps_time, block_start_gps_time);
@@ -3526,11 +3516,9 @@ int main(int argc, char *argv[]) {
 
     // generateEpoch() expects the GPS time at the end of the block.
     if (generated_samples == 0) {
-      fprintf(stderr,
-              "[TIMING] First RF sample GPS epoch: week %d tow %.9f\n",
+      fprintf(stderr, "[TIMING] First RF sample GPS epoch: week %d tow %.9f\n",
               first_sample_gps_time.week, first_sample_gps_time.sec);
-      fprintf(stderr,
-              "[TIMING] First generated epoch end: week %d tow %.9f\n",
+      fprintf(stderr, "[TIMING] First generated epoch end: week %d tow %.9f\n",
               block_end_gps_time.week, block_end_gps_time.sec);
       fprintf(stderr, "[TIMING] TX sample clock: %.6f Hz\n", samp_freq);
     }
@@ -3548,11 +3536,11 @@ int main(int argc, char *argv[]) {
     // 30-second nav/channel refresh
     igrx = (int)(grx.sec * 10.0 + 0.5);
     if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0)
-      refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
-                      neph, &ieph, active_eph, &synth_eph, &synth_cfg,
-                      &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg,
-                      nullptr);
+      refreshNavState(chan, eph,
+                      has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
+                      &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc, grx,
+                      elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
+                      &trimble_rtcm_stream, &attack_cfg, nullptr);
 
     iumd = pb + 2; // Preserve the existing finite-duration loop convention.
   }
@@ -3672,13 +3660,11 @@ int main(int argc, char *argv[]) {
 
   while (!stop_requested && (stream_forever == TRUE || iumd < numd)) {
     int sample_count = nextEpochSampleCount(&epoch_plan);
-    gpstime_t block_start_gps_time =
-        getGpsTimeAtSampleOffset(first_sample_gps_time, generated_samples,
-                                 samp_freq, gps_time_ppm);
-    gpstime_t block_end_gps_time =
-        getGpsTimeAtSampleOffset(first_sample_gps_time,
-                                 generated_samples + sample_count, samp_freq,
-                                 gps_time_ppm);
+    gpstime_t block_start_gps_time = getGpsTimeAtSampleOffset(
+        first_sample_gps_time, generated_samples, samp_freq, gps_time_ppm);
+    gpstime_t block_end_gps_time = getGpsTimeAtSampleOffset(
+        first_sample_gps_time, generated_samples + sample_count, samp_freq,
+        gps_time_ppm);
 
     current_epoch_duration =
         subGpsTime(block_end_gps_time, block_start_gps_time);
@@ -3732,11 +3718,11 @@ int main(int argc, char *argv[]) {
     // 30-second nav/channel refresh
     igrx = (int)(grx.sec * 10.0 + 0.5);
     if (igrx % (int)(SYNTH_EPHEM_REFRESH_SEC * 10.0 + 0.5) == 0) {
-      refreshNavState(chan, eph, has_revive_mode == TRUE ? revive_scan_eph : eph,
-                      neph, &ieph, active_eph, &synth_eph, &synth_cfg,
-                      &ionoutc, grx, elvmask, trimble_rtcm_mode,
-                      &trimble_rtcm_alive, &trimble_rtcm_stream, &attack_cfg,
-                      nullptr);
+      refreshNavState(chan, eph,
+                      has_revive_mode == TRUE ? revive_scan_eph : eph, neph,
+                      &ieph, active_eph, &synth_eph, &synth_cfg, &ionoutc, grx,
+                      elvmask, trimble_rtcm_mode, &trimble_rtcm_alive,
+                      &trimble_rtcm_stream, &attack_cfg, nullptr);
 
       if (verb) {
         fprintf(stderr, "\n");
@@ -3751,8 +3737,7 @@ int main(int argc, char *argv[]) {
     iumd++;
 
     fprintf(stderr, "\rTime into run = %7.3f",
-            getGpsElapsedFromSamples(emitted_samples, samp_freq,
-                                     gps_time_ppm));
+            getGpsElapsedFromSamples(emitted_samples, samp_freq, gps_time_ppm));
     fflush(stderr);
   }
 

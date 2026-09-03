@@ -1,6 +1,6 @@
 # Makefile for Linux etc.
 
-.PHONY: all clean time test test-x300tx-matched
+.PHONY: all clean time test test-x300tx-matched test-bladetx-matched
 all: gps-sdr-sim jammergen matchedgen iqmix
 
 rtcm3_inspect: tools/rtcm3_inspect.c
@@ -72,8 +72,8 @@ BLADE_LIBS=$(shell pkg-config --libs libbladeRF 2>/dev/null || echo "-lbladeRF")
 
 BLADE_LIBDIR=$(shell pkg-config --variable=libdir libbladeRF 2>/dev/null || echo "/usr/local/lib")
 
-bladetx: player/bladetx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) gpssim.h
-	${CXX} -O3 -Wall -std=c++17 ${BLADE_CFLAGS} -isystem . player/bladetx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) ${BLADE_LIBS} ${LDFLAGS} -Wl,-rpath,${BLADE_LIBDIR} -o $@
+bladetx: player/bladetx.cpp player/bladetx_matched.hpp player/matched_code_alignment.h player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) gpssim.h
+	${CXX} -O3 -Wall -std=c++17 ${BLADE_CFLAGS} -isystem . player/bladetx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${BLADE_LIBS} ${LDFLAGS} -Wl,-rpath,${BLADE_LIBDIR} -o $@
 
 revive_candidates: tools/revive_candidates.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) gpssim.h
 	${CXX} -O3 -Wall -std=c++17 -isystem . tools/revive_candidates.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) ${LDFLAGS} -o $@
@@ -115,6 +115,9 @@ test: jammergen matchedgen iqmix tests/test_parse_synth_revive tests/test_revive
 
 test-x300tx-matched: x300tx matchedgen
 	python3 tests/test_x300tx_matched_cli.py
+
+test-bladetx-matched: bladetx matchedgen
+	python3 tests/test_bladetx_matched_cli.py
 
 tx: tx_samples_from_file.cpp
 	${CXX} ${CXXFLAGS} $< ${UHD_LIBS} ${BOOST_LIBS} ${LDFLAGS} -o $@

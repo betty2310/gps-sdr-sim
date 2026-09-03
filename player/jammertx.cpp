@@ -146,7 +146,7 @@ void usage(FILE *stream) {
       "  --start-delay SEC         Timed-start lead (default 0.25, min 0.02)\n"
       "\n"
       "Evidence and safety options:\n"
-      "  --manifest FILE           Live-run JSON manifest (required for TX)\n"
+      "  --manifest FILE           Optional JSON run record\n"
       "  --calibration-id TEXT     Conducted/shielded RF calibration "
       "identifier\n"
       "  --confirm-controlled-rf   Required acknowledgement for live TX\n"
@@ -523,10 +523,6 @@ bool validate_options(const Options &options, std::string *error) {
     }
     if (!options.gain_set) {
       *error = "live TX requires an explicit --gain";
-      return false;
-    }
-    if (options.manifest_path.empty()) {
-      *error = "live TX requires --manifest FILE";
       return false;
     }
   }
