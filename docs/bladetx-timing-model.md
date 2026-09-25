@@ -1,5 +1,11 @@
 # bladetx Timing Model & Timeline Analysis
 
+**Legacy bladeRF/Trimble timing analysis.** The examples and numerical budget
+below are historical assumptions, not measurements of the current X300 setup.
+As of 2026-09-22 bladeRF is the IQ receiver; use [command.md](../command.md)
+and [X300 usage](x300-usage.md) for the active workflow. The X300 comparison
+below has been updated for its PPS/UBX refactor.
+
 ## The Three Time Domains
 
 There are three independent clocks in the system. The fundamental challenge is
@@ -27,12 +33,14 @@ as live-sky signals.
                    blade_lead_sec calculation
 ```
 
-- **GPS TIME**: nanosecond-accurate, carried by satellite signals and delivered
-  to the Trimble receiver. This is the ground truth.
+- **GPS TIME**: the intended reference time scale. Receiver accuracy and its
+  physical edge association must be qualified; the received TCP tag is not
+  nanosecond-accurate ground truth at the transmitter.
 - **HOST CLOCK**: `CLOCK_MONOTONIC` on the control computer. Used to track
   elapsed time between events (tag receipt, sleep, device timestamp read).
-  Absolute accuracy depends on NTP (~1-50 ms), but relative accuracy over
-  short intervals (< 5 s) is sub-millisecond.
+  It has no absolute GPS epoch. The diagram's NTP label applies to a host
+  wall-clock estimate, not an epoch supplied by CLOCK_MONOTONIC. No numeric
+  accuracy bound is established by using that API alone.
 - **bladeRF COUNTER**: a free-running sample counter driven by the on-board
   VCTCXO. Starts at zero when the TX module is enabled. Has no concept of
   wall-clock or GPS time. Advances at the configured sample rate (2.6 Msps).
@@ -165,8 +173,8 @@ generateEpoch(grx = g0 + 0.1s)
      │
      ↓
 ring[0] = 260,000 IQ samples
-  Sample[0] represents GPS time g0 + 0.1s
-  Sample[N] represents GPS time g0 + 0.1s + N/2,600,000
+  Sample[0] represents GPS time g0
+  Sample[N] represents GPS time g0 + N/2,600,000 (with zero ppm adjustment)
      │
      ↓
 bladerf_sync_tx(ring[0], meta.timestamp = tx_start_ts)
@@ -211,30 +219,22 @@ from true GPS time by `Δt`, the pseudorange error is `Δt × c` (speed of light
 
 ## Comparison with x300tx.cpp
 
-The `x300tx` path shares the same Trimble timing model. The key difference is
-in TX scheduling:
+Current `x300tx` no longer shares the Trimble scheduler. It verifies external
+frequency/PPS sources, latches local time at a PPS edge, checks the following
+second, and uses a fixed timed first sample with a shared continuity contract.
+Live UBX supplies an estimated GPS epoch; scenarios supply an explicit model
+epoch. X300 Trimble and ppm options are rejected.
 
-```
-x300tx:   usrp->set_time_now(0.0)     ← resets USRP clock to zero
-          md.time_spec = remaining     ← schedule relative to reset
+The PRS10 local PPS still has no verified GPS label. Unknown UBX transport
+delay, physical clock error and RF-path delay prevent a claimed absolute
+accuracy. External frequency reference does not eliminate all drift or supply
+the GPS epoch. No sub-microsecond result has been measured here.
 
-bladetx:  bladerf_get_timestamp()      ← reads free-running counter
-          meta.timestamp = now + lead  ← schedule relative to read
-```
-
-Both have the same `tag_lead_ms` uncertainty. The X300 has two additional
-capabilities that the bladeRF 1.0 lacks:
-
-| Capability                | X300                                      | bladeRF 1.0       |
-| ------------------------- | ----------------------------------------- | ----------------- |
-| External PPS input        | Yes — can discipline TX start to PPS edge | No                |
-| External 10 MHz reference | Yes — eliminates clock drift              | No                |
-| Clock accuracy (internal) | ~1 ppm (TCXO)                             | ~1-2 ppm (VCTCXO) |
-| Clock accuracy (external) | ~0.01 ppm                                 | N/A               |
-
-With external PPS + 10 MHz, the X300 can reach < 1 us alignment. The bladeRF
-is limited to whatever accuracy the Trimble tag + host clock chain can achieve,
-plus ongoing VCTCXO drift.
+The current bladeRF RX baseline uses its internal clock with SMB/tamer
+disabled. Its CLI raw IQ has no timestamp records. Whether and how to share
+clock/event references must be qualified for the actual board; the former
+blanket claim that bladeRF lacks external-reference capabilities is withdrawn.
+See the [current timing plan](x300-live-sky-mixtracking-research-plan.md).
 
 ## bladeRF Buffer Flow Model
 

@@ -2,7 +2,7 @@
 
 > **Status:** Software implemented; continuous controlled-hardware acceptance pending
 >
-> **Date:** 2026-07-13
+> **Date:** 2026-09-22
 >
 > **Scope:** Continuous GPS L1 C/A matched-code interference in an authorized
 > conducted path or verified shielded enclosure
@@ -12,6 +12,11 @@
 > and [general X300 usage](x300-usage.md)
 
 ## Start Here
+
+For normal navigation-bearing revived PRNs use [command.md](../command.md),
+not the matched-code options below. The present exposed-antenna bench has only
+passed receive/no-RF checks; [latest results](x300-f9p-rf-timing-qualification-2026-09-22.md)
+do not establish a contained transmit path or GPS-aligned RF timing.
 
 In matched-code mode, `x300tx` transmits a jammer-only SC16 stream. The stream
 contains navigation-data-free matched-code components for exactly the PRNs in
@@ -68,7 +73,7 @@ The program cannot detect an antenna, unsafe power, poor shielding, or RF
 leakage. Do not use these commands in an open-air setup.
 
 The live example deliberately uses non-numeric placeholders for gain and
-timing calibration. It fails before transmission until the operator replaces
+scenario epoch. It fails before transmission until the operator replaces
 them with values from the current laboratory record.
 
 ## Command Contract
@@ -193,7 +198,7 @@ run = json.loads(path.read_text())
 samples = run["sample_contract"]
 trajectory = pathlib.Path(run["trajectory"]["path"])
 
-assert run["schema"] == "gps-sdr-sim.x300tx-matched-code.v2"
+assert run["schema"] == "gps-sdr-sim.x300tx-matched-code.v3"
 assert run["status"] == "dry_run"
 assert run["exit_status"] == 0
 assert run["failure_reason"] is None
@@ -248,47 +253,26 @@ does not prove that a sample was transmitted.
 
 ## 5. Load Current RF and Timing Values
 
-The established Trimble path uses a calibrated network time tag with internal
-X300 clock and time sources. Fill every value from the active setup:
+Both waveform modes now use external 10 MHz and PPS by default. Run the
+[hardware sync check](x300-usage.md#clock-wiring-and-a-check-without-rf) first.
+Host-clock starts, calibrated TCP time-tag starts and ppm scaling were removed.
+
+Load the RF settings and the frozen scenario epoch:
 
 ```sh
 TX_CHANNEL="replace-with-approved-channel"
 TX_ANTENNA="replace-with-approved-antenna"
 APPROVED_TX_GAIN_DB="replace-with-approved-numeric-gain"
 CALIBRATION_ID="replace-with-current-calibration-record-id"
-
-TIME_TAG_HOST="replace-with-current-time-tag-host"
-TIME_TAG_PORT="replace-with-current-time-tag-port"
-FUTURE_START_SEC="replace-with-approved-future-start-offset"
-TRIMBLE_TAG_LEAD_MS="replace-with-current-tag-lead-calibration"
-TRIMBLE_TX_CAL_NS="replace-with-current-tx-delay-calibration"
-GPS_TIME_PPM="replace-with-current-gps-time-rate-calibration"
+GPS_WEEK="replace-with-scenario-gps-week"
+GPS_TOW="replace-with-scenario-gps-tow"
 ```
 
-Leaving the placeholders unchanged is intentional: parsing or device
-validation fails before a timed transmission is armed.
-
-An explicit GPS week/TOW path is supported only when the current calibration
-uses an external or GPSDO time source. Load these values from that record:
-
-```sh
-GPS_WEEK="replace-with-calibrated-gps-week"
-GPS_TOW="replace-with-calibrated-gps-tow"
-TX_ADVANCE_NS="replace-with-approved-future-start-lead"
-```
-
-For that path, replace the two `internal` source lines and all Trimble options
-in the live command with:
-
-```sh
---gps-week "$GPS_WEEK" \
---gps-tow "$GPS_TOW" \
---clock-source external \
---time-source external \
---tx-advance-ns "$TX_ADVANCE_NS"
-```
-
-Do not use `-n` for a matched-code live run.
+These scenario values label sample zero. They do not bind the local PPS to live
+GPS time. The manifest records `gps_alignment_verified: false`. A rubidium
+frequency/PPS reference alone cannot establish authentic live-sky alignment.
+Repeat the dry run with the same `--gps-week` and `--gps-tow` values before live
+operation. Input ephemeris TOE/TOC are preserved.
 
 ## 6. Start the Continuous Jammer-Only Stream
 
@@ -309,14 +293,11 @@ values that passed dry run:
   --channel "$TX_CHANNEL" \
   --antenna "$TX_ANTENNA" \
   --gain "$APPROVED_TX_GAIN_DB" \
-  --clock-source internal \
-  --time-source internal \
-  --trimble-time-tag-host "$TIME_TAG_HOST" \
-  --trimble-time-tag-port "$TIME_TAG_PORT" \
-  --trimble-start-offset-sec "$FUTURE_START_SEC" \
-  --trimble-tag-lead-ms "$TRIMBLE_TAG_LEAD_MS" \
-  --trimble-tx-cal-ns "$TRIMBLE_TX_CAL_NS" \
-  --gps-time-ppm "$GPS_TIME_PPM" \
+  --clock-source external \
+  --time-source external \
+  --gps-week "$GPS_WEEK" \
+  --gps-tow "$GPS_TOW" \
+  --start-lead-sec 0.25 \
   --manifest "$LIVE_MANIFEST" \
   --trajectory "$LIVE_TRAJECTORY" \
   --calibration-id "$CALIBRATION_ID" \
@@ -326,7 +307,8 @@ values that passed dry run:
 The stream has no scheduled end. Observe the approved experiment interval,
 then press `Ctrl-C` once. `x300tx` stops producing frames, sends end-of-burst,
 finalizes the trajectory and manifest, and treats the operator stop as success
-only when samples were sent and all clipping and UHD fault counters are zero.
+only when samples were accepted, EOB was acknowledged, PPS/locks stayed valid,
+and all clipping and UHD fault counters are zero.
 
 Do not kill the process a second time while it is finalizing artifacts. A
 nonzero exit, zero sent samples, target loss, clipping, underflow, sequence
@@ -351,7 +333,7 @@ measurements = run["measurements"]
 hardware = run["hardware"]
 trajectory = pathlib.Path(run["trajectory"]["path"])
 
-assert run["schema"] == "gps-sdr-sim.x300tx-matched-code.v2"
+assert run["schema"] == "gps-sdr-sim.x300tx-matched-code.v3"
 assert run["status"] == "stopped"
 assert run["exit_status"] == 0
 assert run["failure_reason"] is None
@@ -364,6 +346,11 @@ assert run["safety"]["calibration_id"]
 assert run["scenario"]["selected_target_prns"] == expected_prns
 assert run["scenario"]["startup_target_allocation_passed"] is True
 assert run["timing"]["start_margin_met"] is True
+assert run["timing"]["pps_latch_verified"] is True
+assert run["timing"]["gps_alignment_verified"] is False
+assert run["transport"]["burst_ack"] is True
+assert run["transport"]["other_errors"] == 0
+assert not run["transport"]["failure_reason"]
 assert hardware["device_type"] in {"x300", "x310"}
 assert hardware["actual_antenna"] == hardware["requested_antenna"]
 
@@ -433,8 +420,8 @@ not select an ambiguous device or a non-X300/X310 product automatically.
 
 ### The future start becomes stale
 
-Increase the approved future-start offset or reduce preflight latency, then
-repeat the complete run. The tool does not fall back to an immediate,
+Increase `--start-lead-sec` or reduce scheduling/manifest-write latency, then
+repeat the complete run. Prebuffering finishes before the start is selected. The tool does not fall back to an immediate,
 uncalibrated start.
 
 ### The manifest reports clipping or a UHD fault

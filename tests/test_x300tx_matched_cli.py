@@ -66,9 +66,16 @@ class X300MatchedCliTest(unittest.TestCase):
             metadata = json.loads(manifest.read_text())
             samples = metadata["sample_contract"]
 
-            self.assertEqual(metadata["schema"], "gps-sdr-sim.x300tx-matched-code.v2")
+            self.assertEqual(metadata["schema"], "gps-sdr-sim.x300tx-matched-code.v3")
             self.assertEqual(metadata["status"], "dry_run")
             self.assertEqual(metadata["timing"]["start_mode"], "frozen_rinex_epoch")
+            self.assertEqual(metadata["timing"]["epoch_association"], "scenario_at_sample_zero")
+            self.assertFalse(metadata["timing"]["gps_alignment_verified"])
+            self.assertFalse(metadata["timing"]["pps_latch_verified"])
+            self.assertEqual(metadata["transport"]["accepted_samples"], 0)
+            self.assertEqual(metadata["transport"]["generated_samples"],
+                             int(DRY_RUN_SECONDS * SAMPLE_RATE_HZ))
+            self.assertNotIn("gps_time_ppm", metadata["timing"])
             self.assertEqual(
                 metadata["rf_output"],
                 {

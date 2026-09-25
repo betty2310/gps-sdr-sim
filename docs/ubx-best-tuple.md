@@ -1,5 +1,10 @@
 # UBX Best Tuple Tool
 
+Scope update, 2026-09-22: the derived transmit/receive epochs below describe
+satellite/receiver observations, not the first X300 RF sample. This tool does
+not bind an X300 PPS or bladeRF sample counter to GPS. See
+[current timing limits](x300-live-sky-mixtracking-research-plan.md#4-timing-contract-and-limits).
+
 ## Purpose
 
 `tools/ubx_best_tuple.py` reads a ZED-F9P `.ubx` log and emits the best GPS tuple the log supports:

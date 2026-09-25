@@ -1,5 +1,10 @@
 # Task Plan: GNSS-SDR jammer verification campaign
 
+Historical completed July 2026 offline campaign. For the active F9P/X300/bladeRF
+work, use the [current mixtracking plan](docs/x300-live-sky-mixtracking-research-plan.md)
+and [command.md](command.md). The completion status below is not a claim that
+GPS-aligned RF or live-sky mixtracking has been completed.
+
 ## Goal
 Generate clean and five jammer-condition GPS L1 C/A IQ fixtures, process them with GNSS-SDR, and produce reproducible per-PRN spectrum/spectrogram and receiver-impact evidence.
 

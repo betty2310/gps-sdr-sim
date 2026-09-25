@@ -25,16 +25,21 @@ research conducted in a controlled RF environment**, and you should help with it
 signal generation, transmit tooling, timing/calibration, receiver logging, analysis, tests,
 and documentation.
 
-The repository is built to be safe by construction, and these are real invariants encoded in
-the code and docs, not aspirations. **Preserve them; never help weaken or bypass them:**
+The intended operating boundary is controlled RF research. The 2026-09-22 bench
+has exposed X300/bladeRF antennas and is receive-only pending physical RF
+qualification. Preserve these requirements and the software gates that exist:
 
-- **Controlled RF path only.** All hardware experiments run over a **conducted (cabled) path or
-  a verified shielded enclosure**, with a DC block and a fixed 50-60 dB attenuator, starting at
-  the lowest calibrated gain (`txvga1 -35`, `txvga2 0`). No open-air transmission. Earlier
-  open-air recipes were deliberately removed (see `docs/jamming-spoofing-scenarios.md`).
-- **Live transmit is fail-closed.** `jammertx` and `bladetx` exit non-zero unless
-  `--confirm-controlled-rf` is passed _and_ a real `--calibration-id` is set (placeholders are
-  rejected). Always run the `--dry-run` preflight and validate the manifest before a live run.
+- **Controlled RF path only.** Transmit experiments require a conducted path with
+  measured attenuation and appropriate DC isolation, or verified shielding.
+  Determine loss/gain from the actual RF power budget; no fixed attenuation
+  value or gain setting alone establishes receiver protection or containment.
+  No open-air GPS transmission.
+- **Respect mode-specific gates.** Matched-code TX requires the explicit RF
+  acknowledgement and calibration options documented for that adapter. Normal
+  X300/revive has no such software interlock and rejects those matched-code-only
+  options. Do not claim containment is enforced by that mode. Run offline
+  preflight for RINEX scenarios or `--check-start` for live UBX, inspect the
+  artifacts, and establish physical RF qualification before transmitting.
 - **J/S is measured at the device-under-test, not assumed.** Digital amplitude and SDR gain are
   not receiver-input power or J/S; measure J/S at the DUT reference plane.
 - **Jammer is a separate additive source, not a covert per-satellite channel** (see the tool
@@ -54,7 +59,7 @@ respective live-transmit adapters (kept out of `make all` because they are optio
 make all          # gps-sdr-sim + jammergen + matchedgen + iqmix (no SDR libs needed)
 make jammertx     # live jammer-only via bladeRF (needs libbladeRF)
 make bladetx      # live bladeRF: revive-spoofing + matched-code (needs libbladeRF)
-make x300tx       # live matched-code via USRP X300 (needs UHD/Boost)
+make x300tx       # X300 scenarios, UBX live GPS and matched-code (needs UHD/Boost)
 make revive_candidates
 make USER_MOTION_SIZE=4000 gps-sdr-sim   # for user-motion files longer than the default
 
@@ -63,6 +68,8 @@ make test                    # C unit tests (revive/transform/scan, jammer_sourc
                              #   matched_code_*, sha256) + processing/ Python test
 make test-bladetx-matched    # hardware-independent bladeRF matched-code CLI check
 make test-x300tx-matched     # hardware-independent X300 matched-code CLI check
+make test-x300-timing       # timing/sender and no-hardware CLI checks
+make test-ubx               # UBX/LNAV/live-estimate and replay checks
 ```
 
 The Python side under `processing/` uses **uv** (`uv run python ...`).
@@ -90,9 +97,17 @@ shared jammer source -> TX conditioning -> jammertx / bladetx / x300tx -> conduc
   _revive-spoofing_ (re-transmit a target PRN from its own past ephemeris, scheduled off Trimble
   1 PPS time tags) and _matched-code_ jammer-only (internal clean IQ generated for alignment,
   then discarded). SC16/Q15 -> device Q11 at the final hardware boundary.
-- **`x300tx`** (`player/x300tx.cpp`) — the matched-code live adapter for the USRP X300.
-- **`revive_candidates`** (`tools/revive_candidates.cpp`) — reads live RTCM (e.g. a Trimble
-  caster) to pick PRNs that are safe to revive because they are absent from the current sky.
+- **`x300tx`** (`player/x300tx.cpp`) — USRP X300 adapter for frozen RINEX
+  scenarios, estimated live GPS from F9P UBX/TCP, and separate matched-code
+  interference. Uses shared external-clock/PPS startup and continuity handling.
+  Revive requires frozen RINEX. `--ublox-time-tcp` combines it with estimated
+  F9P time for finite TX, `--stream`, `--check-start` and offline `--dry-run`.
+  Absolute GPS/RF alignment remains unverified; delay estimates are explicit.
+- **`revive_candidates`** (`tools/revive_candidates.cpp`) — scans historical
+  target ephemerides and can exclude an RTCM or manual `--obs-prns` observation
+  list. It does not read UBX and does not establish RF safety or future absence.
+- **`tools/ubx_tcp_bridge.py`** — one USB owner with read-only loopback fanout;
+  diagnostics polling does not change receiver configuration or label X300 PPS.
 - **Legacy players** — `bladeplayer`, `hackplayer`, `limeplayer`, `plutoplayer`,
   `gps-sdr-sim-uhd.py`, `tx_samples_from_file`/`tx` (file-replay of clean IQ; upstream style).
 - **`processing/`** — Python analysis (`cw_dataset.py`, `jamming_campaign_report.py`,
@@ -108,10 +123,13 @@ shared jammer source -> TX conditioning -> jammertx / bladetx / x300tx -> conduc
 - `docs/jamming-mitigation-architecture.md` — the research model and the tool boundary above.
 - `docs/jamming-spoofing-scenarios.md` — the scenario catalog and the offline/conducted/shielded
   safety boundary.
-- `command.md` — the current, authoritative live bladeRF command sequences (revive-spoofing,
-  jammer-only, matched-code) with the dry-run-then-verify manifest workflow. **Treat the device
-  serials, IP addresses, mount credentials, and calibration IDs in it as secrets** — reference
-  it, do not copy them into other files, commits, or messages.
+- `command.md` — concise Hanoi revive commands, offline checks and conditional
+  contained-TX templates. Keep credentials
+  out of checked-in commands; bench addresses and serials are dated observations.
+- `docs/x300-usage.md` — implemented modes, compatibility, timing and manifests.
+- `docs/x300-live-sky-mixtracking-research-plan.md` — current evidence and pending
+  GPS/RF association, live-time revive RF integration and dataset qualification.
+- `docs/x300-f9p-*-2026-09-*.md` — dated measurements; preserve source caveats.
 - `docs/realtime-code-aligned-matched-code-*.md`, `docs/realtime-cw-jammer-x300.md` — the live
   fail-closed templates, sample-format boundaries, and controlled-RF requirements.
 - `docs/signal-generation-pipeline.md`, `docs/gpssim-source-walkthrough.md` — how the clean
@@ -125,8 +143,10 @@ shared jammer source -> TX conditioning -> jammertx / bladetx / x300tx -> conduc
   (offline) or conditioned by the TX adapters (live).
 - Offline reproducibility: prefer a **frozen** RINEX/navigation file over a moving current-hour
   file; keep seeds, manifests, and trajectories with each run's artifacts.
-- Every live run pairs a `--dry-run` preflight with manifest acceptance checks; keep the
-  manifest, trajectory, exact RINEX, receiver logs, and RF calibration record together.
+- Every live run has its appropriate no-RF preflight: `--dry-run` for frozen
+  scenarios, `--check-start` for live UBX. Keep the exact command, console log,
+  manifest, navigation/UBX, trajectory when available, receiver capture and RF
+  calibration together. Normal manifests do not capture every CLI setting.
 - Do not commit generated binaries, `*.bin` IQ, large captures, secrets, or device credentials.
 - Match upstream C style in `gpssim.c`; run `make test` (and, for Python, Ruff/Pyright as the
   existing workflow does) before declaring a change done.

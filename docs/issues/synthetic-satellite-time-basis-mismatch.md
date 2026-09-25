@@ -1,5 +1,13 @@
 # Synthetic Satellite Time-Basis Mismatch With Live Sky Signals
 
+**Historical April 2026 investigation.** The commands, captures and proposed
+fixes below describe that experiment; they are not current X300 operating
+instructions. References to the retired `x300-spoofing-setup.md` are historical.
+Use [current X300 usage](../x300-usage.md), [the runbook](../../command.md) and
+[2026-09-22 qualification](../x300-f9p-rf-timing-qualification-2026-09-22.md).
+The current implementation's PPS/UBX work has not yet demonstrated an RF fix
+for this historical receiver symptom.
+
 ## Summary
 
 Latest validation still shows a mixed real-plus-synthetic timing mismatch at the

@@ -1,5 +1,11 @@
 # UBX bladeTX Calibration Tool
 
+Scope update, 2026-09-22: this is a legacy bladeRF residual-analysis workflow.
+X300 no longer accepts the Trimble calibration or ppm controls. Its residual
+output may help diagnose receiver consistency, but is not a measured X300 RF
+delay and must not replace physical GPS edge/path qualification. Use
+[current X300 commands](../command.md) and [timing limits](x300-usage.md).
+
 ## Purpose
 
 `tools/ubx_bladetx_cal.py` estimates timing mismatch between injected GPS PRNs

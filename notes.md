@@ -1,5 +1,10 @@
 # Notes: Multi-waveform jamming prototype
 
+This is the historical July 2026 offline campaign log. Its completed dataset
+results remain separate from the current X300 hardware work. See the
+[current experiment plan](docs/x300-live-sky-mixtracking-research-plan.md),
+[command runbook](command.md) and [documentation map](docs/README.md).
+
 ## GNSS-SDR Verification Campaign (2026-07-12)
 
 - Local receiver: sibling build `../gnss-sdr/install/gnss-sdr`, version 0.0.20.

@@ -41,6 +41,11 @@ tests/test_revive_transform
 tests/test_matched_code_plan
 tests/test_matched_code_source
 tests/test_sha256
+tests/test_nav_timing
+tests/test_x300_timing
+tests/test_ubx_receiver
+tests/test_x300_live_revive
+tests/test_x300_pps
 
 # Debug files
 *.dSYM/

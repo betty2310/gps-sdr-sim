@@ -2664,9 +2664,18 @@ int generateNavMsg(gpstime_t g, channel_t *chan, int init) {
   unsigned long prevwrd;
   int nib;
 
-  g0.week = g.week;
-  g0.sec = (double)(((unsigned long)(g.sec + 0.5)) / 30UL) *
-           30.0; // Align with the full frame length = 30 sec
+  // Use the containing frame, never round a fractional epoch into the next
+  // frame/week. A channel also retains the preceding subframe for light time.
+  g0 = g;
+  while (g0.sec >= SECONDS_IN_WEEK) {
+    g0.sec -= SECONDS_IN_WEEK;
+    ++g0.week;
+  }
+  while (g0.sec < 0.0) {
+    g0.sec += SECONDS_IN_WEEK;
+    --g0.week;
+  }
+  g0.sec = floor(g0.sec / 30.0) * 30.0;
   chan->g0 = g0; // Data bit reference time
 
   wn = (unsigned long)(g0.week % 1024);
@@ -2711,7 +2720,7 @@ int generateNavMsg(gpstime_t g, channel_t *chan, int init) {
   }
 
   for (isbf = 0; isbf < N_SBF; isbf++) {
-    tow++;
+    tow = (tow + 1UL) % 100800UL;
 
     for (iwrd = 0; iwrd < N_DWRD_SBF; iwrd++) {
       sbfwrd = chan->sbf[isbf][iwrd];

@@ -1,5 +1,13 @@
 # Synthetic Satellite Generation (`-S`)
 
+Updated 2026-09-22. This is the shared waveform reference. Use
+[command.md](../command.md) for current hardware commands. X300 live navigation
+comes from u-blox UBX/TCP. Revive uses frozen RINEX; `--ublox-time-tcp` obtains
+its estimated epoch from F9P time without requiring F9P target navigation.
+It supports finite TX, `--stream`, `--check-start` and offline `--dry-run`.
+Absolute RF alignment remains unverified. The [revive](synth-revive-mode.md) and
+[clone](synth-clone-mode.md) references define those modes separately.
+
 For a code-level walkthrough of the implementation, see
 [`docs/synthetic-satellites-implementation.md`](synthetic-satellites-implementation.md).
 
@@ -19,7 +27,7 @@ By default, gps-sdr-sim only generates signals for satellites that have valid ep
              PRN:force           Force a below-horizon PRN (requires ephemeris in RINEX)
              PRN:overhead        Place a synthesized satellite directly at zenith
              PRN:az/el           Place a synthesized satellite at azimuth/elevation (degrees)
-             PRN:clone=<src>     Use another PRN's live ephemeris (RTCM path)
+             PRN:clone=<src>     Use another PRN's live ephemeris (X300 UBX; legacy bladeRF RTCM)
              PRN:revive          Re-animate this PRN's past RINEX ephemeris at now
 ```
 
@@ -41,9 +49,10 @@ By default, gps-sdr-sim only generates signals for satellites that have valid ep
 | `PRN:revive` | Target PRN's own past RINEX ephemeris | Non-visible PRN with real ephemeris shape and independent geometry |
 
 Revive mode requires `-e`. It scans the target PRN's past ephemerides, prefers
-the 2-hour lookback, and accepts a template only when the past elevation is at
+the 4-hour lookback, and accepts a template only when the past elevation is at
 least 20 degrees. The transmitted navigation message is re-stamped to current
-GPS time while preserving the target PRN's past orbital phase.
+scenario GPS time while preserving the target PRN's past orbital phase. That
+scenario epoch is not a verified current-GPS RF transmission time.
 
 ## Two Cases
 

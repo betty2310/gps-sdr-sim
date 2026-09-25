@@ -1,5 +1,11 @@
 # SYNTH_REVIVE Current State After Dataset 22-4/ver3
 
+**Historical capture report (2026-04-22).** The command, receiver outcomes and
+calibration below belong to that dataset, not the current X300 setup. See
+[current revive support](../synth-revive-mode.md), [the runbook](../../command.md)
+and [2026-09-22 qualification](../x300-f9p-rf-timing-qualification-2026-09-22.md).
+Do not transfer the historical Trimble/bladeRF timing constants to X300.
+
 ## Status
 
 Open — field-tested on 2026-04-22, implementation patched after analysis.

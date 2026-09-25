@@ -2,9 +2,9 @@
 
 **Status:** Software implemented; continuous controlled-hardware acceptance pending
 
-**Date:** 2026-07-13
+**Date:** 2026-09-22
 
-**Version:** V2
+**Version:** V2 waveform contract; v3 manifest and hardware timing
 
 **Scope:** Continuous, simulator-aligned GPS L1 C/A matched-code interference
 through one USRP X300/X310 TX channel in an authorized conducted path or
@@ -12,10 +12,16 @@ verified shielded enclosure
 
 **Related:** [researcher/operator guide](realtime-code-aligned-matched-code-x300.md),
 [V1 offline matched-code dataset specification](code-aligned-matched-code-dataset-spec.md),
-[X300 timing alignment plan](x300-timing-alignment-plan.md), and
+[current X300 timing and mixtracking plan](x300-live-sky-mixtracking-research-plan.md), and
 [jammer architecture](jamming-mitigation-architecture.md)
 
 ## Decision Summary
+
+The current bench uses exposed X300/bladeRF antennas with X300 TX off. The
+[latest qualification](x300-f9p-rf-timing-qualification-2026-09-22.md) is
+receive-only/no-RF evidence; it does not qualify continuous matched-code TX.
+Normal navigation-bearing revive commands are in [command.md](../command.md)
+and are a separate mode from this specification.
 
 Matched-code mode in `x300tx` is a jammer-only transmitter.
 
@@ -107,8 +113,8 @@ Live transmission additionally requires the existing controlled-RF gates:
 - explicit `--addr`, `--channel`, `--antenna`, and `--gain`;
 - `--calibration-id`;
 - `--confirm-controlled-rf`; and
-- either the calibrated Trimble start path or explicit GPS week/TOW with an
-  approved external/GPSDO time source.
+- explicit scenario GPS week/TOW and verified external/GPSDO frequency and
+  PPS sources. The epoch labels sample zero; live GPS alignment is unverified.
 
 The following options are incompatible with matched-code jammer-only mode:
 
@@ -126,6 +132,22 @@ The following options are incompatible with matched-code jammer-only mode:
 It does not select jammer components. A PRN listed by `-S` but absent from
 `--matched-code-target-prns` is not synthesized by the matched-code source.
 
+## Hardware timing
+
+Normal and matched-code modes share `player/x300_timing.hpp`: reference/LO lock
+checks, next-PPS time-zero latch, a verified subsequent PPS, bounded producer
+queue, future hardware timestamp after prebuffering, partial-send handling,
+continuous sample counting and fail-on-discontinuity shutdown. No timing reset
+or automatic restart occurs during a burst. The actual UHD sample rate drives
+the scenario timeline. Input ephemeris TOE/TOC are preserved.
+
+The v3 manifest removes estimated TCP time-tag and ppm calibration fields. It
+records `scenario_at_sample_zero`, `gps_alignment_verified: false`, the PPS
+latch result and transport diagnostics. `--gps-week/--gps-tow` assigns a
+scenario label, not a GPS label for the physical PPS edge. Host-clock `-n`, ppm
+scaling and Trimble time-tag scheduling are rejected. See the
+[current timing guide](x300-usage.md) for the wiring and commands.
+
 ## Continuous Activation Contract
 
 The first matched-code sample is sample zero. Every subsequent sample remains
@@ -141,7 +163,7 @@ sample 0 ----------------------------------------------------> operator stop
 
 A clean operator stop is a successful terminal condition. The live manifest
 uses `status: "stopped"`, `exit_status: 0`, and
-`measurements.operator_stopped: true` when the end-of-burst is sent and all UHD
+`measurements.operator_stopped: true` when end-of-burst is acknowledged, PPS and locks remain valid, and all UHD
 fault counters and clipping counts are zero.
 
 Because frames are prebuffered, rendered and quantized counts may be greater
@@ -150,7 +172,8 @@ positive and may never exceed quantized samples.
 
 ## Alignment Contract
 
-At every 100 ms epoch boundary, the internal simulator provides one state per
+At each render block boundary (at most 100 ms; split at GPS frame boundaries),
+the internal simulator provides one state per
 requested target PRN:
 
 - first-sample C/A code phase in chips;
@@ -211,7 +234,7 @@ not a cryptographic provenance hash.
 
 ## Manifest Contract
 
-The schema is `gps-sdr-sim.x300tx-matched-code.v2`.
+The schema is `gps-sdr-sim.x300tx-matched-code.v3`.
 
 The manifest reports at least:
 

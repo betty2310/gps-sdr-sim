@@ -1,12 +1,19 @@
 # Makefile for Linux etc.
 
-.PHONY: all clean time test test-x300tx-matched test-bladetx-matched
+.PHONY: all clean time test test-x300-timing test-ubx test-x300tx-matched test-bladetx-matched test-mixed-gps-timing
 all: gps-sdr-sim jammergen matchedgen iqmix
 
 rtcm3_inspect: tools/rtcm3_inspect.c
 	${CC} ${CFLAGS} tools/rtcm3_inspect.c ${LDFLAGS} -o $@
 
 SHELL=/bin/bash
+# Pair the macOS SDK with the selected Xcode/Command Line Tools. An inherited
+# SDKROOT can point to a newer SDK that the selected linker cannot read.
+# An explicit `make SDKROOT=...` still takes precedence.
+ifeq ($(shell uname -s),Darwin)
+export SDKROOT := $(shell xcrun --sdk macosx --show-sdk-path)
+endif
+
 CC=gcc
 CXX=g++
 CFLAGS=-O3 -Wall -D_FILE_OFFSET_BITS=64
@@ -61,8 +68,14 @@ gpssim-lib.o: gpssim.c gpssim.h .user-motion-size
 player/rtcm3_nav.o: player/rtcm3_nav.cpp player/rtcm3_nav.hpp gpssim.h
 	${CXX} ${CXXFLAGS} -isystem . -c player/rtcm3_nav.cpp -o $@
 
-x300tx: player/x300tx.cpp player/matched_code_alignment.h player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) gpssim.h
-	${CXX} ${CXXFLAGS} -isystem . player/x300tx.cpp player/rtcm3_nav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
+player/ubx_receiver.o: player/ubx_receiver.cpp player/ubx_receiver.hpp player/gps_lnav.hpp gpssim.h
+	${CXX} ${CXXFLAGS} -pthread -isystem . -c $< -o $@
+
+player/gps_lnav.o: player/gps_lnav.cpp player/gps_lnav.hpp gpssim.h
+	${CXX} ${CXXFLAGS} -isystem . -c $< -o $@
+
+x300tx: player/x300tx.cpp player/x300_timing.hpp player/x300_live_time.hpp player/x300_pps_time.hpp player/matched_code_alignment.h player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) gpssim.h
+	${CXX} ${CXXFLAGS} -pthread -isystem . player/x300tx.cpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
 
 jammertx: player/jammertx.cpp $(JAMMER_SOURCE_OBJ) tools/jammer_source.h
 	${CXX} -O3 -Wall -std=c++17 ${BLADE_CFLAGS} -isystem . player/jammertx.cpp $(JAMMER_SOURCE_OBJ) ${BLADE_LIBS} ${LDFLAGS} -Wl,-rpath,${BLADE_LIBDIR} -o $@
@@ -102,7 +115,13 @@ tests/test_matched_code_plan: tests/test_matched_code_plan.c $(MATCHED_CODE_PLAN
 tests/test_sha256: tests/test_sha256.c $(SHA256_OBJ) tools/sha256.h
 	${CC} ${CFLAGS} -isystem . tests/test_sha256.c $(SHA256_OBJ) ${LDFLAGS} -o $@
 
-test: jammergen matchedgen iqmix tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan tests/test_jammer_source tests/test_gps_ca tests/test_matched_code_source tests/test_matched_code_plan tests/test_sha256
+tests/test_nav_timing: tests/test_nav_timing.c gpssim-lib.o $(GPS_CA_OBJ) gpssim.h
+	${CC} ${CFLAGS} -isystem . tests/test_nav_timing.c gpssim-lib.o $(GPS_CA_OBJ) ${LDFLAGS} -o $@
+
+tests/test_x300_timing: tests/test_x300_timing.cpp tests/fake_x300_radio.hpp player/x300_timing.hpp gpssim.h
+	${CXX} ${CXXFLAGS} -pthread -isystem . tests/test_x300_timing.cpp ${UHD_LIBS} ${LDFLAGS} -o $@
+
+test: jammergen matchedgen iqmix tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan tests/test_jammer_source tests/test_gps_ca tests/test_matched_code_source tests/test_matched_code_plan tests/test_sha256 tests/test_nav_timing
 	tests/test_parse_synth_revive
 	tests/test_revive_transform
 	tests/test_revive_scan
@@ -111,10 +130,33 @@ test: jammergen matchedgen iqmix tests/test_parse_synth_revive tests/test_revive
 	tests/test_matched_code_source
 	tests/test_matched_code_plan
 	tests/test_sha256
+	tests/test_nav_timing
 	cd processing && uv run python ../tests/test_cw_dataset.py
+
+test-x300-timing: x300tx tests/test_x300_timing
+	tests/test_x300_timing
+	python3 tests/test_x300_timing_cli.py
+
+tests/test_ubx_receiver: tests/test_ubx_receiver.cpp player/ubx_receiver.o player/gps_lnav.o player/x300_live_time.hpp player/x300_pps_time.hpp player/x300_timing.hpp gpssim-lib.o $(GPS_CA_OBJ)
+	${CXX} ${CXXFLAGS} -pthread -isystem . tests/test_ubx_receiver.cpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
+
+tests/test_x300_live_revive: tests/test_x300_live_revive.cpp tests/fake_f9p_pps.hpp tests/fake_x300_radio.hpp player/x300tx.cpp player/x300_live_time.hpp player/x300_pps_time.hpp player/x300_timing.hpp player/ubx_receiver.hpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ)
+	${CXX} ${CXXFLAGS} -pthread -isystem . tests/test_x300_live_revive.cpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) $(MATCHED_CODE_SOURCE_OBJ) $(MATCHED_CODE_PLAN_OBJ) $(SHA256_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
+
+tests/test_x300_pps: tests/test_x300_pps.cpp tests/fake_f9p_pps.hpp player/x300_pps_time.hpp player/x300_live_time.hpp player/x300_timing.hpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ)
+	${CXX} ${CXXFLAGS} -pthread -isystem . tests/test_x300_pps.cpp player/ubx_receiver.o player/gps_lnav.o gpssim-lib.o $(GPS_CA_OBJ) ${UHD_LIBS} ${LDFLAGS} -o $@
+
+test-ubx: x300tx tests/test_ubx_receiver tests/test_x300_live_revive tests/test_x300_pps
+	tests/test_x300_pps
+	tests/test_ubx_receiver
+	tests/test_x300_live_revive
+	python3 tests/test_ubx_cli.py
 
 test-x300tx-matched: x300tx matchedgen
 	python3 tests/test_x300tx_matched_cli.py
+
+test-mixed-gps-timing:
+	cd processing && uv run python ../tests/test_mixed_gps_timing.py
 
 test-bladetx-matched: bladetx matchedgen
 	python3 tests/test_bladetx_matched_cli.py
@@ -133,6 +175,9 @@ tx: tx_samples_from_file.cpp
 	fi;
 
 clean:
+	rm -f tests/test_x300_pps tests/test_x300_live_revive
+	rm -f tests/test_ubx_receiver player/ubx_receiver.o player/gps_lnav.o
+	rm -f tests/test_x300_timing tests/test_nav_timing
 	rm -f gpssim.o gpssim-lib.o player/rtcm3_nav.o tools/jammer_source.o tools/gps_ca.o tools/matched_code_source.o tools/matched_code_plan.o tools/sha256.o gps-sdr-sim jammergen matchedgen iqmix jammertx x300tx bladetx revive_candidates tests/test_parse_synth_revive tests/test_revive_transform tests/test_revive_scan tests/test_jammer_source tests/test_gps_ca tests/test_matched_code_source tests/test_matched_code_plan tests/test_sha256 *.bin .user-motion-size
 
 time: gps-sdr-sim

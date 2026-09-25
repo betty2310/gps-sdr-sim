@@ -4,6 +4,21 @@ GPS-SDR-SIM generates GPS baseband signal data streams, which can be converted
 to RF using software-defined radio (SDR) platforms, such as
 [ADALM-Pluto](https://wiki.analog.com/university/tools/pluto), [bladeRF](http://nuand.com/), [HackRF](https://github.com/mossmann/hackrf/wiki), and [USRP](http://www.ettus.com/).
 
+### Current X300 / F9P / bladeRF work (2026-09-22)
+
+The X300 player uses ZED-F9P UBX/TCP for estimated live GPS time and navigation,
+with PRS10 10 MHz/PPS hardware timing. `--ublox-time-tcp` combines live F9P time
+with frozen-RINEX revive in offline `--dry-run` only; that combination cannot
+transmit. The bladeRF x40 is the current IQ receiver.
+
+Read [command.md](command.md) for concise Hanoi revive command templates.
+See [X300 usage](docs/x300-usage.md),
+[current plan](docs/x300-live-sky-mixtracking-research-plan.md) and
+[latest measured results](docs/x300-f9p-rf-timing-qualification-2026-09-22.md).
+Clock/PPS checks and a five-second bladeRF baseline passed; no X300 RF start or
+absolute GPS alignment has been measured. The present antennas are exposed, so
+GPS transmission remains off until RF containment and input levels are qualified.
+
 ### Windows build instructions
 
 1. Start Visual Studio.
@@ -186,8 +201,11 @@ The user motion can be specified in either dynamic or static mode:
 
 ### Transmitting the samples
 
-The TX port of a particular SDR platform is connected to the GPS receiver
-under test through a DC block and a fixed 50-60dB attenuator.
+The following are upstream file-playback examples, separate from the current
+X300 runbook. Use a conducted path with known attenuation and suitable DC
+isolation, or verified shielding. Determine attenuation from measured TX and
+receiver-input levels; a bare coax or a software gain setting does not establish
+a qualified path. Do not use these examples on the present exposed antennas.
 
 #### BladeRF:
 
